@@ -32,3 +32,9 @@ astria/test
 astria/core.*
 astria_tests
 
+# LLaVA
+LLaVA/images
+LLaVA/docs
+LLaVA/.devcontainer
+LLaVA/.github
+LLaVA/playground
