@@ -1,0 +1,34 @@
+.idea
+.env
+devops
+logs
+alon
+
+models
+
+# From ChatGPT
+.dockerignore
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.git
+*.git*
+*.log
+*.csv
+*.json
+*.md
+*.ini
+*.cfg
+
+# Addtional for this project handpicked from historical events
+output
+*.png
+*.jpg
+
+# Astra specific
+astria/test
+# Coredumps on failed runs
+astria/core.*
+astria_tests
+

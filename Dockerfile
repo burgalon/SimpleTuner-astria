@@ -1,76 +1,40 @@
-# SimpleTuner needs CU141
 FROM nvidia/cuda:12.4.1-cudnn-devel-ubuntu22.04
-
-# /workspace is the default volume for Runpod & other hosts
-WORKDIR /workspace
-
-# Update apt-get
-RUN apt-get update -y
-
-# Prevents different commands from being stuck by waiting
-# on user input during build
-ENV DEBIAN_FRONTEND noninteractive
-
-# Install libg dependencies
-RUN apt install libgl1-mesa-glx -y
-RUN apt-get install 'ffmpeg'\
-    'libsm6'\
-    'libxext6'  -y
-
-# Install misc unix libraries
-RUN apt-get install -y --no-install-recommends openssh-server \
-                                               openssh-client \
-                                               git \
-                                               git-lfs \
-                                               wget \
-                                               curl \
-                                               tmux \
-                                               tldr \
-                                               nvtop \
-                                               vim \
-                                               rsync \
-                                               net-tools \
-                                               less \
-                                               iputils-ping \
-                                               7zip \
-                                               zip \
-                                               unzip \
-                                               htop \
-                                               inotify-tools
-
-# Set up git to support LFS, and to store credentials; useful for Huggingface Hub
-RUN git config --global credential.helper store && \
-    git lfs install
-
-# Install Python VENV
-RUN apt-get install -y python3.10-venv
-
-# Ensure SSH access. Not needed for Runpod but is required on Vast and other Docker hosts
-EXPOSE 22/tcp
-
-# Python
-RUN apt-get update -y && apt-get install -y python3 python3-pip
-RUN python3 -m pip install pip --upgrade
-
-# HF
-ENV HF_HOME=/workspace/huggingface
-
-RUN pip3 install "huggingface_hub[cli]"
-
-# WanDB
-RUN pip3 install wandb
-
-# Clone SimpleTuner
-RUN git clone https://github.com/bghira/SimpleTuner --branch release
-# RUN git clone https://github.com/bghira/SimpleTuner --branch main # Uncomment to use latest (possibly unstable) version
+ENV DEBIAN_FRONTEND=noninteractive \
+    PIP_PREFER_BINARY=1 \
+    PYTHONUNBUFFERED=1 \
+    # Poetry's configuration:
+    POETRY_NO_INTERACTION=1 \
+    POETRY_VIRTUALENVS_CREATE=false \
+    POETRY_CACHE_DIR='/var/cache/pypoetry' \
+    POETRY_HOME='/usr/local'
+#    LD_PRELOAD=libtcmalloc.so
 
 # Install SimpleTuner
-RUN pip3 install poetry
-RUN cd SimpleTuner && python3 -m venv .venv && poetry install --no-root
-RUN chmod +x SimpleTuner/train.sh
+WORKDIR /app
+COPY poetry.lock pyproject.toml /app/
 
-# Copy start script with exec permissions
-COPY --chmod=755 docker-start.sh /start.sh
+RUN apt-get update -y && \
+	apt-get install -y --no-install-recommends aria2 libgoogle-perftools-dev libgl1 libglib2.0-0 wget curl awscli git git-lfs python3 python3-pip build-essential python3-dev && \
+  apt-get autoremove -y && rm -rf /var/lib/apt/lists/* && apt-get clean -y && \
+  python3 -m pip install pip --upgrade && \
+  # https://stackoverflow.com/questions/53835198/integrating-python-poetry-with-docker
+  curl -sSL https://install.python-poetry.org | python3  && \
+  # used to check disk usage quickly
+  git clone https://codeberg.org/201984/dut.git /root/dut && cd /root/dut/ && make install && \
+  cd /app && \
+  poetry install --no-root --no-interaction --no-ansi --without dev && \
+  # cleanup caches to reduce image size
+  rm -rf /root/.cache/pip && \
+  rm -rf /root/.cache/pypoetry && \
+  rm -rf /var/cache && \
+  apt-get clean && \
+  rm -rf /var/lib/apt/lists/* && \
+  mkdir -p /var/cache/apt/archives/partial
 
-# Dummy entrypoint
-ENTRYPOINT [ "/start.sh" ]
+ENV TINI_VERSION v0.19.0
+ADD https://github.com/krallin/tini/releases/download/${TINI_VERSION}/tini /tini
+RUN chmod +x /tini
+ENTRYPOINT ["/tini", "--"]
+
+ENV LD_LIBRARY_PATH='/usr/local/lib/python3.10/dist-packages/nvidia/nvjitlink/lib'
+COPY . /app
