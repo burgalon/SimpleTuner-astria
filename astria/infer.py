@@ -12,6 +12,7 @@ import cv2
 import numpy as np
 import torch
 from PIL import Image, ImageOps, ImageFilter
+from diffusers import FluxFillPipeline, FluxTransformer2DModel
 from diffusers import FluxPipeline, FluxImg2ImgPipeline, FluxControlNetPipeline, FluxControlNetModel, \
     FluxInpaintPipeline, FluxControlNetImg2ImgPipeline, FluxControlNetInpaintPipeline
 from torchvision import transforms
@@ -21,7 +22,7 @@ from add_clut import add_clut
 from add_grain import add_grain
 from astria_utils import run, MODELS_DIR, download_model_from_server, JsonObj, device, \
     StaleDeploymentException, FLUX_INPAINT_MODEL_ID, CACHE_DIR, \
-    HUMAN_CLASS_NAMES
+    HUMAN_CLASS_NAMES, check_refresh
 
 if os.environ.get('MOCK_SERVER'):
     from astria_mock_server import report_infer_job_failure, request_infer_job_from_server, request_tune_job_from_server, send_to_server
@@ -59,6 +60,7 @@ def parse_args(prompt: JsonObj):
     parser.add_argument("--disable_restore_mask_area", action='store_true', default=None)
     parser.add_argument("--face_inpaint_denoising", type=float, default=None)
     parser.add_argument("--hires_denoising_strength", type=float, default=None)
+    parser.add_argument("--fill", action='store_true', default=False)
     parser.add_argument("--restore_mask", action='store_true', default=False)
     parser.add_argument("--face_swap_indexes", type=int, nargs="+")
     # parser.add_argument("--denoising_strength", type=float, default=prompt.denoising_strength)
@@ -130,9 +132,6 @@ class InferPipeline(InpaintFaceMixin, VtonMixin):
         self.current_lora_weights = {'names': [], 'scales': []}
         self.resolution = None
 
-        self.pulid_model = None
-        self.pulid_pipe = None
-
         self.reset_controlnet()
 
     def reset_controlnet(self):
@@ -141,6 +140,9 @@ class InferPipeline(InpaintFaceMixin, VtonMixin):
         self.controlnet_txt2img = None
         self.controlnet_img2img = None
         self.controlnet_inpaint_txt2img = None
+        self.fill = None
+        self.pulid_model = None
+        self.pulid_pipe = None
         torch.cuda.empty_cache()
 
     def unload_lora_weights(self):
@@ -295,24 +297,20 @@ class InferPipeline(InpaintFaceMixin, VtonMixin):
             if self.controlnet_inpaint_txt2img:
                 self.controlnet_inpaint_txt2img.controlnet = self.control
 
-    def init_inpaint(self):
-        if os.environ.get('FILL'):
-            model_path = download_model_from_server(f'{FLUX_INPAINT_MODEL_ID}-flux1')
-            from diffusers import FluxFillPipeline, FluxTransformer2DModel
-            # self.inpaint = FluxFillPipeline.from_pretrained(
-            #     model_path,
-            #     torch_dtype=torch.bfloat16
-            # ).to("cuda")
-            self.inpaint = FluxFillPipeline(
-                transformer=FluxTransformer2DModel.from_pretrained(model_path, subfolder="transformer"),
-                scheduler=self.pipe.scheduler,
-                vae=self.pipe.vae,
-                text_encoder=self.pipe.text_encoder,
-                text_encoder_2=self.pipe.text_encoder_2,
-                tokenizer=self.pipe.tokenizer,
-                tokenizer_2=self.pipe.tokenizer_2,
-            ).to("cuda")
-            return
+    def init_inpaint(self, prompt: JsonObj):
+        if prompt.fill:
+            if not self.fill:
+                model_path = download_model_from_server(f'{FLUX_INPAINT_MODEL_ID}-flux1')
+                self.fill = FluxFillPipeline(
+                    transformer=FluxTransformer2DModel.from_pretrained(model_path, subfolder="transformer", torch_dtype=torch.bfloat16),
+                    scheduler=self.pipe.scheduler,
+                    vae=self.pipe.vae,
+                    text_encoder=self.pipe.text_encoder,
+                    text_encoder_2=self.pipe.text_encoder_2,
+                    tokenizer=self.pipe.tokenizer,
+                    tokenizer_2=self.pipe.tokenizer_2,
+                ).to("cuda")
+            return self.fill
         else:
             if not self.inpaint:
                 self.inpaint = FluxDifferentialImg2ImgPipeline(
@@ -324,6 +322,7 @@ class InferPipeline(InpaintFaceMixin, VtonMixin):
                     tokenizer=self.pipe.tokenizer,
                     tokenizer_2=self.pipe.tokenizer_2,
                 ).to(device)
+            return self.inpaint
 
     def init_controlnet_inpaint_txt2img(self, tune, control_type):
         self.init_control(tune, control_type)
@@ -447,7 +446,7 @@ class InferPipeline(InpaintFaceMixin, VtonMixin):
 
         return input_image_tensor, controlnet_hint, w, h, orig_input_image, input_image, mask_image
 
-    def apply_hires_fix(self, images, prompt, joint_attention_kwargs):
+    def apply_hires_fix(self, images, prompt, kwargs):
         self.init_img2img()
         for i_image in range(len(images)):
             if is_terminated():
@@ -470,14 +469,14 @@ class InferPipeline(InpaintFaceMixin, VtonMixin):
             image = self.img2img(
                 image=image,
                 strength=strength,
-                prompt=re.sub(r"<.*?>", "", prompt.text),
                 guidance_scale=float(prompt.cfg_scale or 3.5),
                 height=image.height,
                 width=image.width,
                 num_inference_steps=28,
                 max_sequence_length=prompt.max_sequence_length or 512,
                 generator=torch.Generator(device="cuda").manual_seed((prompt.seed or 42) + i_image),
-                joint_attention_kwargs=joint_attention_kwargs,
+                prompt_embeds=kwargs['prompt_embeds'],
+                pooled_prompt_embeds=kwargs['pooled_prompt_embeds'],
             ).images[0]
             images[i_image] = image
 
@@ -629,10 +628,8 @@ class InferPipeline(InpaintFaceMixin, VtonMixin):
                         kwargs['image'] = input_image
             else:
                 kwargs['image'] = input_image
-                kwargs['strength'] = float(prompt.denoising_strength if prompt.denoising_strength != None else 0.8)
                 if mask_image:
-                    self.init_inpaint()
-                    pipe = self.inpaint
+                    pipe = self.init_inpaint(prompt)
                     if isinstance(pipe, FluxDifferentialImg2ImgPipeline):
                         print("Inverting mask for differential diffusion")
                         mask_image = ImageOps.invert(mask_image)
@@ -640,6 +637,12 @@ class InferPipeline(InpaintFaceMixin, VtonMixin):
                 else:
                     self.init_img2img()
                     pipe = self.img2img
+
+                if isinstance(pipe, FluxFillPipeline):
+                    if not prompt.cfg_scale or prompt.cfg_scale < 7:
+                        prompt.cfg_scale = 30
+                else:
+                    kwargs['strength'] = float(prompt.denoising_strength if prompt.denoising_strength != None else 0.8)
         else:
             pipe = self.pipe
 
@@ -648,7 +651,7 @@ class InferPipeline(InpaintFaceMixin, VtonMixin):
         images = []
         num_images = int(os.environ.get('NUM_IMAGES', prompt.num_images))
         joint_attention_kwargs = self.load_references(prompt)
-        prompt.text = prompt.text.strip(" ,").strip(" ")
+        prompt.text = prompt.text.strip(" ,").strip(" ").strip('"')
 
         (
             prompt_embeds,
@@ -660,6 +663,8 @@ class InferPipeline(InpaintFaceMixin, VtonMixin):
             max_sequence_length=prompt.max_sequence_length or 512,
             device=device,
         )
+        kwargs['prompt_embeds'] = prompt_embeds
+        kwargs['pooled_prompt_embeds'] = pooled_prompt_embeds
 
         print(f"T#{prompt.tune_id} P#{prompt.id} pipe={pipe.__class__.__name__} Infer image {prompt.text=} loras={self.current_lora_weights}")
         for i_image in range(num_images):
@@ -668,9 +673,7 @@ class InferPipeline(InpaintFaceMixin, VtonMixin):
                 images.append(kwargs['image'])
                 continue
             image = pipe(
-                prompt_embeds=prompt_embeds.to(device),
-                pooled_prompt_embeds=pooled_prompt_embeds.to(device),
-                guidance_scale=float(prompt.cfg_scale or 3.5),
+                guidance_scale=float(prompt.cfg_scale if prompt.cfg_scale is not None else 3.5),
                 height=prompt.h or 1024,
                 width=prompt.w or 1024,
                 num_inference_steps=prompt.steps or 28,
@@ -690,7 +693,7 @@ class InferPipeline(InpaintFaceMixin, VtonMixin):
             if os.environ.get('DEBUG'):
                 for i_image, image in enumerate(images):
                     image.save(f"{MODELS_DIR}/{prompt.id}-{i_image}-before-hires.jpg")
-            images = self.apply_hires_fix(images, prompt, joint_attention_kwargs)
+            images = self.apply_hires_fix(images, prompt, kwargs)
 
         if prompt.inpaint_faces or os.environ.get('INPAINT_FACES'):
             images = self.inpaint_faces(images, prompt, tune)
@@ -736,6 +739,7 @@ def main():
         i = 0
         max_sleeps = int(os.environ.get('MAX_SLEEPS', 90))
         while not is_terminated() and (i < max_sleeps or os.environ.get('DONT_STOP')):
+            check_refresh()
             processed_jobs = pipeline.poll_infer()
 
             # Give a few chances for inference before starting training
