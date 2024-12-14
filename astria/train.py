@@ -12,9 +12,9 @@ from astria_utils import run, run_with_output, MODELS_DIR, EPHEMERAL_MODELS_DIR,
     download_model_from_server, JsonObj, cleanup_models, CUDA_VISIBLE_DEVICES
 
 if os.environ.get('MOCK_SERVER'):
-    from astria_mock_server import request_tune_job_from_server
+    from astria_mock_server import request_tune_job_from_server, server_tune_done, report_tune_job_failure
 else:
-    from astria_server import request_tune_job_from_server
+    from astria_server import request_tune_job_from_server, server_tune_done, report_tune_job_failure
 
 from cleanup_directory import cleanup_directory
 from sig_listener import is_terminated
@@ -244,7 +244,7 @@ def train_no_catch(tune: JsonObj):
             # '--read_batch_size=1',
             # '--write_batch_size=1',
             # '--override_dataset_config',
-            '--caption_dropout_probability', str(tune.caption_dropout_probability or 0.1),
+            '--caption_dropout_probability', str(tune.caption_dropout_probability if tune.caption_dropout_probability is not None else 0.1),
             # '--use_ema',
             # '--ema_decay=0.99',
             # '--torch_num_threads=8',
@@ -266,6 +266,7 @@ def train_no_catch(tune: JsonObj):
             '--validation_guidance=3.5',
             '--validation_guidance_rescale=0.0',
             '--disable_benchmark',
+            '--flux_schedule_shift=0',
             *(['--prepend_instance_prompt'] if caption_strategy == "textfile" else []),
             *(['--flux_attention_masked_training'] if tune.segmentation else []),
         ])
