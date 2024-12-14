@@ -352,10 +352,10 @@ def create_data_config_v2(tune: JsonObj, output_dir: str, write_metadata=True) -
         with open(f'{ret.training_dir}/aspect_ratio_bucket_metadata_square.json', "w") as f:
             json.dump({
                 fn: {
-                    "original_size": [512, 512],
+                    "original_size": [resolution, resolution],
                     "crop_coordinates": [0, 0],
-                    "target_size": [512, 512],
-                    "intermediary_size": [512, 512],
+                    "target_size": [resolution, resolution],
+                    "intermediary_size": [resolution, resolution],
                     "aspect_ratio": 1,
                     "luminance": 100.0
                 }
@@ -369,12 +369,12 @@ def create_data_config_v2(tune: JsonObj, output_dir: str, write_metadata=True) -
                     "crop_aspect_buckets": None,
                     "crop_style": "center",
                     "disable_validation": False,
-                    "resolution": 512,
+                    "resolution": resolution,
                     "resolution_type": "pixel",
                     "caption_strategy": "instanceprompt",
                     "instance_data_dir": ret.training_dir,
-                    "maximum_image_size": 512,
-                    "target_downsample_size": 512,
+                    "maximum_image_size": resolution,
+                    "target_downsample_size": resolution,
                     "config_version": 2,
                     "hash_filenames": True
                 },
@@ -386,10 +386,10 @@ def create_data_config_v2(tune: JsonObj, output_dir: str, write_metadata=True) -
         with open(f'{ret.face_dir}/aspect_ratio_bucket_metadata_square.json', "w") as f:
             json.dump({
                 fn: {
-                    "original_size": [512, 512],
+                    "original_size": [resolution, resolution],
                     "crop_coordinates": [0, 0],
-                    "target_size": [512, 512],
-                    "intermediary_size": [512, 512],
+                    "target_size": [resolution, resolution],
+                    "intermediary_size": [resolution, resolution],
                     "aspect_ratio": 1,
                     "luminance": 100.0
                 }
@@ -407,8 +407,8 @@ def create_data_config_v2(tune: JsonObj, output_dir: str, write_metadata=True) -
                     "resolution_type": "pixel",
                     "caption_strategy": "instanceprompt",
                     "instance_data_dir": ret.face_dir,
-                    "maximum_image_size": 512,
-                    "target_downsample_size": 512,
+                    "maximum_image_size": resolution,
+                    "target_downsample_size": resolution,
                     "config_version": 2,
                     "hash_filenames": True
                 },
@@ -456,12 +456,12 @@ def create_data_config_v2(tune: JsonObj, output_dir: str, write_metadata=True) -
                         "crop_aspect_buckets": None,
                         "crop_style": "center",
                         "disable_validation": False,
-                        "resolution": 512,
+                        "resolution": resolution,
                         "resolution_type": "pixel",
                         "caption_strategy": "instanceprompt",
                         "instance_data_dir": ret.mask_dir,
-                        "maximum_image_size": 512,
-                        "target_downsample_size": 512,
+                        "maximum_image_size": resolution,
+                        "target_downsample_size": resolution,
                         "config_version": 2,
                         "hash_filenames": True
                     },
