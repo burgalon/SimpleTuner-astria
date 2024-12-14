@@ -14,6 +14,8 @@ import sys
 import glob
 import wandb
 
+from typing import TYPE_CHECKING
+
 # Quiet down, you.
 os.environ["ACCELERATE_LOG_LEVEL"] = "WARNING"
 from helpers import log_format  # noqa
@@ -1392,7 +1394,27 @@ class Trainer:
         ):
             logger.error("Cannot run validations with DeepSpeed ZeRO stage 3.")
             return
-        model_evaluator = ModelEvaluator.from_config(args=self.config)
+
+        first_backend_key = sorted(list(
+            filter(
+                lambda name: 'mask' not in name,
+                StateTracker.get_data_backends().keys(),
+            )))[0]
+        imgs_eval = StateTracker.get_image_files(
+            data_backend_id=first_backend_key,
+        )
+
+        if (
+            self.config.evaluation_type is not None
+            and self.config.evaluation_type.lower() != ""
+            and self.config.evaluation_type.lower() != "none"
+            and self.config.evaluation_type.lower() == "face"
+        ):
+            logger.info(f"Using backend {first_backend_key} for face embedding ground truth")
+        model_evaluator = ModelEvaluator.from_config(
+            args=self.config,
+            baseline_images=imgs_eval,
+        )
         self.validation = Validation(
             trainable_parameters=self._get_trainable_parameters,
             accelerator=self.accelerator,

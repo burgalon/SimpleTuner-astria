@@ -25,6 +25,10 @@ from diffusers.utils.torch_utils import is_compiled_module
 from helpers.multiaspect.image import MultiaspectImage
 from helpers.image_manipulation.brightness import calculate_luminance
 from PIL import Image, ImageDraw, ImageFont
+from helpers.training.evaluation import (
+    CLIPModelEvaluator,
+    FaceModelEvaluator,
+)
 
 logger = logging.getLogger(__name__)
 logger.setLevel(os.environ.get("SIMPLETUNER_LOG_LEVEL") or "INFO")
@@ -1618,15 +1622,23 @@ class Validation:
             if shortname in self.eval_scores:
                 continue
             prompt = self.validation_prompt_dict.get(shortname, "")
-            for image in image_list:
+            for image in tqdm(image_list, desc="Running evaluations on images..."):
                 evaluation_score = self.model_evaluator.evaluate([image], [prompt])
-                self.eval_scores[shortname] = round(float(evaluation_score), 4)
-        # Log the scores into dict: {"min", "max", "mean", "std"}
-        result = {
-            "clip/min": min(self.eval_scores.values()),
-            "clip/max": max(self.eval_scores.values()),
-            "clip/mean": np.mean(list(self.eval_scores.values())),
-            "clip/std": np.std(list(self.eval_scores.values())),
-        }
+                self.eval_scores[shortname] = round(float(evaluation_score), 8)
+
+        if isinstance(self.model_evaluator, CLIPModelEvaluator):
+            # Log the scores into dict: {"min", "max", "mean", "std"}
+            result = {
+                "clip/min": min(self.eval_scores.values()),
+                "clip/max": max(self.eval_scores.values()),
+                "clip/mean": np.mean(list(self.eval_scores.values())),
+                "clip/std": np.std(list(self.eval_scores.values())),
+            }
+
+        if isinstance(self.model_evaluator, FaceModelEvaluator):
+            result = {
+                f'face/{shortname}': val
+                for shortname, val in self.eval_scores.items()
+            }
 
         return result

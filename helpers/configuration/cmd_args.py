@@ -1345,7 +1345,7 @@ def get_argument_parser():
         "--evaluation_type",
         type=str,
         default=None,
-        choices=["clip", "none"],
+        choices=["clip", "face", "none"],
         help=(
             "Validations must be enabled for model evaluation to function. The default is to use no evaluator,"
             " and 'clip' will use a CLIP model to evaluate the resulting model's performance during validations."
@@ -1354,7 +1354,7 @@ def get_argument_parser():
     parser.add_argument(
         "--pretrained_evaluation_model_name_or_path",
         type=str,
-        default="openai/clip-vit-large-patch14-336",
+        default=None,
         help=(
             "Optionally provide a custom model to use for ViT evaluations."
             " The default is currently clip-vit-large-patch14-336, allowing for lower patch sizes (greater accuracy)"
