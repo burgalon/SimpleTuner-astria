@@ -16,6 +16,10 @@ from image_utils import io2img, save_img
 from inpaint_face_mixin import ultralytics_predict, filter_by_ratio, filter_k_largest, YOLO_FACE_MODEL
 
 
+def list_full_paths(directory: str) -> list[str]:
+    return [os.path.join(os.path.abspath(directory), f) for f in os.listdir(directory)]
+
+
 def infer_background(image: Image.Image, birefnet: BiRefNet_node) -> np.ndarray:
     alpha_tensor : torch.Tensor = birefnet.matting(image, 'cuda')
     alpha = alpha_tensor.squeeze().cpu().numpy()
@@ -270,7 +274,7 @@ def get_instance_prompt(tune, add_prefix=True):
     return instance_prompt
 
 
-def create_data_config_v2(tune: JsonObj, output_dir: str) -> (str, int):
+def create_data_config_v2(tune: JsonObj, output_dir: str, write_metadata=True) -> (str, int):
     ret = download_training(tune)
     resolution = ret.resolution
     tune.resolution = resolution
@@ -341,6 +345,78 @@ def create_data_config_v2(tune: JsonObj, output_dir: str) -> (str, int):
         }
     ]
 
+    if write_metadata:
+        files_training = sorted(list_full_paths(ret.training_dir))
+        files_face = sorted(list_full_paths(ret.face_dir))
+
+        with open(f'{ret.training_dir}/aspect_ratio_bucket_metadata_square.json', "w") as f:
+            json.dump({
+                fn: {
+                    "original_size": [512, 512],
+                    "crop_coordinates": [0, 0],
+                    "target_size": [512, 512],
+                    "intermediary_size": [512, 512],
+                    "aspect_ratio": 1,
+                    "luminance": 100.0
+                }
+                for fn in files_training
+            }, f)
+        with open(f'{ret.training_dir}/aspect_ratio_bucket_indices_square.json', "w") as f:
+            json.dump({
+                "config": {
+                    "crop": True,
+                    "crop_aspect": "square",
+                    "crop_aspect_buckets": None,
+                    "crop_style": "center",
+                    "disable_validation": False,
+                    "resolution": 512,
+                    "resolution_type": "pixel",
+                    "caption_strategy": "instanceprompt",
+                    "instance_data_dir": ret.training_dir,
+                    "maximum_image_size": 512,
+                    "target_downsample_size": 512,
+                    "config_version": 2,
+                    "hash_filenames": True
+                },
+                "aspect_ratio_bucket_indices": {
+                    "1.0": files_training
+                }
+            }, f)
+
+        with open(f'{ret.face_dir}/aspect_ratio_bucket_metadata_square.json', "w") as f:
+            json.dump({
+                fn: {
+                    "original_size": [512, 512],
+                    "crop_coordinates": [0, 0],
+                    "target_size": [512, 512],
+                    "intermediary_size": [512, 512],
+                    "aspect_ratio": 1,
+                    "luminance": 100.0
+                }
+                for fn in files_face
+            }, f)
+        with open(f'{ret.face_dir}/aspect_ratio_bucket_indices_square.json', "w") as f:
+            json.dump({
+                "config": {
+                    "crop": True,
+                    "crop_aspect": "square",
+                    "crop_aspect_buckets": None,
+                    "crop_style": "center",
+                    "disable_validation": False,
+                    "resolution": 512,
+                    "resolution_type": "pixel",
+                    "caption_strategy": "instanceprompt",
+                    "instance_data_dir": ret.face_dir,
+                    "maximum_image_size": 512,
+                    "target_downsample_size": 512,
+                    "config_version": 2,
+                    "hash_filenames": True
+                },
+                "aspect_ratio_bucket_indices": {
+                    "1.0": files_face
+                }
+            }, f)
+
     if tune.segmentation:
 
         # https://github.com/bghira/SimpleTuner/blob/main/documentation/DREAMBOOTH.md#masked-loss
@@ -370,6 +446,27 @@ def create_data_config_v2(tune: JsonObj, output_dir: str) -> (str, int):
             "only_instance_prompt": caption_strategy == "instanceprompt",
             "cache_file_suffix": "square-mask",
         })
+
+        if write_metadata:
+            with open(f'{ret.mask_dir}/aspect_ratio_bucket_indices_square-mask.json', "w") as f:
+                json.dump({
+                    "config": {
+                        "crop": True,
+                        "crop_aspect": "square",
+                        "crop_aspect_buckets": None,
+                        "crop_style": "center",
+                        "disable_validation": False,
+                        "resolution": 512,
+                        "resolution_type": "pixel",
+                        "caption_strategy": "instanceprompt",
+                        "instance_data_dir": ret.mask_dir,
+                        "maximum_image_size": 512,
+                        "target_downsample_size": 512,
+                        "config_version": 2,
+                        "hash_filenames": True
+                    },
+                    "aspect_ratio_bucket_indices": {}
+                }, f)
 
     # When using textfile augment the dataset with another copy so that
     # 50% is only instanceprompt and 50% is instanceprompt + textfile

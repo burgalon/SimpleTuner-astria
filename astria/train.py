@@ -267,6 +267,7 @@ def train_no_catch(tune: JsonObj):
             '--validation_guidance_rescale=0.0',
             '--disable_benchmark',
             '--flux_schedule_shift=0',
+            '--skip_file_discovery=aspect,metadata',
             *(['--prepend_instance_prompt'] if caption_strategy == "textfile" else []),
             *(['--flux_attention_masked_training'] if tune.segmentation else []),
         ])
