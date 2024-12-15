@@ -105,20 +105,25 @@ class DownloadTrainingOutput():
 
 
 
-def download_training(tune: JsonObj, one_dir=False):
+def download_training(tune: JsonObj, one_dir=False, segmentation=False, folder_suffix=""):
+    if tune.segmentation:
+        segmentation = True
+
     global BASE_TRAIN_RESOLUTION
     resolution = int(tune.resolution) if tune.resolution else BASE_TRAIN_RESOLUTION
+    if os.environ.get('TRAIN_RESOLUTION', None) is not None:
+        resolution = int(os.environ.get('TRAIN_RESOLUTION'))
     has_captions = False
     all_captioned = False
     BASE_TRAIN_RESOLUTION = resolution
     if one_dir:
-        training_dir = f"{EPHEMERAL_MODELS_DIR}/{tune.id}-training"
-        mask_dir = f"{EPHEMERAL_MODELS_DIR}/{tune.id}-training"
-        face_dir = f"{EPHEMERAL_MODELS_DIR}/{tune.id}-training"
+        training_dir = f"{EPHEMERAL_MODELS_DIR}/{tune.id}-training{folder_suffix}"
+        mask_dir = f"{EPHEMERAL_MODELS_DIR}/{tune.id}-training{folder_suffix}"
+        face_dir = f"{EPHEMERAL_MODELS_DIR}/{tune.id}-training{folder_suffix}"
     else:
-        training_dir = f"{EPHEMERAL_MODELS_DIR}/{tune.id}-training"
-        mask_dir = f"{EPHEMERAL_MODELS_DIR}/{tune.id}-masks"
-        face_dir = f"{EPHEMERAL_MODELS_DIR}/{tune.id}-faces"
+        training_dir = f"{EPHEMERAL_MODELS_DIR}/{tune.id}-training{folder_suffix}"
+        mask_dir = f"{EPHEMERAL_MODELS_DIR}/{tune.id}-masks{folder_suffix}"
+        face_dir = f"{EPHEMERAL_MODELS_DIR}/{tune.id}-faces{folder_suffix}"
 
     if os.environ.get('SKIP_DOWNLOAD'):
         print("Skipping download as SKIP_DOWNLOAD is set")
@@ -231,7 +236,7 @@ def download_training(tune: JsonObj, one_dir=False):
         # should not be part of the training set and are a plain mistake
         if (not face_crop) or bbox or (tune.name not in HUMAN_CLASS_NAMES):
             # providing padded images without segmentation black border frames to show
-            if tune.segmentation:
+            if segmentation:
                 # Pad to resolution
                 save_img(
                     ImageOps.pad(image, (resolution, resolution)),
@@ -254,16 +259,21 @@ def download_training(tune: JsonObj, one_dir=False):
     all_captioned = len(images_hash) == 0
     return DownloadTrainingOutput(training_dir, face_dir, mask_dir, resolution, has_captions, all_captioned)
 
-def get_instance_prompt(tune, add_prefix=True):
+
+def get_instance_prompt(tune, add_prefix=True, token=None):
+    token = token or tune.token
     if os.environ.get('INSTANCE_PROMPT'):
-        return os.environ.get('INSTANCE_PROMPT')
+        prompt = os.environ.get('INSTANCE_PROMPT')
+        if '!TOKEN' in prompt:
+            prompt = prompt.replace('!TOKEN', token)
+        return prompt
     elif tune.trigger:
         instance_prompt = tune.trigger
-    elif tune.token and tune.name:
-        instance_prompt = f"{tune.token} {tune.name}"
-    elif tune.token and not tune.name:
-        instance_prompt = tune.token
-    elif not tune.token and tune.name:
+    elif token and tune.name:
+        instance_prompt = f"{token} {tune.name}"
+    elif token and not tune.name:
+        instance_prompt = token
+    elif not token and tune.name:
         instance_prompt = tune.name
     else:
         raise Exception("Missing token or name")
@@ -274,12 +284,26 @@ def get_instance_prompt(tune, add_prefix=True):
     return instance_prompt
 
 
-def create_data_config_v2(tune: JsonObj, output_dir: str, write_metadata=True) -> (str, int):
-    ret = download_training(tune)
+def create_data_config_v2(
+    tune: JsonObj,
+    output_dir: str,
+    write_metadata=True,
+    segmentation=False,
+    token=None,
+    suffix="",
+) -> (str, int):
+    if tune.segmentation:
+        segmentation = True
+    token = token or tune.token
+
+    ret = download_training(tune, segmentation=segmentation, folder_suffix=suffix)
     resolution = ret.resolution
     tune.resolution = resolution
 
-    instance_prompt = get_instance_prompt(tune)
+    instance_prompt = get_instance_prompt(
+        tune,
+        token=token,
+    )
 
     if tune.caption_strategy:
         caption_strategy = tune.caption_strategy
@@ -288,6 +312,8 @@ def create_data_config_v2(tune: JsonObj, output_dir: str, write_metadata=True) -
     else:
         caption_strategy = "instanceprompt"
         tune.caption_strategy = caption_strategy
+        print('Using token:', token)
+        print('Using instance prompt:', instance_prompt)
 
     data = [
         {
@@ -403,7 +429,7 @@ def create_data_config_v2(tune: JsonObj, output_dir: str, write_metadata=True) -
                     "crop_aspect_buckets": None,
                     "crop_style": "center",
                     "disable_validation": False,
-                    "resolution": 512,
+                    "resolution": resolution,
                     "resolution_type": "pixel",
                     "caption_strategy": "instanceprompt",
                     "instance_data_dir": ret.face_dir,
@@ -417,7 +443,7 @@ def create_data_config_v2(tune: JsonObj, output_dir: str, write_metadata=True) -
                 }
             }, f)
 
-    if tune.segmentation:
+    if segmentation:
 
         # https://github.com/bghira/SimpleTuner/blob/main/documentation/DREAMBOOTH.md#masked-loss
         # duplicate first two data entries and add conditioning_data
