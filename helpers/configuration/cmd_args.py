@@ -120,6 +120,8 @@ def get_argument_parser():
             "ai-toolkit",
             "tiny",
             "nano",
+            "84",
+            "portrait",
         ],
         default="all",
         help=(
