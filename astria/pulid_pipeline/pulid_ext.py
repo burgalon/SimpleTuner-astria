@@ -1,6 +1,6 @@
 import sys
 sys.path.append("astria/pulid_pipeline")
-from typing import Final
+from typing import Final, List, Union
 from eva_clip import create_model_and_transforms
 from eva_clip.constants import OPENAI_DATASET_MEAN, OPENAI_DATASET_STD
 from huggingface_hub import hf_hub_download, snapshot_download
@@ -10,7 +10,7 @@ from facexlib.parsing import init_parsing_model
 from facexlib.utils.face_restoration_helper import FaceRestoreHelper
 import numpy as np
 from PIL import Image
-from .pulid.encoders_transformer import IDFormer, PerceiverAttentionCA
+from pulid.encoders_transformer import IDFormer, PerceiverAttentionCA
 import os
 import glob
 from safetensors.torch import load_file
@@ -22,7 +22,6 @@ import cv2
 from pathlib import Path
 import sys
 import onnxruntime
-from astria_utils import CUDA_VISIBLE_DEVICES
 
 ###
 # Modified by huggingface/twodgirl.
@@ -316,8 +315,43 @@ class PuLID:
 
         return id_embedding, uncond_id_embedding
 
+    @torch.no_grad()
+    def get_id_embedding_for_images_list(
+            self,
+            images: List[Union[Image.Image, np.ndarray]],
+            cal_uncond: bool = False,
+            device: str = 'cuda',
+            dtype: torch.dtype = torch.bfloat16,
+    ):
+        all_embeddings = []
+        all_uncond_embeddings = []
+
+        for img in images:
+            # Call your existing get_id_embedding() method for each image
+            id_emb, uncond_emb = self.get_id_embedding(
+                img,
+                cal_uncond=cal_uncond,
+                device=device,
+                dtype=dtype
+            )
+            all_embeddings.append(id_emb)
+            if cal_uncond and uncond_emb is not None:
+                all_uncond_embeddings.append(uncond_emb)
+
+        # Stack embeddings to compute the mean
+        id_embeddings = torch.stack(all_embeddings, dim=0)
+        avg_id_embedding = id_embeddings.mean(dim=0, keepdim=True)
+
+        if cal_uncond and len(all_uncond_embeddings) > 0:
+            uncond_embeddings = torch.stack(all_uncond_embeddings, dim=0)
+            avg_uncond_embedding = uncond_embeddings.mean(dim=0, keepdim=True)
+            return avg_id_embedding, avg_uncond_embedding
+        else:
+            return avg_id_embedding, None
+
 if __name__ == '__main__':
-    pulid_model = PuLID(local_dir='/home/user/storage/hf_cache/pulid')
-    img = Image.open('test/margarethamilton.jpg')
+    pulid_model = PuLID(local_dir='/data/cache/pulid')
+    img = Image.open('astria_tests/fixtures/19477328-before-inpaint-0.jpg')
+    embed, _ = pulid_model.get_id_embedding_for_images_list([img, img])
     embed, _ = pulid_model.get_id_embedding(img)
     print(embed.shape)

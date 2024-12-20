@@ -17,7 +17,7 @@ from inpaint_face_mixin import ultralytics_predict, filter_by_ratio, filter_k_la
 
 
 def list_full_paths(directory: str) -> list[str]:
-    return [os.path.join(os.path.abspath(directory), f) for f in os.listdir(directory)]
+    return [os.path.join(os.path.abspath(directory), f) for f in os.listdir(directory) if f.endswith('.png') or f.endswith('.jpg')]
 
 
 def infer_background(image: Image.Image, birefnet: BiRefNet_node) -> np.ndarray:
@@ -105,25 +105,20 @@ class DownloadTrainingOutput():
 
 
 
-def download_training(tune: JsonObj, one_dir=False, segmentation=False, folder_suffix=""):
-    if tune.segmentation:
-        segmentation = True
-
+def download_training(tune: JsonObj, one_dir=False):
     global BASE_TRAIN_RESOLUTION
     resolution = int(tune.resolution) if tune.resolution else BASE_TRAIN_RESOLUTION
-    if os.environ.get('TRAIN_RESOLUTION', None) is not None:
-        resolution = int(os.environ.get('TRAIN_RESOLUTION'))
     has_captions = False
     all_captioned = False
     BASE_TRAIN_RESOLUTION = resolution
     if one_dir:
-        training_dir = f"{EPHEMERAL_MODELS_DIR}/{tune.id}-training{folder_suffix}"
-        mask_dir = f"{EPHEMERAL_MODELS_DIR}/{tune.id}-training{folder_suffix}"
-        face_dir = f"{EPHEMERAL_MODELS_DIR}/{tune.id}-training{folder_suffix}"
+        training_dir = f"{EPHEMERAL_MODELS_DIR}/{tune.id}-training"
+        mask_dir = f"{EPHEMERAL_MODELS_DIR}/{tune.id}-training"
+        face_dir = f"{EPHEMERAL_MODELS_DIR}/{tune.id}-training"
     else:
-        training_dir = f"{EPHEMERAL_MODELS_DIR}/{tune.id}-training{folder_suffix}"
-        mask_dir = f"{EPHEMERAL_MODELS_DIR}/{tune.id}-masks{folder_suffix}"
-        face_dir = f"{EPHEMERAL_MODELS_DIR}/{tune.id}-faces{folder_suffix}"
+        training_dir = f"{EPHEMERAL_MODELS_DIR}/{tune.id}-training"
+        mask_dir = f"{EPHEMERAL_MODELS_DIR}/{tune.id}-masks"
+        face_dir = f"{EPHEMERAL_MODELS_DIR}/{tune.id}-faces"
 
     if os.environ.get('SKIP_DOWNLOAD'):
         print("Skipping download as SKIP_DOWNLOAD is set")
@@ -236,12 +231,18 @@ def download_training(tune: JsonObj, one_dir=False, segmentation=False, folder_s
         # should not be part of the training set and are a plain mistake
         if (not face_crop) or bbox or (tune.name not in HUMAN_CLASS_NAMES):
             # providing padded images without segmentation black border frames to show
-            if segmentation:
+            if tune.segmentation:
                 # Pad to resolution
                 save_img(
                     ImageOps.pad(image, (resolution, resolution)),
                     f"{training_dir}/{fn}-padded.png"
                 )
+                if bbox and tune.only_face:
+                    # Train only on the face
+                    # from tests it seems to get worse results
+                    new_mask = Image.new('L', mask.size)
+                    new_mask.paste(mask.crop(bbox), (int(bbox[0]), int(bbox[1])))
+                    mask = new_mask
                 save_img(
                     ImageOps.pad(mask, (resolution, resolution)),
                     f"{mask_dir}/{os.path.splitext(fn)[0]}-padded.png"
@@ -259,21 +260,16 @@ def download_training(tune: JsonObj, one_dir=False, segmentation=False, folder_s
     all_captioned = len(images_hash) == 0
     return DownloadTrainingOutput(training_dir, face_dir, mask_dir, resolution, has_captions, all_captioned)
 
-
-def get_instance_prompt(tune, add_prefix=True, token=None):
-    token = token or tune.token
+def get_instance_prompt(tune, add_prefix=True):
     if os.environ.get('INSTANCE_PROMPT'):
-        prompt = os.environ.get('INSTANCE_PROMPT')
-        if '!TOKEN' in prompt:
-            prompt = prompt.replace('!TOKEN', token)
-        return prompt
+        return os.environ.get('INSTANCE_PROMPT')
     elif tune.trigger:
         instance_prompt = tune.trigger
-    elif token and tune.name:
-        instance_prompt = f"{token} {tune.name}"
-    elif token and not tune.name:
-        instance_prompt = token
-    elif not token and tune.name:
+    elif tune.token and tune.name:
+        instance_prompt = f"{tune.token} {tune.name}"
+    elif tune.token and not tune.name:
+        instance_prompt = tune.token
+    elif not tune.token and tune.name:
         instance_prompt = tune.name
     else:
         raise Exception("Missing token or name")
@@ -284,26 +280,12 @@ def get_instance_prompt(tune, add_prefix=True, token=None):
     return instance_prompt
 
 
-def create_data_config_v2(
-    tune: JsonObj,
-    output_dir: str,
-    write_metadata=True,
-    segmentation=False,
-    token=None,
-    suffix="",
-) -> (str, int):
-    if tune.segmentation:
-        segmentation = True
-    token = token or tune.token
-
-    ret = download_training(tune, segmentation=segmentation, folder_suffix=suffix)
+def create_data_config_v2(tune: JsonObj, output_dir: str, write_metadata=True) -> (str, int):
+    ret = download_training(tune)
     resolution = ret.resolution
     tune.resolution = resolution
 
-    instance_prompt = get_instance_prompt(
-        tune,
-        token=token,
-    )
+    instance_prompt = get_instance_prompt(tune)
 
     if tune.caption_strategy:
         caption_strategy = tune.caption_strategy
@@ -312,8 +294,6 @@ def create_data_config_v2(
     else:
         caption_strategy = "instanceprompt"
         tune.caption_strategy = caption_strategy
-        print('Using token:', token)
-        print('Using instance prompt:', instance_prompt)
 
     data = [
         {
@@ -429,7 +409,7 @@ def create_data_config_v2(
                     "crop_aspect_buckets": None,
                     "crop_style": "center",
                     "disable_validation": False,
-                    "resolution": resolution,
+                    "resolution": 512,
                     "resolution_type": "pixel",
                     "caption_strategy": "instanceprompt",
                     "instance_data_dir": ret.face_dir,
@@ -443,7 +423,7 @@ def create_data_config_v2(
                 }
             }, f)
 
-    if segmentation:
+    if tune.segmentation:
 
         # https://github.com/bghira/SimpleTuner/blob/main/documentation/DREAMBOOTH.md#masked-loss
         # duplicate first two data entries and add conditioning_data
@@ -518,6 +498,66 @@ def create_data_config_v2(
                 data_copy["cache_file_suffix"] = f"square-{res}"
                 data.append(data_copy)
 
+    # requires tune.lora_type=lycoris
+    if tune.regularization:
+        pseudo_data_dir = "/data/cache/pseudo-camera-10k/canny"
+        for d in data:
+            d["repeats"] = ((d["repeats"] if 'repeats' in d else 0) + 1) * 1000
+        regularization = {
+            "id": "pseudo-camera-10k-flux",
+            "type": "local",
+            "crop": True,
+            "crop_aspect": "square",
+            "crop_style": "center",
+            "resolution": 512,
+            "minimum_image_size": 512,
+            "maximum_image_size": 512,
+            "target_downsample_size": 512,
+            "resolution_type": "pixel_area",
+            "cache_dir_vae": pseudo_data_dir + "-cache",
+            "instance_data_dir": pseudo_data_dir,
+            "disabled": False,
+            "skip_file_discovery": "",
+            "caption_strategy": "filename",
+            "metadata_backend": "json",
+            "repeats": 0,
+            "is_regularisation_data": True
+        }
+        data.append(regularization)
+        # files_training = sorted(list_full_paths(pseudo_data_dir))
+        # with open(f'{pseudo_data_dir}/aspect_ratio_bucket_metadata_square.json', "w") as f:
+        #     json.dump({
+        #         fn: {
+        #             "original_size": [resolution, resolution],
+        #             "crop_coordinates": [0, 0],
+        #             "target_size": [resolution, resolution],
+        #             "intermediary_size": [resolution, resolution],
+        #             "aspect_ratio": 1,
+        #             "luminance": 100.0
+        #         }
+        #         for fn in files_training
+        #     }, f)
+        # with open(f'{pseudo_data_dir}/aspect_ratio_bucket_indices_square.json', "w") as f:
+        #     json.dump({
+        #         "config": {
+        #             "crop": True,
+        #             "crop_aspect": "square",
+        #             "crop_aspect_buckets": None,
+        #             "crop_style": "center",
+        #             "disable_validation": False,
+        #             "resolution": resolution,
+        #             "resolution_type": "pixel",
+        #             "caption_strategy": "filename",
+        #             "instance_data_dir": pseudo_data_dir,
+        #             "maximum_image_size": resolution,
+        #             "target_downsample_size": resolution,
+        #             "config_version": 2,
+        #             "hash_filenames": True
+        #         },
+        #         "aspect_ratio_bucket_indices": {
+        #             "1.0": files_training
+        #         }
+        #     }, f)
 
     print(json.dumps(data, indent=4))
 
@@ -542,12 +582,14 @@ def create_data_config_v2(
 
 if __name__ == "__main__":
     import sys
+    from train import parse_args
     if os.environ.get('MOCK_SERVER'):
         from astria_mock_server import request_tune_job_from_server
     else:
         from astria_server import request_tune_job_from_server
     for id in sys.argv[1:]:
         tune = request_tune_job_from_server(id)
+        parse_args(tune)
         output_dir = f"{EPHEMERAL_MODELS_DIR}/{tune.id}-{tune.branch}"
         shutil.rmtree(output_dir, ignore_errors=True)
         os.makedirs(output_dir, exist_ok=True)

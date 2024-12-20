@@ -33,7 +33,7 @@ else:
 from birefnet.BiRefNet_node import BiRefNet_node
 from controlnet_constants import CONTROLNETS_DICT, CONTROL_MODES
 from hinter_helper import get_detector
-from image_utils import load_image
+from image_utils import load_image, load_images
 from pipeline_flux_differential_img2img import FluxDifferentialImg2ImgPipeline
 from pulid_pipeline.pulid_ext import PuLID
 from runpod_utils import kill_pod
@@ -61,6 +61,10 @@ def parse_args(prompt: JsonObj):
     parser.add_argument("--face_inpaint_denoising", type=float, default=None)
     parser.add_argument("--hires_denoising_strength", type=float, default=None)
     parser.add_argument("--fill", action='store_true', default=False)
+    parser.add_argument("--outpaint", choices=['top-left', 'top-right', 'bottom-left', 'bottom-right', 'center', 'top-center', 'bottom-center', 'left-center', 'right-center'], default=None)
+    parser.add_argument("--outpaint_height", type=int, default=None)
+    parser.add_argument("--outpaint_width", type=int, default=None)
+    parser.add_argument("--outpaint_prompt", type=str, default=None)
     parser.add_argument("--restore_mask", action='store_true', default=False)
     parser.add_argument("--face_swap_indexes", type=int, nargs="+")
     # parser.add_argument("--denoising_strength", type=float, default=prompt.denoising_strength)
@@ -128,13 +132,13 @@ class InferPipeline(InpaintFaceMixin, VtonMixin):
         self.pipe = None
         self.img2img = None
         self.inpaint = None
-        self.sr_model = None
         self.current_lora_weights = {'names': [], 'scales': []}
         self.resolution = None
 
         self.reset_controlnet()
 
     def reset_controlnet(self):
+        self.sr_model = None
         self.control = None
         self.control_type = None
         self.controlnet_txt2img = None
@@ -257,7 +261,7 @@ class InferPipeline(InpaintFaceMixin, VtonMixin):
             try:
                 # Calculate the embedding and save it
                 start_time = time.time()
-                pulid_embed, _ = self.pulid_model.get_id_embedding(load_image(tune.face_swap_images[0]))
+                pulid_embed, _ = self.pulid_model.get_id_embedding_for_images_list(load_images(tune.face_swap_images))
                 print(f"T#{tune.id} Calculated PulID embedding in {time.time() - start_time:.2f}s")
                 torch.save(pulid_embed, embedding_file)
                 os.utime(embedding_file)
@@ -446,6 +450,87 @@ class InferPipeline(InpaintFaceMixin, VtonMixin):
 
         return input_image_tensor, controlnet_hint, w, h, orig_input_image, input_image, mask_image
 
+    def outpaint(self, images, prompt, kwargs):
+        out = []
+        pipe = self.init_inpaint(JsonObj(fill=True))
+        print(f"T#{prompt.tune_id} P#{prompt.id} outpaint {prompt.outpaint} {prompt.outpaint_height}x{prompt.outpaint_width} text={prompt.outpaint_prompt}")
+        h = prompt.outpaint_height
+        w = prompt.outpaint_width
+        if not h or not w:
+            return images
+        if w*h > 2048*2048:
+            k = (2048*2048 / (w*h)) ** 0.5
+            new_h = int(np.round(h * k))
+            new_w = int(np.round(w * k))
+            print(f"T#{prompt.tune_id} P#{prompt.id} outpaint {w}x{h} is too large, resizing to {new_w}x{new_h}")
+            w, h = new_w, new_h
+
+        if prompt.outpaint_prompt is None:
+            prompt.outpaint_prompt = prompt.text
+        (
+            prompt_embeds,
+            pooled_prompt_embeds,
+            _,
+        ) = pipe.encode_prompt(
+            prompt.outpaint_prompt,
+            prompt.outpaint_prompt,
+            max_sequence_length=prompt.max_sequence_length or 512,
+            device=device,
+        )
+
+        for i_image, input_image in enumerate(images):
+            new_image = Image.new("RGB", (w, h), (255, 255, 255))
+            mask_image = Image.new("L", (w, h), 255)
+            black_rectangle = Image.new("L", (input_image.width, input_image.height), 0)
+            if prompt.outpaint == 'top-left':
+                new_image.paste(input_image, (0, 0))
+                mask_image.paste(black_rectangle, (0, 0))
+            elif prompt.outpaint == 'top-right':
+                new_image.paste(input_image, (w - input_image.width, 0))
+                mask_image.paste(black_rectangle, (w - input_image.width, 0))
+            elif prompt.outpaint == 'top-center':
+                new_image.paste(input_image, ((w - input_image.width) // 2, 0))
+                mask_image.paste(black_rectangle, ((w - input_image.width) // 2, 0))
+            elif prompt.outpaint == 'bottom-left':
+                new_image.paste(input_image, (0, h - input_image.height))
+                mask_image.paste(black_rectangle, (0, h - input_image.height))
+            elif prompt.outpaint == 'bottom-right':
+                new_image.paste(input_image, (w - input_image.width, h - input_image.height))
+                mask_image.paste(black_rectangle, (w - input_image.width, h - input_image.height))
+            elif prompt.outpaint == 'bottom-center':
+                new_image.paste(input_image, ((w - input_image.width) // 2, h - input_image.height))
+                mask_image.paste(black_rectangle, ((w - input_image.width) // 2, h - input_image.height))
+            elif prompt.outpaint == 'left-center':
+                new_image.paste(input_image, (0, (h - input_image.height) // 2))
+                mask_image.paste(black_rectangle, (0, (h - input_image.height) // 2))
+            elif prompt.outpaint == 'right-center':
+                new_image.paste(input_image, (w - input_image.width, (h - input_image.height) // 2))
+                mask_image.paste(black_rectangle, (w - input_image.width, (h - input_image.height) // 2))
+            elif prompt.outpaint == 'center':
+                new_image.paste(input_image, ((w - input_image.width) // 2, (h - input_image.height) // 2))
+                mask_image.paste(black_rectangle, ((w - input_image.width) // 2, (h - input_image.height) // 2))
+            else:
+                print(f"T#{prompt.tune_id} P#{prompt.id} Invalid outpaint {prompt.outpaint}")
+                out.append(input_image)
+                continue
+            if os.environ.get('DEBUG'):
+                new_image.save(f"{MODELS_DIR}/{prompt.id}-{i_image}-outpaint.jpg")
+                mask_image.save(f"{MODELS_DIR}/{prompt.id}-{i_image}-mask-outpaint.jpg")
+
+            image = pipe(
+                guidance_scale=30,
+                height=h,
+                width=w,
+                num_inference_steps=prompt.steps or 28,
+                generator=torch.Generator(device="cuda").manual_seed((prompt.seed or 42) + i_image),
+                image=new_image,
+                mask_image=mask_image,
+                prompt_embeds=prompt_embeds,
+                pooled_prompt_embeds=pooled_prompt_embeds,
+            ).images[0]
+            out.append(image)
+        return out
+
     def apply_hires_fix(self, images, prompt, kwargs):
         self.init_img2img()
         for i_image in range(len(images)):
@@ -561,7 +646,9 @@ class InferPipeline(InpaintFaceMixin, VtonMixin):
             prompt.mask_image = self.infer_mask(prompt)
 
         input_image_tensor, controlnet_hint, w, h, orig_input_image, input_image, mask_image = None, None, None, None, None, None, None
-        if '<faceid' in prompt.text:
+        # Note that the below condition is IMPORTANT and need to be modified cautiously
+        # See test_vton_img2img_strength0
+        if any([tune.model_type == 'faceid' and tune.name in HUMAN_CLASS_NAMES for tune in prompt.tunes]):
             if input_image:
                 raise Exception("Cannot have both faceid and input_image")
             for match_groups in re.findall(self.reference_pattern_re, prompt.text):
@@ -669,7 +756,7 @@ class InferPipeline(InpaintFaceMixin, VtonMixin):
         print(f"T#{prompt.tune_id} P#{prompt.id} pipe={pipe.__class__.__name__} Infer image {prompt.text=} loras={self.current_lora_weights}")
         for i_image in range(num_images):
             if 'image' in kwargs is not None and 'strength' in kwargs and kwargs['strength'] == 0:
-                print(f"T#{prompt.tune_id} P#{prompt.id} Skipping image {i_image} because strength=0. Probably just VTON?")
+                print(f"T#{prompt.tune_id} P#{prompt.id} Skipping image {i_image} because strength=0. Probably just VTON or outpaint only?")
                 images.append(kwargs['image'])
                 continue
             image = pipe(
@@ -684,6 +771,9 @@ class InferPipeline(InpaintFaceMixin, VtonMixin):
             if is_terminated():
                 raise TerminateException("terminated")
             images.append(image)
+
+        if prompt.outpaint:
+            images = self.outpaint(images, prompt, kwargs)
 
         images = self.vton(images, prompt)
         if prompt.super_resolution or os.environ.get('SUPER_RESOLUTION'):
@@ -743,7 +833,7 @@ def main():
             processed_jobs = pipeline.poll_infer()
 
             # Give a few chances for inference before starting training
-            if ((processed_jobs == 0 and i > 10) or random.random() < 0.1) and not os.environ.get('DISABLE_TRAINING'):
+            if not os.environ.get('DISABLE_TRAINING'):
                 tune = request_tune_job_from_server()
                 if tune.id:
                     if GPU_MEMORY_GB < 50 or (tune.args and 'preprocessing' in tune.args):

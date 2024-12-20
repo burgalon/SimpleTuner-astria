@@ -5,6 +5,7 @@ import shutil
 import sys
 import time
 import traceback
+from pathlib import Path
 
 import torch
 
@@ -29,36 +30,30 @@ def poll_train() -> int:
     train(tune)
     return 1
 
-def create_prompt_library(tune: JsonObj, output_dir: str, name: str|None=None, token: str|None=None):
-    name = name or tune.name
-    token = token or tune.token
+def create_prompt_library(tune: JsonObj, output_dir: str):
     if tune.name == 'man':
         data = {
-            "token_name": f"{token} has a smooth, bald head with a tanned complexion. His face is oval-shaped, with prominent cheekbones and a strong, angular jawline. He has dark, deep-set eyes beneath slightly arched eyebrows, a straight nose, and thin lips that are closed in a neutral expression. His skin has a few subtle wrinkles, particularly around the eyes and forehead, suggesting maturity. His ears are well-proportioned and sit close to his head.",
-            "token_portrait": f"A portrait of {token}.",
-            "token_name_zebra": f"{token} riding a zebra. He is a bald, middle-aged man with tanned skin, prominent cheekbones, and an angular jawline riding a zebra in a scenic open savanna. The man is wearing casual outdoor clothing, sitting confidently on the zebra, holding the reins. The zebra has its characteristic black-and-white stripes and looks calm and steady. The background includes grasslands, distant trees, and a clear blue sky. The scene is bright, vibrant, and natural.",
-            "token_name_portrait": f"A portrait of {token}",
-            "no_token_name": f"A man that has a smooth, bald head with a tanned complexion. His face is oval-shaped, with prominent cheekbones and a strong, angular jawline. He has dark, deep-set eyes beneath slightly arched eyebrows, a straight nose, and thin lips that are closed in a neutral expression. His skin has a few subtle wrinkles, particularly around the eyes and forehead, suggesting maturity. His ears are well-proportioned and sit close to his head.",
-            "man_riding_zebra": f"A man riding a zebra. He is a bald, middle-aged man with tanned skin, prominent cheekbones, and an angular jawline riding a zebra in a scenic open savanna. The man is wearing casual outdoor clothing, sitting confidently on the zebra, holding the reins. The zebra has its characteristic black-and-white stripes and looks calm and steady. The background includes grasslands, distant trees, and a clear blue sky. The scene is bright, vibrant, and natural.",
-            "man_portrait": f"A portrait of a man.",
-            # "token_name": f"A detailed, high-quality photo of 25-year old black-haired Indian {token} {name} wearing glasses with short hair, wearing a beige-color blazer. The ohwx man has a muscular figure, is making eye-contact with the camera and striking a natural pose. The photo is taken from the chest up, in a bright and modern office building, using a shallow depth of field and bright, natural lighting to focus attention on the subject",
+            "token_name": f"A detailed, high-quality photo of 25-year old black-haired Indian {tune.token} {tune.name} wearing glasses with short hair, wearing a beige-color blazer. The ohwx man has a muscular figure, is making eye-contact with the camera and striking a natural pose. The photo is taken from the chest up, in a bright and modern office building, using a shallow depth of field and bright, natural lighting to focus attention on the subject",
             # "flowers": f"{tune.name} holding flowers, red sweater, studio photography, plain white background",
             # "ohwx_rembrandt": f"a portrait of {tune.token} {tune.name} in the style of Rembrandt",
             # "rembrandt": f"a portrait of {tune.name} in the style of Rembrandt",
         }
     elif tune.name == 'girl':
         data = {
-            "token_name": f"A photo of {token} {name}",
-            "mushroom": f"boring bad quality snapchat photo circa 2015 of {token} {name} tinkerbell , green big dress,   translucent wings, golden dust around the air, sitting on top of massive 10feet mushroom  in forest, with a focus face slightly blurred, with digital noise, slightly pale yellow colour tone, looks like 2010 photo quality",
+            "token_name": f"A photo of {tune.token} {tune.name}",
+            "mushroom": f"boring bad quality snapchat photo circa 2015 of {tune.token} {tune.name} tinkerbell , green big dress,   translucent wings, golden dust around the air, sitting on top of massive 10feet mushroom  in forest, with a focus face slightly blurred, with digital noise, slightly pale yellow colour tone, looks like 2010 photo quality",
         }
     elif tune.name == 'woman':
         data = {
-            "token_name": f"A photo of {token} {name}",
-            "suit": f"A {token} {name} with an intelligent, visionary gaze wearing a crisp, sky-blue blazer and coordinating slacks, presented in a high-resolution, venture capital-themed portrait.",
+            "token_name": f"{tune.token} {tune.name}",
+            "photo_token_name": f"A photo of {tune.token} {tune.name}",
+            "flowers": f"{tune.token} {tune.name} holding flowers, white dress, black background",
+            "suit": f"A {tune.token} {tune.name} with an intelligent, visionary gaze wearing a crisp, sky-blue blazer and coordinating slacks, presented in a high-resolution, venture capital-themed portrait.",
+            "pearl": f"A {tune.token} {tune.name} with an approachable, friendly demeanor dressed in a soft, pearl-colored blouse and tailored black trousers, featured in a well-lit, business-oriented portrait.",
         }
     else:
         data = {
-            "token_name": f"A photo of {token} {name}",
+            "token_name": f"A photo of {tune.token} {tune.name}",
         }
 
     fn = f"{output_dir}/prompt_library.json"
@@ -133,6 +128,14 @@ def parse_args(tune: JsonObj):
             key, value = arg.split("=", 1)
             setattr(tune, key, value)
 
+def download_dev2pro():
+    model_path = f"{MODELS_DIR}/dev2pro"
+    if not os.path.exists('dev2pro'):
+        from huggingface_hub import snapshot_download
+        snapshot_download('ashen0209/Flux-Dev2Pro', local_dir=model_path)
+        Path(f"{model_path}/do_not_delete").touch()
+    return model_path
+
 
 def train_no_catch(tune: JsonObj):
     cleanup_models()
@@ -143,17 +146,9 @@ def train_no_catch(tune: JsonObj):
 
     cleanup_directory(EPHEMERAL_MODELS_DIR)
     cleanup_models()
-
-    suffix = ""
-    if os.environ.get('FOLDER_SUFFIX', None) is not None:
-        suffix = os.environ.get('FOLDER_SUFFIX')
-
-    token = tune.token
-    if os.environ.get('TRAIN_TOKEN', None) is not None:
-        token = os.environ.get('TRAIN_TOKEN')
-
-    output_dir = f"{MODELS_DIR}/{tune.id}-{tune.branch}{suffix}"
-    shutil.rmtree(output_dir, ignore_errors=True)
+    output_dir = f"{MODELS_DIR}/{tune.id}-{tune.branch}"
+    if os.environ.get('RETRAIN') or tune.user_id == 2:
+        shutil.rmtree(output_dir, ignore_errors=True)
     os.makedirs(output_dir, exist_ok=True)
 
     # Working setup https://wandb.ai/astria/lora-training/runs/b94a195701ed0a7d7b53e6c9771c4388?nw=nwuserburgalonastria
@@ -175,16 +170,7 @@ def train_no_catch(tune: JsonObj):
     elif not tune.validation_steps:
         tune.validation_steps = 50000
 
-    if os.environ.get('VALIDATION_STEPS', None) is not None:
-        tune.validation_steps = int(os.environ.get('VALIDATION_STEPS'))
-
-    learning_rate = tune.learning_rate or 1e-4
-    if os.environ.get('LEARNING_RATE', None) is not None:
-        learning_rate = float(os.environ.get('LEARNING_RATE'))
-
     steps = min(5000, int(tune.steps) if tune.steps else 2000)
-    if os.environ.get('TRAIN_STEPS', None) is not None:
-        steps = int(os.environ.get('TRAIN_STEPS'))
 
     print(f"output_dir={output_dir} steps={steps}")
 
@@ -197,61 +183,21 @@ def train_no_catch(tune: JsonObj):
             train_batch = len(tune.orig_images)
     else:
         train_batch = max(1, (min(min(4, len(tune.orig_images)), 4))) // num_gpus
-    if os.environ.get("TRAIN_BATCH", None) is not None:
-        train_batch = os.environ.get("TRAIN_BATCH")
 
-    preprocessing_type = None
-    if tune.preprocessing == '2' or os.environ.get('PREPROCESSING', None) == '2':
-        preprocessing_type = '2'
-        segmentation = tune.segmentation
-        if os.environ.get('SEGMENTATION', None) is not None:
-            segmentation = True
+    if tune.preprocessing=='2':
         print("Using preprocessing v2")
-        data_backend_config, resolution = create_data_config_v2(
-            tune,
-            output_dir,
-            segmentation=segmentation,
-            suffix=suffix,
-            token=token,
-        )
+        data_backend_config, resolution = create_data_config_v2(tune, output_dir)
     else:
         print("Using preprocessing v1")
         data_backend_config, resolution = create_data_config_v1(tune, output_dir)
     caption_strategy = tune.caption_strategy or "instanceprompt"
-
-    if os.environ.get('DOWNLOAD_ONLY', None) is not None:
-        print('Completed downloading the dataset, ready to train.')
-        sys.exit(0)
 
     torch.cuda.empty_cache()
     os.environ['SIMPLETUNER_CONFIG_BACKEND'] = 'cmd'
     os.environ['SIMPLETUNER_LOG_LEVEL'] = 'DEBUG'
     os.environ['CUDA_VISIBLE_DEVICES'] = CUDA_VISIBLE_DEVICES
     os.environ['DEBUG_LOG_FILENAME'] = f"{output_dir}/debug.log"
-
-    tracker_run_name = f'{tune.id}-{tune.branch}-{timestamp} {tune.title}'
-    if os.environ.get("TRACKER_NAME", None) is not None:
-        tracker_run_name = f'{tune.id}-{tune.branch}-{os.environ.get("TRACKER_NAME", None)}'
-        print('Using tracker name', tracker_run_name)
-    tracker_project_name = "flux-lora"
-    if os.environ.get("TRACKER_PROJECT", None) is not None:
-        tracker_project_name = os.environ.get("TRACKER_PROJECT")
-        print('Using tracker project name', tracker_project_name)
-    if preprocessing_type == '2':
-        dynamo_backend = os.environ.get("DYNAMO_BACKEND", "no")
-
-        caption_dropout_probability = os.environ.get("CAPTION_DROPOUT_PROBABILITY", '0.1')
-        if tune.caption_dropout_probability is not None:
-            caption_dropout_probability = str(tune.caption_dropout_probability)
-        print('Using caption dropout probability of', caption_dropout_probability)
-
-        lora_rank = tune.lora_rank or 64
-        if os.environ.get("LORA_RANK", None) is not None:
-            lora_rank = int(os.environ.get("LORA_RANK"))
-        lora_alpha = tune.lora_alpha or lora_rank
-        if os.environ.get("LORA_ALPHA", None) is not None:
-            lora_alpha = int(os.environ.get("LORA_ALPHA"))
-
+    if tune.preprocessing=='2':
         tail_lines = run_with_output([
             'accelerate',
             'launch',
@@ -260,20 +206,22 @@ def train_no_catch(tune: JsonObj):
             # *([f'--multi_gpu'] if num_gpus > 1 else []),
             # f'--num_processes={num_gpus}',
             '--num_machines=1',
-            f'--dynamo_backend={dynamo_backend}',
+            '--dynamo_backend=no',
             'train.py',
             # '--base_model_default_dtype=fp32',
             '--model_type=lora',
             *(['--flux_guidance_mode', tune.flux_guidance_mode] if tune.flux_guidance_mode else []),
             '--pretrained_model_name_or_path', model_path,
-            # '--pretrained_transformer_model_name_or_path', download_dev2pro(),
-            # '--pretrained_transformer_subfolder', 'none',
-            # '--enable_xformers_memory_efficient_attention', # ?
+            *([
+                '--pretrained_transformer_model_name_or_path', download_dev2pro(),
+                '--pretrained_transformer_subfolder', 'none',
+            ] if tune.dev2pro else []),
+            '--enable_xformers_memory_efficient_attention', # ?
             '--gradient_checkpointing', # avoid OOM
-            '--set_grads_to_none', # Saves a little memory
+            '--set_grads_to_none', # ?
             '--gradient_accumulation_steps', str(tune.gradient_accumulation_steps or 1),
             '--resume_from_checkpoint=latest',
-            # '--snr_gamma', str(tune.snr_gamma or 5), # Not for flux
+            '--snr_gamma', str(tune.snr_gamma or 5),
             '--data_backend_config', data_backend_config,
             '--aspect_bucket_rounding=2',
             '--num_train_epochs=0',
@@ -283,9 +231,10 @@ def train_no_catch(tune: JsonObj):
             *([f'--max_grad_norm={tune.max_grad_norm}'] if tune.max_grad_norm else []),
             f'--optimizer={tune.optimizer or "adamw_bf16"}',
             f'--lora_type', tune.lora_type or 'standard',
+            '--init_lokr_norm',
             # "--lycoris_config=config/lycoris_config.json",
-            f'--learning_rate={learning_rate}',
-            '--lr_scheduler=constant_with_warmup',
+            f'--learning_rate={tune.learning_rate or 1e-4}',
+            '--lr_scheduler', tune.lr_scheduler or 'constant_with_warmup',
             '--seed=42',
             '--lr_warmup_steps=10',
             '--output_dir', output_dir,
@@ -302,17 +251,17 @@ def train_no_catch(tune: JsonObj):
             '--keep_vae_loaded',
             # ["mmdit", "context", "all"]
             *([f'--flux_lora_target={tune.flux_lora_target}'] if tune.flux_lora_target else []),
-            f'--lora_rank={lora_rank}',
-            f'--lora_alpha={lora_alpha}',
-            '--user_prompt_library', create_prompt_library(tune, output_dir, token=token),
+            f'--lora_rank={tune.lora_rank or 64}',
+            f'--lora_alpha={tune.lora_alpha or 64}',
+            '--user_prompt_library', create_prompt_library(tune, output_dir),
             '--model_family=flux',
             f'--train_batch={train_batch}',
             # '--max_workers=1',
             # '--read_batch_size=1',
             # '--write_batch_size=1',
             # '--override_dataset_config',
-            '--caption_dropout_probability', caption_dropout_probability,
-            # '--use_ema',
+            '--caption_dropout_probability', str(tune.caption_dropout_probability if tune.caption_dropout_probability is not None else 0.1),
+            *(['--use_ema'] if tune.use_ema else []),
             # '--ema_decay=0.99',
             # '--torch_num_threads=8',
             # '--image_processing_batch_size=32',
@@ -328,14 +277,15 @@ def train_no_catch(tune: JsonObj):
             '--checkpointing_steps', str(tune.checkpointing_steps or 100),
             '--checkpoints_total_limit=10',
             '--validation_steps', str(tune.validation_steps) if tune.validation_steps else '5000',
-            f'--tracker_run_name={tracker_run_name}',
-            f'--tracker_project_name={tracker_project_name}',
+            f'--tracker_run_name={tune.id}-{tune.branch}-{os.environ.get("TRACKER_NAME", timestamp)} {tune.title} {tune.args}',
+            *(['--evaluation_type=face'] if tune.report_to else []),
+            '--tracker_project_name=flux-lora',
             '--validation_guidance=3.5',
             '--validation_guidance_rescale=0.0',
             '--disable_benchmark',
-            f'--flux_schedule_shift={os.environ.get("FLUX_SCHEDULE_SHIFT", "0")}',
+            *(['--flux_schedule_auto_shift'] if tune.flux_schedule_auto_shift else []),
+            '--flux_schedule_shift', str(tune.flux_schedule_shift if tune.flux_schedule_shift is not None else 0),
             '--skip_file_discovery=aspect,metadata',
-            '--evaluation_type=face',
             *(['--prepend_instance_prompt'] if caption_strategy == "textfile" else []),
             *(['--flux_attention_masked_training'] if tune.segmentation else []),
         ])
@@ -369,7 +319,7 @@ def train_no_catch(tune: JsonObj):
             *(['--use_prodigy_optimizer'] if tune.optimizer=='prodigy' else []),
             # ["mmdit", "context", "all"]
             *([f'--flux_lora_target={tune.flux_lora_target}'] if tune.flux_lora_target else []),
-            f'--learning_rate={learning_rate}',
+            f'--learning_rate={tune.learning_rate or 1e-4}',
             '--lr_scheduler=constant_with_warmup',
             '--seed=42',
             '--lr_warmup_steps=10',
@@ -430,6 +380,11 @@ def train_no_catch(tune: JsonObj):
         f"s3://sdbooth2-production/models/{tune.id}.safetensors",
     ])
     server_tune_done(tune)
+
+    # Cleanup ephemeral dir to avoid POD getting killed on exceeding disk space
+    if not os.environ.get('DEBUG') and not os.environ.get('RETRAIN'):
+        for f in glob.glob(f"{EPHEMERAL_MODELS_DIR}/{tune.id}-*"):
+            shutil.rmtree(f, ignore_errors=True)
 
 def train(tune: JsonObj):
     try:
