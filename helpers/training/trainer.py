@@ -2554,15 +2554,17 @@ class Trainer:
                     if conditioning_type == "mask":
                         # Adapted from:
                         # https://github.com/kohya-ss/sd-scripts/blob/main/library/custom_train_functions.py#L482
-                        mask_image = (
-                            batch["conditioning_pixel_values"]
-                            .to(dtype=loss.dtype, device=loss.device)[:, 0]
-                            .unsqueeze(1)
-                        )  # Shape: (batch_size, 1, H', W')
-                        mask_image = torch.nn.functional.interpolate(
-                            mask_image, size=loss.shape[2:], mode="area"
-                        )  # Resize to match loss spatial dimensions
-                        mask_image = mask_image / 2 + 0.5  # Normalize to [0,1]
+                        mask_image = None
+                        with torch.no_grad():
+                            mask_image = (
+                                batch["conditioning_pixel_values"]
+                                .to(dtype=loss.dtype, device=loss.device)[:, 0]
+                                .unsqueeze(1)
+                            )  # Shape: (batch_size, 1, H', W')
+                            mask_image = torch.nn.functional.interpolate(
+                                mask_image, size=loss.shape[2:], mode="area"
+                            )  # Resize to match loss spatial dimensions
+                            mask_image = mask_image / 2 + 0.5  # Normalize to [0,1]
                         loss = loss * mask_image  # Element-wise multiplication
 
                     # Reduce the loss by averaging over channels and spatial dimensions
