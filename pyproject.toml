@@ -11,7 +11,7 @@ package-mode = false
 python = ">=3.10,<3.12"
 torch = {version = "^2.5.1+cu124", source = "pytorch"}
 torchvision = {version = "^0.20.1+cu124", source = "pytorch"}
-diffusers = {git = "https://github.com/huggingface/diffusers.git", rev = "c4b5d2ff6b529ac0f895cedb04fef5b25e89c412"}
+diffusers = {git = "https://github.com/huggingface/diffusers.git", rev = "b64ca6c11cbc1644c22f1dae441c8124d588bb14"}
 transformers = "4.46.1"
 datasets = "^3.0.1"
 bitsandbytes = "^0.44.1"
