@@ -231,7 +231,7 @@ def train_no_catch(tune: JsonObj):
             *([f'--max_grad_norm={tune.max_grad_norm}'] if tune.max_grad_norm else []),
             f'--optimizer={tune.optimizer or "adamw_bf16"}',
             f'--lora_type', tune.lora_type or 'standard',
-            '--init_lokr_norm',
+            '--init_lokr_norm', str(tune.init_lokr_norm or 1e-3),
             # "--lycoris_config=config/lycoris_config.json",
             f'--learning_rate={tune.learning_rate or 1e-4}',
             '--lr_scheduler', tune.lr_scheduler or 'constant_with_warmup',
@@ -287,7 +287,6 @@ def train_no_catch(tune: JsonObj):
             '--flux_schedule_shift', str(tune.flux_schedule_shift if tune.flux_schedule_shift is not None else 0),
             '--skip_file_discovery=aspect,metadata',
             *(['--prepend_instance_prompt'] if caption_strategy == "textfile" else []),
-            *(['--flux_attention_masked_training'] if tune.segmentation else []),
         ])
     else:
         tail_lines = run_with_output([
