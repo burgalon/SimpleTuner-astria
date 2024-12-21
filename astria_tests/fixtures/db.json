@@ -220,7 +220,7 @@
     "is_api": false,
     "base_tune_id": 1504944,
     "token": "ohwx",
-    "args": "preset=flux-lora-fast learning_rate=5e-4 lora_rank=16 lora_alpha=16 train_batch=4 preprocessing=2",
+    "args": "preset=flux-lora-fast learning_rate=5e-4 lora_rank=16 lora_alpha=16 train_batch=4 preprocessing=2 only_face=true",
     "cost": null,
     "expires_at": "2025-01-05T09:36:00.000Z",
     "emailed_notice": false,

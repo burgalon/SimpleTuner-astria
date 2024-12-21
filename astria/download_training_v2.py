@@ -43,7 +43,10 @@ def get_mask(image: Image.Image, birefnet: BiRefNet_node, mask_dir: str, image_n
 
 BASE_TRAIN_RESOLUTION = 512
 
-def get_face_bbox(image: Image.Image, yolo) -> Image.Image:
+# define Bbox
+Bbox = tuple[float, float, float, float]
+
+def get_face_bbox(image: Image.Image, yolo) -> (Bbox, Bbox):
     pred = ultralytics_predict(
         yolo,
         image=image,
@@ -55,11 +58,13 @@ def get_face_bbox(image: Image.Image, yolo) -> Image.Image:
     pred = filter_k_largest(pred, k=0)
     # increase bbox y2 by 40-50% to include full face with hair, chin, neck, ears
     # must be symmetrical because we're center cropping
+    pred.orig_bboxes = pred.bboxes
     pred.bboxes = [[x1-(x2-x1)*0.4, y1-(y2-y1)*.5, x2+(x2-x1)*0.4, y2+(y2-y1)*.5] for x1, y1, x2, y2 in pred.bboxes]
     if len(pred.bboxes) == 0:
-        return None
+        return (None, None)
 
     bbox = pred.bboxes[0]
+    orig_bbox = pred.orig_bboxes[0]
     # Extend bbox to min BASE_TRAIN_RESOLUTION
     if bbox[2] - bbox[0] < BASE_TRAIN_RESOLUTION:
         diff = BASE_TRAIN_RESOLUTION - (bbox[2] - bbox[0])
@@ -68,7 +73,7 @@ def get_face_bbox(image: Image.Image, yolo) -> Image.Image:
         diff = BASE_TRAIN_RESOLUTION - (bbox[3] - bbox[1])
         bbox = (bbox[0], bbox[1] - diff//2, bbox[2], bbox[3] + diff//2)
 
-    return bbox if bbox else None
+    return (bbox, orig_bbox) if bbox else (None, None)
 
 
 def crop_mask_to_square(image: Image.Image, mask: Image.Image) -> [Image.Image, Image.Image]:
@@ -194,14 +199,22 @@ def download_training(tune: JsonObj, one_dir=False):
 
         # 1. Center crop to resolution or Face crop
         if face_crop:
-            bbox = get_face_bbox(image, yolo)
+            bbox, orig_bbox = get_face_bbox(image, yolo)
             if bbox:
                 save_img(
                     ImageOps.fit(image.crop(bbox), (resolution, resolution)),
                     f"{face_dir}/{fn}-center-crop.png"
                 )
+                if tune.only_face:
+                    # Train only on the face
+                    # We want to keep the size of the original face image so that the model doesn't
+                    # generate full closeups all the time
+                    center_crop_mask = Image.new('L', mask.size)
+                    center_crop_mask.paste(mask.crop(orig_bbox), (int(orig_bbox[0]), int(orig_bbox[1])))
+                else:
+                    center_crop_mask = mask
                 save_img(
-                    ImageOps.fit(mask.crop(bbox) if face_crop else mask, (resolution, resolution)),
+                    ImageOps.fit(center_crop_mask.crop(bbox) if face_crop else mask, (resolution, resolution)),
                     f"{mask_dir}/{os.path.splitext(fn)[0]}-center-crop.png"
                 )
             elif tune.name not in HUMAN_CLASS_NAMES:
@@ -239,9 +252,8 @@ def download_training(tune: JsonObj, one_dir=False):
                 )
                 if bbox and tune.only_face:
                     # Train only on the face
-                    # from tests it seems to get worse results
                     new_mask = Image.new('L', mask.size)
-                    new_mask.paste(mask.crop(bbox), (int(bbox[0]), int(bbox[1])))
+                    new_mask.paste(mask.crop(orig_bbox), (int(orig_bbox[0]), int(orig_bbox[1])))
                     mask = new_mask
                 save_img(
                     ImageOps.pad(mask, (resolution, resolution)),
