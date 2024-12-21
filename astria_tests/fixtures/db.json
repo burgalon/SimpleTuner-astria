@@ -220,7 +220,7 @@
     "is_api": false,
     "base_tune_id": 1504944,
     "token": "ohwx",
-    "args": "preset=flux-lora-portrait learning_rate=5e-4 lora_rank=16 lora_alpha=16 train_batch=4 preprocessing=2 lr_scheduler=polynomial flux_lora_target=portrait segmentation=1",
+    "args": "preset=flux-lora-fast learning_rate=5e-4 lora_rank=16 lora_alpha=16 train_batch=4 preprocessing=2",
     "cost": null,
     "expires_at": "2025-01-05T09:36:00.000Z",
     "emailed_notice": false,
@@ -1553,10 +1553,10 @@
             "face_swap_images": []
           }
         ]
-      },
+      }
       {
         "id": 19530314,
-        "text": "\u003clora:1815518:1.0\u003e A debonair, sophisticated ohwx man stands in a chic, modern studio, his elegant attire and impeccable grooming reflecting the high-end, editorial nature of the photoshoot. His pose is relaxed yet poised, with a hint of a charming smile playing on his lips. The lighting is carefully designed to sculpt his features, creating a sense of depth and dimension.",
+        "text": "\u003clora:1815518:1.0\u003e A debonair, sophisticated bald ohwx man stands in a chic, modern studio, his elegant attire and impeccable grooming reflecting the high-end, editorial nature of the photoshoot. His pose is relaxed yet poised, with a hint of a charming smile playing on his lips. The lighting is carefully designed to sculpt his features, creating a sense of depth and dimension.",
         "trained_at": "2024-11-16T16:00:29.898Z",
         "started_training_at": "2024-11-16T15:59:47.650Z",
         "created_at": "2024-11-16T15:28:28.469Z",
@@ -1630,7 +1630,7 @@
       },
       {
         "id": 19530312,
-        "text": "\u003clora:1815518:1.0\u003e A rugged, adventurous-looking ohwx man stands in an industrial, loft-style studio, his strong features highlighted by dramatic, moody lighting. He wears a well-worn leather jacket, the material weathered and distressed, complementing his confident, commanding pose. The ohwx man's gaze is direct and unwavering, conveying a sense of power and magnetism.",
+        "text": "\u003clora:1815518:1.0\u003e A rugged, adventurous-looking bald ohwx man stands in an industrial, loft-style studio, his strong features highlighted by dramatic, moody lighting. He wears a well-worn leather jacket, the material weathered and distressed, complementing his confident, commanding pose. The ohwx man's gaze is direct and unwavering, conveying a sense of power and magnetism.",
         "trained_at": "2024-11-16T15:59:50.665Z",
         "started_training_at": "2024-11-16T15:59:34.521Z",
         "created_at": "2024-11-16T15:28:28.446Z",
@@ -1704,7 +1704,7 @@
       },
       {
         "id": 19530311,
-        "text": "\u003clora:1815518:1.0\u003e A young, handsome ohwx man posing confidently in a stylish, minimalist studio setting for a high-fashion photoshoot. The ohwx man wears a sleek, tailored suit in a deep, rich color, the fabric shimmering under the soft, diffused lighting. His expression is thoughtful and intriguing, drawing the viewer in with a hint of mystery.",
+        "text": "\u003clora:1815518:1.0\u003e A young, handsome bald ohwx man posing confidently in a stylish, minimalist studio setting for a high-fashion photoshoot. The bald ohwx man wears a sleek, tailored suit in a deep, rich color, the fabric shimmering under the soft, diffused lighting. His expression is thoughtful and intriguing, drawing the viewer in with a hint of mystery.",
         "trained_at": "2024-11-16T15:59:34.306Z",
         "started_training_at": "2024-11-16T15:59:18.167Z",
         "created_at": "2024-11-16T15:28:28.432Z",

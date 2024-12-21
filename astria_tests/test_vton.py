@@ -1,6 +1,6 @@
 import copy
 from astria_utils import JsonObj
-from test_infer import pipe, TUNE_FLUX, FLUX_LORA, BASE_PROMPT, run_images, IMG_POSE, MODELS_DIR, name
+from test_infer import pipe, BASE_PROMPT, run_images, MODELS_DIR, name, FLUX_FACEID
 from image_utils import load_image
 
 FLUX_VTON_LORA = JsonObj(**{
@@ -85,6 +85,14 @@ def test_vton_1_full_shirt():
     prompt.hires_fix = True
     run_images(prompt)
 
+def test_vton_img2img_strength0():
+    prompt = JsonObj(
+        **copy.copy(BASE_PROMPT.__dict__), input_image=FLUX_FACEID.face_swap_images[6]
+    )
+    prompt.denoising_strength = 0.1
+    prompt.text = "Woman wearing white shirt with printed flowers, fashion editorial plain white background"
+    prompt.tunes = [FLUX_VTON_SHIRT]
+    run_images(prompt)
 
 def test_vton_2():
     prompt = JsonObj(

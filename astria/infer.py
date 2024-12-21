@@ -152,6 +152,8 @@ class InferPipeline(InpaintFaceMixin, VtonMixin):
     def unload_lora_weights(self):
         if self.pipe:
             self.pipe.unload_lora_weights()
+        if self.fill:
+            self.fill.unload_lora_weights()
         self.current_lora_weights = {'names': [], 'scales': []}
 
     def load_references(self, prompt: JsonObj):
@@ -199,11 +201,17 @@ class InferPipeline(InpaintFaceMixin, VtonMixin):
             start_time = time.time()
             for name, lora_fn in zip(names, lora_fns):
                 self.pipe.load_lora_weights(lora_fn, adapter_name=name, low_cpu_mem_usage=True)
+                if self.fill:
+                    self.fill.load_lora_weights(lora_fn, adapter_name=name, low_cpu_mem_usage=True)
+                    print(f"[FILL] Loading LoRA weights {name}")
             print(f"Loaded LoRA weights {names} in {time.time() - start_time:.2f}s")
             self.current_lora_weights = {'names': names, 'scales': scales}
 
         # Set adapters
         self.pipe.set_adapters(names, adapter_weights=scales)
+        if self.fill:
+            print(f"[FILL] set_adapters names={names} scales={scales}")
+            self.fill.set_adapters(names, adapter_weights=scales)
 
         # TODO: This is needed because of patching in lora_loading_patch.py
         self.pipe = self.pipe.to("cuda")

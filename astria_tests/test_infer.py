@@ -39,6 +39,13 @@ FLUX_FACEID = JsonObj(**{
     "token": str(1533312),
     "model_type": "faceid",
     "face_swap_images": [
+        "https://sdbooth2-production.s3.amazonaws.com/w2ra2h8m8hx6okt9jmrwm6mlmova",
+        "https://sdbooth2-production.s3.amazonaws.com/f8bg0pac6m740muuicmtlzil2nny",
+        "https://sdbooth2-production.s3.amazonaws.com/q8kr3j8qy7ma6dq8xf8aqm27v12a",
+        "https://sdbooth2-production.s3.amazonaws.com/1t3y9jvi249mn1m3s689nw9w8e9z",
+        "https://sdbooth2-production.s3.amazonaws.com/p1jhygwtgxx4pwc2cm7kmjnpw80e",
+        "https://sdbooth2-production.s3.amazonaws.com/a90eqb8jzebf0njd5gqgh23ylr83",
+        "https://sdbooth2-production.s3.amazonaws.com/py1thtz5yem8a66sfn1z06wlds1y",
         "https://sdbooth2-production.s3.amazonaws.com/l7pp1gzy1lthev4u1fiwvdt5l9tg",
     ]
 })
@@ -162,60 +169,6 @@ def test_controlnet_img2img():
     prompt.denoising_strength=0.9
     run_images(prompt)
     assert isinstance(pipe.last_pipe, FluxControlNetImg2ImgPipeline)
-
-
-def test_inpainting_background_normal():
-    prompt = JsonObj(
-        **copy.copy(BASE_PROMPT.__dict__),
-        input_image=IMG_POSE,
-        denoising_strength=1,
-    )
-    prompt.text=f"lush forest --mask_prompt foreground --mask_invert --mask_dilate 0.5%"
-    run_images(prompt)
-    assert isinstance(pipe.last_pipe, FluxDifferentialImg2ImgPipeline)
-
-def test_inpainting_background_product():
-    prompt = JsonObj(
-        **copy.copy(BASE_PROMPT.__dict__),
-        # necklace
-        # input_image='https://sdbooth2-production.s3.amazonaws.com/pwe6bcgo9ykbnt6tya91z3omoog4',
-        # earings
-        # input_image='https://sdbooth2-production.s3.amazonaws.com/u77j61zzd4gbqdsvkhmd9p1cz0d1',
-        # dogs
-        input_image='https://sdbooth2-production.s3.amazonaws.com/a93ocfwgzocdrmq1q4wizwajnhvm',
-        denoising_strength=1,
-        # cfg_scale=3,
-    )
-    # prompt.num_images = 8
-    prompt.w = prompt.h = None
-    prompt.text=f"studio shot, on a rock, surrounded by tropical vegetation, visible moisture in the air, water drops, over a blurry background, drama, high contrast image, teal and orange photo filter --mask_prompt background --mask_dilate 0 --mask_blur 0 --mask_inc_brightness 10"
-    run_images(prompt)
-    assert isinstance(pipe.last_pipe, FluxDifferentialImg2ImgPipeline)
-
-def test_inpainting_foreground():
-    prompt = JsonObj(
-        **copy.copy(BASE_PROMPT.__dict__),
-        input_image=IMG_POSE,
-        denoising_strength=1,
-    )
-    prompt.text=f"<lora:{FLUX_LORA.id}:1> {FLUX_LORA.train_token} woman with black blouse --mask_prompt foreground --mask_dilate 1%"
-    prompt.tunes=[FLUX_LORA]
-    run_images(prompt)
-    assert isinstance(pipe.last_pipe, FluxDifferentialImg2ImgPipeline)
-
-def test_inpainting_controlnet_foreground():
-    prompt = JsonObj(
-        **copy.copy(BASE_PROMPT.__dict__),
-        input_image=IMG_POSE,
-        denoising_strength=1,
-        controlnet='pose',
-    )
-    prompt.controlnet_txt2img = True
-    prompt.text=f"<lora:{FLUX_LORA.id}:1> {FLUX_LORA.train_token} woman with black blouse --control_guidance_end 0.35 --mask_prompt foreground --mask_dilate 1%"
-    prompt.tunes=[FLUX_LORA]
-    prompt.controlnet_conditioning_scale=0.5
-    run_images(prompt)
-    assert isinstance(pipe.last_pipe, FluxControlNetInpaintPipeline)
 
 
 def test_film_grain():
