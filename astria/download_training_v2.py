@@ -291,8 +291,43 @@ def get_instance_prompt(tune, add_prefix=True):
 
     return instance_prompt
 
+def write_metadata(training_dir , resolution, cache_file_suffix):
+    files_training = sorted(list_full_paths(training_dir))
+    with open(f'{training_dir}/aspect_ratio_bucket_metadata_{cache_file_suffix}.json', "w") as f:
+        json.dump({
+            fn: {
+                "original_size": [resolution, resolution],
+                "crop_coordinates": [0, 0],
+                "target_size": [resolution, resolution],
+                "intermediary_size": [resolution, resolution],
+                "aspect_ratio": 1,
+                "luminance": 100.0
+            }
+            for fn in files_training
+        }, f)
+    with open(f'{training_dir}/aspect_ratio_bucket_indices_{cache_file_suffix}.json', "w") as f:
+        json.dump({
+            "config": {
+                "crop": True,
+                "crop_aspect": "square",
+                "crop_aspect_buckets": None,
+                "crop_style": "center",
+                "disable_validation": False,
+                "resolution": resolution,
+                "resolution_type": "pixel",
+                "caption_strategy": "instanceprompt",
+                "instance_data_dir": training_dir,
+                "maximum_image_size": resolution,
+                "target_downsample_size": resolution,
+                "config_version": 2,
+                "hash_filenames": True
+            },
+            "aspect_ratio_bucket_indices": {
+                "1.0": files_training
+            }
+        }, f)
 
-def create_data_config_v2(tune: JsonObj, output_dir: str, write_metadata=True) -> (str, int):
+def create_data_config_v2(tune: JsonObj, output_dir: str, should_write_metadata=True) -> (str, int):
     ret = download_training(tune)
     resolution = ret.resolution
     tune.resolution = resolution
@@ -363,77 +398,9 @@ def create_data_config_v2(tune: JsonObj, output_dir: str, write_metadata=True) -
         }
     ]
 
-    if write_metadata:
-        files_training = sorted(list_full_paths(ret.training_dir))
-        files_face = sorted(list_full_paths(ret.face_dir))
-
-        with open(f'{ret.training_dir}/aspect_ratio_bucket_metadata_square.json', "w") as f:
-            json.dump({
-                fn: {
-                    "original_size": [resolution, resolution],
-                    "crop_coordinates": [0, 0],
-                    "target_size": [resolution, resolution],
-                    "intermediary_size": [resolution, resolution],
-                    "aspect_ratio": 1,
-                    "luminance": 100.0
-                }
-                for fn in files_training
-            }, f)
-        with open(f'{ret.training_dir}/aspect_ratio_bucket_indices_square.json', "w") as f:
-            json.dump({
-                "config": {
-                    "crop": True,
-                    "crop_aspect": "square",
-                    "crop_aspect_buckets": None,
-                    "crop_style": "center",
-                    "disable_validation": False,
-                    "resolution": resolution,
-                    "resolution_type": "pixel",
-                    "caption_strategy": "instanceprompt",
-                    "instance_data_dir": ret.training_dir,
-                    "maximum_image_size": resolution,
-                    "target_downsample_size": resolution,
-                    "config_version": 2,
-                    "hash_filenames": True
-                },
-                "aspect_ratio_bucket_indices": {
-                    "1.0": files_training
-                }
-            }, f)
-
-        with open(f'{ret.face_dir}/aspect_ratio_bucket_metadata_square.json', "w") as f:
-            json.dump({
-                fn: {
-                    "original_size": [resolution, resolution],
-                    "crop_coordinates": [0, 0],
-                    "target_size": [resolution, resolution],
-                    "intermediary_size": [resolution, resolution],
-                    "aspect_ratio": 1,
-                    "luminance": 100.0
-                }
-                for fn in files_face
-            }, f)
-        with open(f'{ret.face_dir}/aspect_ratio_bucket_indices_square.json', "w") as f:
-            json.dump({
-                "config": {
-                    "crop": True,
-                    "crop_aspect": "square",
-                    "crop_aspect_buckets": None,
-                    "crop_style": "center",
-                    "disable_validation": False,
-                    "resolution": 512,
-                    "resolution_type": "pixel",
-                    "caption_strategy": "instanceprompt",
-                    "instance_data_dir": ret.face_dir,
-                    "maximum_image_size": resolution,
-                    "target_downsample_size": resolution,
-                    "config_version": 2,
-                    "hash_filenames": True
-                },
-                "aspect_ratio_bucket_indices": {
-                    "1.0": files_face
-                }
-            }, f)
+    if should_write_metadata:
+        write_metadata(ret.training_dir, resolution, 'square')
+        write_metadata(ret.face_dir, resolution, 'square')
 
     if tune.segmentation:
 
@@ -498,17 +465,22 @@ def create_data_config_v2(tune: JsonObj, output_dir: str, write_metadata=True) -
         data.append(data_textfile)
 
     if tune.multiresolution or os.environ.get('MULTIRESOLUTION'):
-        for res in [512, 768]:
+        # ordered is reversed so that repeats is higher for lower resolutions
+        all_resolutions = [768, 512]
+        resolutions = [r for r in all_resolutions if r < resolution]
+        for res_i, res in enumerate(resolutions):
             for i in range(2):
                 data_copy = data[i].copy()
                 data_copy["id"] = data_copy["id"] + f"-{res}"
                 data_copy["cache_dir_vae"] = data_copy["cache_dir_vae"] + f"-{res}"
                 data_copy["resolution"] = res
+                data_copy["repeats"] = 5^(res_i+1)
                 # data_copy["minimum_image_size"] = 64
                 # data_copy["maximum_image_size"] = res
                 data_copy["target_downsample_size"] = res
                 data_copy["cache_file_suffix"] = f"square-{res}"
                 data.append(data_copy)
+                write_metadata(ret.training_dir, res, f'square-{res}')
 
     # requires tune.lora_type=lycoris
     if tune.regularization:
