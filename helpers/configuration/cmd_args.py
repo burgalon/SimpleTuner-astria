@@ -1638,6 +1638,15 @@ def get_argument_parser():
         ),
     )
     parser.add_argument(
+        "--peft_model_precision",
+        type=str,
+        choices=["bf16", "fp32"],
+        default="fp32",
+        help=(
+            "The model precision of the LoRA or LyCORIS you are training."
+        ),
+    )
+    parser.add_argument(
         "--gradient_precision",
         type=str,
         choices=["unmodified", "fp32"],

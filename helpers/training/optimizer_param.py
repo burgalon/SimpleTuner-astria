@@ -56,6 +56,15 @@ except:
         )
 
 optimizer_choices = {
+    "adamw": {
+        "precision": "fp32",
+        "default_settings": {
+            "betas": (0.9, 0.999),
+            "weight_decay": 1e-2,
+            "eps": 1e-6,
+        },
+        "class": torch.optim.AdamW,
+    },
     "adamw_bf16": {
         "precision": "bf16",
         "default_settings": {

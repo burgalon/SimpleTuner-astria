@@ -900,7 +900,9 @@ class Trainer:
                     target_modules=target_modules,
                     use_dora=self.config.use_dora,
                 )
+                logger.info("Adding LoRA adapter to the transformer model..")
                 self.transformer.add_adapter(transformer_lora_config)
+
                 if self.config.init_lora:
                     addkeys, misskeys = load_lora_weights(
                         {"transformer": self.transformer},
@@ -1029,6 +1031,16 @@ class Trainer:
         if self.config.model_type == "lora":
             if self.config.lora_type == "lycoris":
                 return self.lycoris_wrapped_network.parameters()
+            elif self.unet is not None:
+                return [
+                    param for _, param in self.unet.named_parameters()
+                    if param.requires_grad
+                ]
+            elif self.transformer is not None:
+                return [
+                    param for _, param in self.transformer.named_parameters()
+                    if param.requires_grad
+                ]
         if self.config.controlnet:
             return [
                 param for param in self.controlnet.parameters() if param.requires_grad
@@ -1171,6 +1183,16 @@ class Trainer:
                 ),
                 self.optimizer,
             )
+
+        # Iterate through the state dictionary
+        if self.config.model_type == "lora" and self.config.peft_model_precision == 'fp32':
+                logger.info(f"Moving LoRA adapter optimizer parameters to dtype {self.config.peft_model_precision}")
+                for _, state in self.optimizer.state_dict()['state'].items():
+                    for key, value in state.items():
+                        # Check if the value is a tensor.
+                        if isinstance(value, torch.Tensor):
+                            # Convert the tensor to torch.float32.
+                            state[key] = value.to(dtype=torch.float32)
 
     def init_lr_scheduler(self):
         self.config.is_schedulefree = is_lr_scheduler_disabled(self.config.optimizer)
@@ -1700,6 +1722,16 @@ class Trainer:
                     "Unknown results will occur when finetuning the text encoder alongside ControlNet."
                 )
 
+        trainable_parameters = self._get_trainable_parameters()
+
+        if self.config.model_type == "lora":
+            peft_dtype = torch.bfloat16
+            if self.config.peft_model_precision == 'fp32':
+                peft_dtype = torch.float32
+            logger.info(f"Moving LoRA adapter parameters to dtype {self.config.peft_model_precision}")
+            for param in trainable_parameters:
+                param.data = param.data.to(dtype=peft_dtype)
+
     def mark_optimizer_train(self):
         if is_lr_scheduler_disabled(self.config.optimizer) and hasattr(
             self.optimizer, "train"
@@ -2192,6 +2224,13 @@ class Trainer:
                 fetch_thread = self.bf.start_fetching()
                 iterator_fn = self.bf.next_response
 
+            pr = None
+            if os.environ.get('PROFILE_TRAINING_LOOP', None) is not None:
+                import cProfile, pstats, io
+                from pstats import SortKey
+                pr = cProfile.Profile()
+                pr.enable()
+
             while True:
                 self._exit_on_signal()
                 step += 1
@@ -2585,6 +2624,7 @@ class Trainer:
                     self.train_loss += (
                         avg_loss.item() / self.config.gradient_accumulation_steps
                     )
+
                     # Backpropagate
                     grad_norm = None
                     if not self.config.disable_accelerator:
@@ -2869,6 +2909,21 @@ class Trainer:
                 self.state["global_step"] >= self.config.max_train_steps
                 or epoch > self.config.num_train_epochs
             ):
+                if os.environ.get('PROFILE_TRAINING_LOOP', None) is not None and pr is not None:
+                    name = os.environ.get('PROFILE_TRAINING_LOOP', '')
+                    pr.disable()
+                    s = io.StringIO()
+                    sortby = SortKey.CUMULATIVE
+                    ps = pstats.Stats(pr, stream=s).sort_stats(sortby)
+                    ps.print_stats()
+                    with open(f'v1_profile_{name}.txt', 'w') as f:
+                        f.write(s.getvalue())
+                    sortby = SortKey.TIME
+                    ps = pstats.Stats(pr, stream=s).sort_stats(sortby)
+                    ps.print_stats()
+                    with open(f'v1_profile_{name}.txt', 'w') as f:
+                        f.write(s.getvalue())
+
                 logger.info(
                     f"Exiting training loop. Beginning model unwind at epoch {epoch}, step {self.state['global_step']}"
                 )

@@ -218,6 +218,7 @@ def train_no_catch(tune: JsonObj):
             ] if tune.dev2pro else []),
             '--enable_xformers_memory_efficient_attention', # ?
             '--gradient_checkpointing', # avoid OOM
+            '--peft_model_precision=fp32', # or bf16; when using adamw_bf16 this should be bf16
             '--set_grads_to_none', # ?
             '--gradient_accumulation_steps', str(tune.gradient_accumulation_steps or 1),
             '--resume_from_checkpoint=latest',
@@ -229,7 +230,7 @@ def train_no_catch(tune: JsonObj):
             # '--metadata_update_interval=65', # ?
             # https://wandb.ai/astria/lora-training/runs/b94a195701ed0a7d7b53e6c9771c4388?nw=nwuserburgalonastria
             *([f'--max_grad_norm={tune.max_grad_norm}'] if tune.max_grad_norm else []),
-            f'--optimizer={tune.optimizer or "adamw_bf16"}',
+            f'--optimizer={tune.optimizer or "adamw"}', # previously, adamw_bf16
             f'--lora_type', tune.lora_type or 'standard',
             '--init_lokr_norm', str(tune.init_lokr_norm or 1e-3),
             # "--lycoris_config=config/lycoris_config.json",
@@ -298,8 +299,11 @@ def train_no_catch(tune: JsonObj):
             f'--num_processes={num_gpus}',
             '--num_machines=1',
             '--dynamo_backend=no',
-            'simpletuner_v0/train.py',
-            '--base_model_default_dtype=fp32',
+            # 'simpletuner_v0/train.py',
+            'train.py',
+            f'--optimizer={tune.optimizer or "adamw"}',
+            '--model_family=flux',
+            '--base_model_default_dtype=bf16',
             '--model_type=lora',
             '--pretrained_model_name_or_path', model_path,
             '--enable_xformers_memory_efficient_attention',
@@ -315,7 +319,7 @@ def train_no_catch(tune: JsonObj):
             # https://wandb.ai/astria/lora-training/runs/b94a195701ed0a7d7b53e6c9771c4388?nw=nwuserburgalonastria
             *([f'--max_grad_norm={tune.max_grad_norm}'] if tune.max_grad_norm else []),
             # default to adamw
-            *(['--use_prodigy_optimizer'] if tune.optimizer=='prodigy' else []),
+            # *(['--use_prodigy_optimizer'] if tune.optimizer=='prodigy' else []),
             # ["mmdit", "context", "all"]
             *([f'--flux_lora_target={tune.flux_lora_target}'] if tune.flux_lora_target else []),
             f'--learning_rate={tune.learning_rate or 1e-4}',
@@ -337,7 +341,7 @@ def train_no_catch(tune: JsonObj):
             f'--lora_rank={tune.lora_rank or 64}',
             f'--lora_alpha={tune.lora_alpha or 64}',
             '--user_prompt_library', create_prompt_library(tune, output_dir),
-            '--flux',
+            # '--flux',
             f'--train_batch={train_batch}',
             '--max_workers=1',
             '--read_batch_size=1',

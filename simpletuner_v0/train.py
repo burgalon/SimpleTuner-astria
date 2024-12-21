@@ -2727,6 +2727,13 @@ def main():
             fetch_thread = bf.start_fetching()
             iterator_fn = bf.next_response
 
+        pr = None
+        if os.environ.get('PROFILE_TRAINING_LOOP', None) is not None:
+            import cProfile, pstats, io
+            from pstats import SortKey
+            pr = cProfile.Profile()
+            pr.enable()
+
         while True:
             step += 1
             batch = iterator_fn(step, *iterator_args)
@@ -3346,7 +3353,23 @@ def main():
                     f"\n -> global_step = {global_step}, max_train_steps = {args.max_train_steps}, epoch = {epoch}, num_train_epochs = {args.num_train_epochs}",
                 )
                 break
+
         if global_step >= args.max_train_steps or epoch > args.num_train_epochs:
+            if os.environ.get('PROFILE_TRAINING_LOOP', None) is not None and pr is not None:
+                name = os.environ.get('PROFILE_TRAINING_LOOP', '')
+                pr.disable()
+                s = io.StringIO()
+                sortby = SortKey.CUMULATIVE
+                ps = pstats.Stats(pr, stream=s).sort_stats(sortby)
+                ps.print_stats()
+                with open(f'v0_profile_{name}.txt', 'w') as f:
+                    f.write(s.getvalue())
+                sortby = SortKey.TIME
+                ps = pstats.Stats(pr, stream=s).sort_stats(sortby)
+                ps.print_stats()
+                with open(f'v0_profile_{name}.txt', 'w') as f:
+                    f.write(s.getvalue())
+
             logger.info(
                 f"Exiting training loop. Beginning model unwind at epoch {epoch}, step {global_step}"
             )
