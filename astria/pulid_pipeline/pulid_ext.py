@@ -169,6 +169,8 @@ class PuLID:
         )
         face_helper.face_parse = None
         face_helper.face_parse = init_parsing_model(model_name=FACE_PARSING_MODEL, device=device)
+        face_helper.face_parse = face_helper.face_parse.to(dtype=torch.float32, device=device)
+        face_helper.face_det = face_helper.face_det.to(dtype=torch.float32, device=device)
 
         return face_helper
 
@@ -283,8 +285,10 @@ class PuLID:
         # Convert BGR to RGB.
         input_tensor = torch.from_numpy(align_face[:, :, ::-1].transpose(2, 0, 1).copy()).float().unsqueeze(0) / 255.0
         input_tensor = input_tensor.to(device)
-        normalized = normalize(input_tensor, [0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
-        parsing_out = self.face_helper.face_parse(normalized)[0]
+        normalized = normalize(input_tensor, [0.485, 0.456, 0.406], [0.229, 0.224, 0.225]).to(device=device)
+        self.face_helper.face_parse = self.face_helper.face_parse.to(device)
+        with torch.autocast(str(device), dtype=torch.float32):
+            parsing_out = self.face_helper.face_parse(normalized)[0]
         parsing_out = parsing_out.argmax(dim=1, keepdim=True)
         bg = sum(parsing_out == i for i in BG_LABELS).bool()
         white_image = torch.ones_like(input_tensor)

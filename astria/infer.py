@@ -222,6 +222,7 @@ class InferPipeline(InpaintFaceMixin, VtonMixin):
         return {"scale": scales[0]}
 
     def init_pipe(self, model_path):
+        from optimum.quanto import freeze, quantize, qint8
         """Initialize both FluxPipeline and FluxImg2ImgPipeline."""
         if not self.pipe or self.model_path != model_path:
             # Initialize the FluxPipeline for text-to-image
@@ -230,6 +231,8 @@ class InferPipeline(InpaintFaceMixin, VtonMixin):
                 torch_dtype=torch.bfloat16,
                 local_files_only=True,
             ).to(device)
+            quantize(self.pipe.transformer, qint8)
+            freeze(self.pipe.transformer)
             self.model_path = model_path
             # TODO: Remove once this is merged to diffusers
             self.resolution = (1024, 1024)
