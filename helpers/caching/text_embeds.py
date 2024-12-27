@@ -259,7 +259,7 @@ class TextEmbeddingCache(WebhookMixin):
                 pass
             except Exception:
                 logger.exception("An error occurred while writing embeddings to disk.")
-        logger.debug("Exiting background batch write thread.")
+        logger.debug(f"Exiting background batch write thread. {self.write_batch_size=}")
 
     def process_write_batch(self, batch):
         """Write a batch of embeddings to the cache."""
@@ -618,11 +618,12 @@ class TextEmbeddingCache(WebhookMixin):
         existing_cache_filenames_set = set(existing_cache_filenames)
 
         # Determine which prompts are not cached
-        uncached_prompts = [
-            prompt
-            for prompt, filename in zip(all_prompts, all_cache_filenames)
-            if filename not in existing_cache_filenames_set
-        ]
+        seen_filenames = set()
+        uncached_prompts = []
+        for prompt, filename in zip(all_prompts, all_cache_filenames):
+            if filename not in existing_cache_filenames_set and filename not in seen_filenames:
+                uncached_prompts.append(prompt)
+                seen_filenames.add(filename)
 
         # If all prompts are cached and certain conditions are met, return None
         if not uncached_prompts and not return_concat:
@@ -1013,6 +1014,7 @@ class TextEmbeddingCache(WebhookMixin):
                         attention_masks_all.append(attention_mask)
 
             while self.write_queue.qsize() > 0:
+                logger.debug("Waiting for write queue to empty.")
                 time.sleep(0.1)  # Sleep briefly to avoid busy-waiting
 
             logger.debug(
@@ -1205,6 +1207,13 @@ class TextEmbeddingCache(WebhookMixin):
                     masks_all.append(masks)
 
             while self.write_queue.qsize() > 0:
+                logger.debug("Waiting for write queue to empty. {self.batch_write_thread.is_alive()}")
+                if not self.batch_write_thread.is_alive():
+                    logger.debug("Restarting background write thread.")
+                    # Start the thread again.
+                    self.process_write_batches = True
+                    self.batch_write_thread = Thread(target=self.batch_write_embeddings)
+                    self.batch_write_thread.start()
                 time.sleep(0.1)  # Sleep briefly to avoid busy-waiting
 
             if self.webhook_handler is not None:
@@ -1424,3 +1433,4 @@ class TextEmbeddingCache(WebhookMixin):
         """Ensure that the batch write thread is properly closed."""
         if self.batch_write_thread.is_alive():
             self.batch_write_thread.join()
+            logger.debug("Batch write thread has been joined.")
