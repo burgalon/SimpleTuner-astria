@@ -153,6 +153,13 @@ def test_bad_faceid():
     run_images(prompt)
     assert isinstance(pipe.last_pipe, FluxPipeline)
 
+def test_superresolution():
+    prompt = JsonObj(
+        **copy.copy(BASE_PROMPT.__dict__),
+        super_resolution=True,
+    )
+    run_images(prompt)
+    assert isinstance(pipe.last_pipe, FluxPipeline)
 
 def test_superresolution():
     prompt = JsonObj(
@@ -188,6 +195,25 @@ def test_controlnet_txt2img():
     prompt.controlnet_conditioning_scale=0.5
     run_images(prompt)
     assert isinstance(pipe.last_pipe, FluxControlNetPipeline)
+
+def test_regional():
+    prompt = JsonObj(
+        **copy.copy(BASE_PROMPT.__dict__),
+        use_regional=True,
+    )
+    assert prompt.use_regional is True
+    prompt.text = "a dog inbetween two vases full of flowers. the flowers on the left are white lillies, the flowers on the right are roses. the dog is a pembroke welsh corgi. above the corgi, there are balloons flying that say \"happy birthday\""
+    run_images(prompt)
+    assert isinstance(pipe.last_pipe, RAG_FluxPipeline)
+def test_regional_lora():
+    prompt = JsonObj(
+        **copy.copy(BASE_PROMPT.__dict__),
+        use_regional=True,
+    )
+    prompt.tunes=[FLUX_LORA]
+    prompt.text = f"<lora:{FLUX_LORA.id}:1> {FLUX_LORA.train_token} woman inbetween two vases full of flowers. the flowers on the left are white lillies, the flowers on the right are roses. above the {FLUX_LORA.train_token} woman, there are balloons flying that say \"happy birthday\""
+    run_images(prompt)
+    assert isinstance(pipe.last_pipe, RAG_FluxPipeline)
 
 # def test_controlnet_ipadapter():
 #     prompt = JsonObj(
