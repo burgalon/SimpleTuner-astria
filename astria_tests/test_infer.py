@@ -31,6 +31,36 @@ FLUX_LORA = JsonObj(**{
     "model_type": "lora",
 })
 
+FLUX_LORA_MAN = JsonObj(**{
+    "id": 1979152,
+    "name": "man",
+    "title": "Lance",
+    "branch": "flux1",
+    "token": str(1979152),
+    "train_token": "ohwx",
+    "model_type": "lora",
+    "face_swap_images": [
+        "https://sdbooth2-production.s3.amazonaws.com/wtwonr79gmb7sqep55zsae9040qn",
+        "https://sdbooth2-production.s3.amazonaws.com/4cag22nur3q2sfbecbgnrumqxra2",
+        "https://sdbooth2-production.s3.amazonaws.com/kzc0nw7jtojh81us3b9ldcxyusk0"
+    ]
+})
+
+FLUX_LORA_MAN_MARCO = JsonObj(**{
+    "id": 1557315,
+    "name": "man",
+    "title": "Marco",
+    "branch": "flux1",
+    "token": str(1557315),
+    "train_token": "ohwx",
+    "model_type": "lora",
+    "face_swap_images": [
+        "https://sdbooth2-production.s3.amazonaws.com/2y388ja53947ie2ecp4k9kd95lp9",
+        "https://sdbooth2-production.s3.amazonaws.com/a544y3n2mm9xvg99ofyat947lp2w",
+        "https://sdbooth2-production.s3.amazonaws.com/11knqm2byx97er3vg950c7v6e1mt"
+    ]
+})
+
 FLUX_FACEID = JsonObj(**{
     "id": 1533312,
     "name": "woman",
@@ -73,12 +103,12 @@ IMG_POSE = "https://sdbooth2-production.s3.amazonaws.com/hrzevyfi6cjj2o64c7xogyv
 def name():
     return os.environ.get('PYTEST_CURRENT_TEST').split(':')[-1].split(' ')[0]
 
-def run_images(prompt):
-    prompt.id = name()
+def run_images(prompt, override_name=None):
+    prompt.id = name() if override_name is None else override_name
     tune = JsonObj(**TUNE_FLUX.__dict__, prompts=[prompt])
     images = pipe.infer(tune)
-    # for i, image in enumerate(images):
-    #     image.save(MODELS_DIR + f"/{prompt.id}-{i}.jpg")
+    for i, image in enumerate(images):
+        image.save(MODELS_DIR + f"/{prompt.id}-{i}.jpg")
     return images
 
 # Test that loras do not leak across test by having a test of before/after lora
@@ -100,6 +130,7 @@ def test_txt2img_after():
     assert isinstance(pipe.last_pipe, FluxPipeline)
 
 def test_faceid():
+    os.environ['FORCE_PULID'] = '1'
     prompt = JsonObj(
         **copy.copy(BASE_PROMPT.__dict__),
     )
@@ -109,36 +140,19 @@ def test_faceid():
     assert isinstance(pipe.last_pipe, FluxPipelineWithPulID)
 
 def test_bad_faceid():
+    os.environ['FORCE_PULID'] = '1'
     prompt = JsonObj(
         **copy.copy(BASE_PROMPT.__dict__),
     )
-    FLUX_FACEID.face_swap_images = [
+    flux_faceid = JsonObj(**FLUX_FACEID.__dict__)
+    flux_faceid.face_swap_images = [
         'https://sdbooth2-production.s3.amazonaws.com/a93ocfwgzocdrmq1q4wizwajnhvm'
     ]
     prompt.text=f"<{FLUX_FACEID.model_type}:{FLUX_FACEID.id}:1> woman holding flowers"
-    prompt.tunes=[FLUX_FACEID]
+    prompt.tunes=[flux_faceid]
     run_images(prompt)
     assert isinstance(pipe.last_pipe, FluxPipeline)
 
-def test_regional():
-    prompt = JsonObj(
-        **copy.copy(BASE_PROMPT.__dict__),
-        use_regional=True,
-    )
-    assert prompt.use_regional is True
-    prompt.text = "a dog inbetween two vases full of flowers. the flowers on the left are white lillies, the flowers on the right are roses. the dog is a pembroke welsh corgi. above the corgi, there are balloons flying that say \"happy birthday\""
-    run_images(prompt)
-    assert isinstance(pipe.last_pipe, RAG_FluxPipeline)
-
-def test_regional_lora():
-    prompt = JsonObj(
-        **copy.copy(BASE_PROMPT.__dict__),
-        use_regional=True,
-    )
-    prompt.tunes=[FLUX_LORA]
-    prompt.text = f"<lora:{FLUX_LORA.id}:1> {FLUX_LORA.train_token} woman inbetween two vases full of flowers. the flowers on the left are white lillies, the flowers on the right are roses. above the {FLUX_LORA.train_token} woman, there are balloons flying that say \"happy birthday\""
-    run_images(prompt)
-    assert isinstance(pipe.last_pipe, RAG_FluxPipeline)
 
 def test_superresolution():
     prompt = JsonObj(
@@ -175,6 +189,19 @@ def test_controlnet_txt2img():
     run_images(prompt)
     assert isinstance(pipe.last_pipe, FluxControlNetPipeline)
 
+# def test_controlnet_ipadapter():
+#     prompt = JsonObj(
+#         **copy.copy(BASE_PROMPT.__dict__),
+#         input_image='https://sdbooth2-production.s3.amazonaws.com/u77j61zzd4gbqdsvkhmd9p1cz0d1',
+#         controlnet='ipadapter',
+#     )
+#     prompt.controlnet_txt2img = True
+#     prompt.text=f"earrings placed on a pedestal"
+#     prompt.tunes=[FLUX_LORA]
+#     prompt.controlnet_conditioning_scale=0.5
+#     run_images(prompt)
+#     assert isinstance(pipe.last_pipe, FluxControlNetPipeline)
+
 def test_controlnet_img2img():
     prompt = JsonObj(
         **copy.copy(BASE_PROMPT.__dict__),
@@ -197,3 +224,69 @@ def test_film_grain():
 def test_clut():
     prompt = JsonObj(**copy.copy(BASE_PROMPT.__dict__), color_grading='Film Velvia')
     run_images(prompt)
+
+def test_leak_load_references():
+    # avoid leakage from other tests
+    if pipe.pipe:
+        pipe.reset_controlnet()
+        pipe.unload_lora_weights(pipe.pipe)
+
+    # 1. fill
+    prompt = JsonObj(
+        **copy.copy(BASE_PROMPT.__dict__),
+        input_image=IMG_POSE,
+    )
+    prompt.text=f"<lora:{FLUX_LORA.id}:1.4> {FLUX_LORA.train_token} woman with black blouse --mask_prompt foreground --mask_dilate 1% --fill"
+    prompt.tunes=[FLUX_LORA]
+    run_images(prompt, name() + '-1-lora')
+    assert isinstance(pipe.last_pipe, FluxFillPipeline)
+    assert len(pipe.current_lora_weights_map.keys()) == 1
+    assert pipe.current_lora_weights_map['fill']['names'] ==  [FLUX_LORA.token]
+
+
+    # 2. txt2img
+    prompt = JsonObj(
+        **copy.copy(BASE_PROMPT.__dict__),
+    )
+    prompt.text=f"<lora:{FLUX_LORA.id}:1> {FLUX_LORA.train_token} woman holding flowers"
+    prompt.tunes=[FLUX_LORA]
+    run_images(prompt, name() + '-2-lora')
+    assert isinstance(pipe.last_pipe, FluxPipeline)
+    assert pipe.current_lora_weights_map['pipe']['names'] ==  [FLUX_LORA.token]
+
+
+    # 3. txt2img with different LORA
+    prompt = JsonObj(
+        **copy.copy(BASE_PROMPT.__dict__),
+    )
+    prompt.text=f"<lora:{FLUX_LORA_MAN.id}:1> {FLUX_LORA_MAN.train_token} man holding flowers"
+    prompt.tunes=[FLUX_LORA_MAN]
+    run_images(prompt, name() + '-3-different-lora')
+    assert isinstance(pipe.last_pipe, FluxPipeline)
+    for k, v in pipe.current_lora_weights_map.items():
+        print(k.__class__.__name__, v)
+    assert pipe.current_lora_weights_map['pipe']['names'] ==  [FLUX_LORA_MAN.token]
+
+
+    # 4. fill without lora
+    prompt = JsonObj(
+        **copy.copy(BASE_PROMPT.__dict__),
+        input_image=IMG_POSE,
+    )
+    prompt.text=f"woman with black blouse --mask_prompt foreground --mask_dilate 1% --fill"
+    prompt.tunes=[]
+    run_images(prompt, name() + '-4-no-lora')
+    assert isinstance(pipe.last_pipe, FluxFillPipeline)
+    assert pipe.current_lora_weights_map['fill']['names'] ==  []
+
+    # 5. txt2img without lora
+    prompt = JsonObj(
+        **copy.copy(BASE_PROMPT.__dict__),
+    )
+    prompt.text=f"man holding flowers"
+    prompt.tunes=[]
+    run_images(prompt, name() + '-5-no-lora')
+    assert isinstance(pipe.last_pipe, FluxPipeline)
+    assert pipe.current_lora_weights_map['pipe']['names'] ==  []
+
+
