@@ -18,6 +18,10 @@ from diffusers import FluxPipeline, FluxImg2ImgPipeline, FluxControlNetPipeline,
 from torchvision import transforms
 
 from pulid_pipeline.pipeline import FluxPipelineWithPulID
+from pulid_pipeline.pulid_ext import PuLID
+
+from ragdiffusion import RAG_FluxPipeline, openai_gpt4o_get_regions
+
 from add_clut import add_clut
 from add_grain import add_grain
 from astria_utils import run, MODELS_DIR, download_model_from_server, JsonObj, device, \
@@ -35,7 +39,6 @@ from controlnet_constants import CONTROLNETS_DICT, CONTROL_MODES
 from hinter_helper import get_detector
 from image_utils import load_image, load_images
 from pipeline_flux_differential_img2img import FluxDifferentialImg2ImgPipeline
-from pulid_pipeline.pulid_ext import PuLID
 from runpod_utils import kill_pod
 from sig_listener import TerminateException, is_terminated, set_current_infer_tune, set_current_train_tune
 from super_resolution_helper import load_sr, upscale_sr
@@ -90,6 +93,27 @@ def parse_args(prompt: JsonObj):
     parser.add_argument("--fix_bindi", help="Inpaint dot on the forehead", action='store_true', default=False)
     parser.add_argument("--vton_cfg_scale", help="VTON cfg_scale", type=float, default=None)
     parser.add_argument("--vton_hires", help="VTON Hi resolution", action='store_true', default=False)
+    parser.add_argument(
+        "--use_regional",
+        help="Uses RAG diffusion with gpt4o prompt enhancement", action='store_true',
+        default=getattr(prompt, 'use_regional', False),  # Will be False or None
+    )
+    parser.add_argument(
+        "--regional_hb_replace",
+        type=int,
+        default=prompt.regional_hb_replace
+            if getattr(prompt, 'regional_hb_replace', None) is not None
+            else 2,
+        help="HB replace",
+    )
+    parser.add_argument(
+        "--regional_sr_delta",
+        type=float,
+        default=prompt.regional_sr_delta
+            if getattr(prompt, 'regional_sr_delta', None) is not None
+            else 1.0,
+        help="SR delta",
+    )
     parser.add_argument('text', nargs='*', help='Text to be processed')
 
 
@@ -147,6 +171,7 @@ class InferPipeline(InpaintFaceMixin, VtonMixin):
         self.fill = None
         self.pulid_model = None
         self.pulid_pipe = None
+        self.rag_diffusion_pipe = None
         torch.cuda.empty_cache()
 
     def unload_lora_weights(self):
@@ -218,8 +243,9 @@ class InferPipeline(InpaintFaceMixin, VtonMixin):
         print(f"set_adapters names={names} scales={scales}")
 
         if len(names) > 1:
-            return {"scale": 1.0}
-        return {"scale": scales[0]}
+            return { "scale": 1.0 }
+        
+        return { "scale": scales[0] }
 
     def init_pipe(self, model_path):
         """Initialize both FluxPipeline and FluxImg2ImgPipeline."""
@@ -279,6 +305,19 @@ class InferPipeline(InpaintFaceMixin, VtonMixin):
                 raise
 
         return pulid_embed
+
+    def init_rag_diffusion(self):
+        if not self.rag_diffusion_pipe:
+            os.environ['NO_ALBUMENTATIONS_UPDATE'] = '1'
+            self.rag_diffusion_pipe = RAG_FluxPipeline(
+                scheduler=self.pipe.scheduler,
+                text_encoder=self.pipe.text_encoder,
+                tokenizer=self.pipe.tokenizer,
+                text_encoder_2=self.pipe.text_encoder_2,
+                tokenizer_2=self.pipe.tokenizer_2,
+                vae=self.pipe.vae,
+                transformer=self.pipe.transformer,
+            ).to(device)
 
     def init_img2img(self):
         if not self.img2img:
@@ -377,7 +416,6 @@ class InferPipeline(InpaintFaceMixin, VtonMixin):
                 tokenizer=self.pipe.tokenizer,
                 tokenizer_2=self.pipe.tokenizer_2,
             ).to(device)
-
 
     def poll_infer(self):
         tune = JsonObj()
@@ -654,11 +692,15 @@ class InferPipeline(InpaintFaceMixin, VtonMixin):
             prompt.mask_image = self.infer_mask(prompt)
 
         input_image_tensor, controlnet_hint, w, h, orig_input_image, input_image, mask_image = None, None, None, None, None, None, None
+        use_regional =  getattr(prompt, 'use_regional', False)
+
         # Note that the below condition is IMPORTANT and need to be modified cautiously
         # See test_vton_img2img_strength0
         if any([tune.model_type == 'faceid' and tune.name in HUMAN_CLASS_NAMES for tune in prompt.tunes]):
             if input_image:
                 raise Exception("Cannot have both faceid and input_image")
+            if use_regional:
+                raise Exception("Can not use face ID with --use_regional")
             for match_groups in re.findall(self.reference_pattern_re, prompt.text):
                 type, token, scale = match_groups
                 if type == "faceid":
@@ -738,6 +780,9 @@ class InferPipeline(InpaintFaceMixin, VtonMixin):
                         prompt.cfg_scale = 30
                 else:
                     kwargs['strength'] = float(prompt.denoising_strength if prompt.denoising_strength != None else 0.8)
+        elif use_regional:
+            self.init_rag_diffusion()
+            pipe = self.rag_diffusion_pipe        
         else:
             pipe = self.pipe
 
@@ -747,6 +792,39 @@ class InferPipeline(InpaintFaceMixin, VtonMixin):
         num_images = int(os.environ.get('NUM_IMAGES', prompt.num_images))
         joint_attention_kwargs = self.load_references(prompt)
         prompt.text = prompt.text.strip(" ,").strip(" ").strip('"')
+
+        # load_references mutates prompt.text, so this needs to be down here.
+        if use_regional:
+            HB_replace =  getattr(prompt, 'regional_hb_replace', 2)
+            SR_delta =  getattr(prompt, 'regional_sr_delta', 1.0)
+
+            regions = openai_gpt4o_get_regions(prompt.text)
+
+            HB_replace = HB_replace
+            HB_prompt_list =  regions["HB_prompt_list"]
+            HB_m_offset_list = regions["HB_m_offset_list"]
+            HB_n_offset_list = regions["HB_n_offset_list"]
+            HB_m_scale_list = regions["HB_m_scale_list"]
+            HB_n_scale_list = regions["HB_n_scale_list"]
+            SR_delta = SR_delta
+            SR_hw_split_ratio = regions["SR_hw_split_ratio"]
+            SR_prompt = regions["SR_prompt"]
+
+            kwargs = {
+                **kwargs,
+                **dict(
+                    SR_delta=SR_delta,
+                    SR_hw_split_ratio=SR_hw_split_ratio,
+                    SR_prompt=SR_prompt,
+                    HB_prompt_list=HB_prompt_list,
+                    HB_m_offset_list=HB_m_offset_list,
+                    HB_n_offset_list=HB_n_offset_list,
+                    HB_m_scale_list=HB_m_scale_list,
+                    HB_n_scale_list=HB_n_scale_list,
+                    HB_replace=HB_replace,
+                    seed=prompt.seed or 42,
+                ),
+            }
 
         (
             prompt_embeds,

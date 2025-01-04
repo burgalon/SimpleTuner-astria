@@ -155,3 +155,6 @@ def load_image(image: Union[str, PIL.Image.Image], convert = 'RGB') -> PIL.Image
 
 def save_img(image: Image, fn: str, format="PNG") -> str:
     return image.save(fn, format=format, optimize=False, compression=0)
+
+if os.environ.get("MOCK_SERVER", False):
+    load_images = lambda imgs: [load_image(img) for img in imgs]

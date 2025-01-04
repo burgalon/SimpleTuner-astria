@@ -240,6 +240,10 @@ def download_model_from_server(model_name: str, convert_xl_to_diffusers = True):
     raise NotImplementedError(f"model_name={model_name}")
 
 
+if os.environ.get("MOCK_SERVER", False):
+    check_refresh = lambda _: True
+
+
 if __name__ == "__main__":
     print("Starting")
     while True:
