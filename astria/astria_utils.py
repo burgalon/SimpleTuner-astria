@@ -228,7 +228,7 @@ def download_model_from_server(model_name: str, convert_xl_to_diffusers = True):
         return model_path
     if model_name == f'{FLUX_INPAINT_MODEL_ID}-flux1':
         model_path = f"{MODELS_DIR}/{model_name}"
-        if not os.path.exists(model_path) or os.environ.get("FORCE_DOWNLOAD") or not os.path.exists(f"{model_path}/model_index.json"):
+        if not os.path.exists(model_path) or os.environ.get("FORCE_DOWNLOAD") or not os.path.exists(f"{model_path}/transformer") or not os.path.exists(f"{model_path}/transformer/diffusion_pytorch_model.safetensors.index.json"):
             from huggingface_hub import snapshot_download
             snapshot_download('black-forest-labs/FLUX.1-Fill-dev',
                               # ignore_patterns=['ae.safetensors', 'dev_grid.jpg', 'README.md', 'LICENSE.md', '.gitattributes'],
@@ -240,9 +240,16 @@ def download_model_from_server(model_name: str, convert_xl_to_diffusers = True):
     raise NotImplementedError(f"model_name={model_name}")
 
 
-if os.environ.get("MOCK_SERVER", False):
-    check_refresh = lambda _: True
-
+process_start_time = time.time()
+def check_refresh():
+    # to refresh use
+    # date +%s > /data/models/refresh_ts.txt
+    refresh_ts_path = os.path.join(MODELS_DIR, 'refresh_ts.txt')
+    if os.path.exists(refresh_ts_path):
+        with open(refresh_ts_path, 'r') as f:
+            refresh_ts = float(f.read().strip())
+            if refresh_ts > process_start_time:
+                raise StaleDeploymentException('check_refresh found newer refresh_ts.txt')
 
 if __name__ == "__main__":
     print("Starting")
