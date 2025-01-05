@@ -854,7 +854,8 @@ class InferPipeline(InpaintFaceMixin, VtonMixin):
             HB_prompt_list = regions["HB_prompt_list"]
             SR_prompt = regions["SR_prompt"]
             lora_regional_scaling = []
-            for hb_prompt in HB_prompt_list:
+            sr_prompts = [p.strip() for p in SR_prompt.split("BREAK")]
+            for sr_prompt in sr_prompts:
                 scaling_values = {
                     lora_id: 0.0
                     for lora_id in self.current_lora_weights.get('names', [])
@@ -863,7 +864,7 @@ class InferPipeline(InpaintFaceMixin, VtonMixin):
                     self.current_lora_weights.get('names', []),
                     self.current_lora_weights.get('scales', []),
                 ):
-                    if lora_id in hb_prompt:
+                    if lora_id in sr_prompt:
                         scaling_values[lora_id] = lora_scale
                 lora_regional_scaling.append(scaling_values)
 
