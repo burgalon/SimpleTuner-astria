@@ -4,7 +4,7 @@ Extract the key entities and their corresponding attributes from the input text,
 For each key object identified in the previous step, use precise spatial imagination to assign each object to a specific area within the image and start numbering from 0. The area refers to dividing the entire image into different regions for a general layout. Each key entities is assigned to a region. And for each entity in the region, give it a more detailed description based on the original text. 
 For each entity, place it in the designated rectangular position, reasonably plan its top-left corner coordinates and scaling size relative to the entire image in accordance with human aesthetics, ensuring that it does not exceed its allocated region. Additionally, any two rectangles must not overlap and should have gaps between them.
 This layout should segment the image and strictly follow the method below:
-a. Extract all entities and their related attributes from the input text, excluding any redundancy information.
+a. Extract all entities and their related attributes from the input text, excluding any redundancy information. If there are any unique names for the entities like "1842729 ohwx woman" or "sks shoe", be sure to include those when labeling them and injecting their labels into `HB_prompt_list`.
 b. Determine if the image needs to be divided into multiple rows based on the key entities identification from step a (It should be noted that a single entity should not be split into different rows, except when describing different parts of a person like the head, clothes/body, and lower garment):
 • If so, segment the image into several rows and assign an identifier to each row from top to bottom (e.g., Row0, Row1, ...).
 • Specify the percentage of height each row occupies within the image (e.g., Row0 (height=0.33) indicates that the row occupies 33% of the height of the entire upper portion of the image).
@@ -178,6 +178,36 @@ HB_m_offset_list: [0.1, 0.1]
 HB_n_offset_list: [0.6, 0.1]
 HB_m_scale_list: [0.8, 0.8]
 HB_n_scale_list: [0.4, 0.4]
+
+Caption: 4891734 sks woman is sitting in a diner with 1839471 ohwx woman
+a. Key entities identification:
+The caption identifies two key entities without explicit attributes:
+Entity1). 4891734 sks woman
+Entity2). 1839471 ohwx woman
+Since no specific attributes are given for either girl beyond 4891734 sks and 1839471 ohwx, we will need to imagine details for each entity. We will split the image into two regions to represent each girl.
+Plan the structure split for the image:
+b. Rows
+Considering that we have two key entities and no specific attributes to separate vertically, we can choose to have a single row that encompasses both entities:
+Row0 (height=1): This row will occupy the entire image, showing both girls chatting in the cafe.
+c. Regions within rows
+If the image is divided into only a row, it is necessary to divide the row into different regions because we need at least two regions.
+We will divide the row into two regions to represent each girl:
+Region0 (Row0, width=0.5): This region will capture 4891734 sks woman, who could be imagined as having a casual hairstyle and a comfortable outfit, seated with a cup of coffee, engaged in conversation.
+Region1 (Row0, width=0.5): This region will capture 1839471 ohwx woman, perhaps with a different hairstyle for contrast, such as a bun or waves, and a distinct style of clothing, also with a beverage, actively participating in the chat.
+d. Overall ratio:
+Since there is only one row, we omit the row ratio and directly provide the widths of the regions within the row:
+Final split ratio: 0.5,0.5
+Regional Prompt: A casually styled 4891734 sks woman with a warm smile, sipping coffee, her attention focused on her friend across the table, the background softly blurred with the ambiance of the cafe. BREAK 1839471 ohwx woman, with her hair up in a loose bun, laughing at a shared joke, her hands wrapped around a steaming mug, the cafe's cozy interior framing their intimate conversation.
+e. Entities' top-left corner coordinates and scaling sizes:
+The rectangles representing each entity are placed in appropriate positions, must not exceed their corresponding regions, must not overlap, and need to have gaps between them.
+From the step a, we know that Entity1 is "4891734 sks woman, Entity2 is "1839471 ohwx woman".
+Entity1(4891734 sks woman) in Region0: m_offset:0.1, n_offset:0.1, m_scale:0.3, n_scale:0.8
+Entity2(1839471 ohwx woman) in Region1: m_offset:0.6, n_offset:0.1, m_scale:0.3, n_scale:0.8
+HB_prompt_list: ["4891734 sks woman","1839471 ohwx woman"]
+HB_m_offset_list: [0.1,0.6]
+HB_n_offset_list: [0.1,0.1]
+HB_m_scale_list: [0.3,0.3]
+HB_n_scale_list: [0.8,0.8] 
 
 Caption: A sheep on the left of a lamp.
 a. Key entities identification:

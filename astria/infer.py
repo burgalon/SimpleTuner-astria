@@ -185,6 +185,7 @@ class InferPipeline(InpaintFaceMixin, VtonMixin):
         names = []
         scales = []
         lora_fns = []
+        setattr(prompt, '_prompt_with_lora_ids', prompt.text)
 
         for match_groups in re.findall(self.reference_pattern_re, prompt.text):
             type, token, scale = match_groups
@@ -205,8 +206,10 @@ class InferPipeline(InpaintFaceMixin, VtonMixin):
                 names.append(str(tune.id))
                 scales.append(float(scale))
                 lora_fns.append(lora_fn)
+
                 # Clean the match from the prompt
                 prompt.text = prompt.text.replace(f"<{type}:{token}:{scale}>", "")
+                prompt._prompt_with_lora_ids = prompt._prompt_with_lora_ids.replace(f"<{type}:{token}:{scale}>", f"{str(tune.id)}")
 
         if len(names) == 0:
             print("Unloading LoRA weights")
@@ -798,17 +801,43 @@ class InferPipeline(InpaintFaceMixin, VtonMixin):
             HB_replace =  getattr(prompt, 'regional_hb_replace', 2)
             SR_delta =  getattr(prompt, 'regional_sr_delta', 1.0)
 
-            regions = openai_gpt4o_get_regions(prompt.text)
+            regions = openai_gpt4o_get_regions(prompt._prompt_with_lora_ids)
+
+            # Now that we have the regions, we need to assign LoRAs to each
+            # region, if relevant.
+            HB_prompt_list = regions["HB_prompt_list"]
+            SR_prompt = regions["SR_prompt"]
+            lora_regional_scaling = []
+            for hb_prompt in HB_prompt_list:
+                scaling_values = { 
+                    lora_id: 0.0
+                    for lora_id in self.current_lora_weights.get('names', [])
+                }
+                for lora_id, lora_scale in zip(
+                    self.current_lora_weights.get('names', []),
+                    self.current_lora_weights.get('scales', []),
+                ):
+                    if lora_id in hb_prompt:
+                        scaling_values[lora_id] = lora_scale
+                lora_regional_scaling.append(scaling_values)
+
+            # Clean the prompts of any LoRA IDs that might have been embedded.
+            HB_prompt_list_cleaned = []
+            for hb_prompt in HB_prompt_list:
+                for lora_id in self.current_lora_weights.get('names', []):
+                    hb_prompt = hb_prompt.replace(lora_id, "")
+                HB_prompt_list_cleaned.append(hb_prompt)
+            
+            for lora_id in self.current_lora_weights.get('names', []):
+                SR_prompt = SR_prompt.replace(lora_id, "")
 
             HB_replace = HB_replace
-            HB_prompt_list =  regions["HB_prompt_list"]
             HB_m_offset_list = regions["HB_m_offset_list"]
             HB_n_offset_list = regions["HB_n_offset_list"]
             HB_m_scale_list = regions["HB_m_scale_list"]
             HB_n_scale_list = regions["HB_n_scale_list"]
             SR_delta = SR_delta
             SR_hw_split_ratio = regions["SR_hw_split_ratio"]
-            SR_prompt = regions["SR_prompt"]
 
             kwargs = {
                 **kwargs,
@@ -816,13 +845,14 @@ class InferPipeline(InpaintFaceMixin, VtonMixin):
                     SR_delta=SR_delta,
                     SR_hw_split_ratio=SR_hw_split_ratio,
                     SR_prompt=SR_prompt,
-                    HB_prompt_list=HB_prompt_list,
+                    HB_prompt_list=HB_prompt_list_cleaned,
                     HB_m_offset_list=HB_m_offset_list,
                     HB_n_offset_list=HB_n_offset_list,
                     HB_m_scale_list=HB_m_scale_list,
                     HB_n_scale_list=HB_n_scale_list,
                     HB_replace=HB_replace,
                     seed=prompt.seed or 42,
+                    lora_regional_scaling=lora_regional_scaling,
                 ),
             }
 

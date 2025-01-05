@@ -35,6 +35,7 @@ from diffusers.utils import (
 from diffusers.utils.torch_utils import randn_tensor
 from diffusers.pipelines.pipeline_utils import DiffusionPipeline
 from diffusers.pipelines.flux.pipeline_output import FluxPipelineOutput
+from peft.tuners.tuners_utils import BaseTunerLayer
 
 from .cross_attention import init_forwards,hook_forwards,TOKENS
 from .matrix import matrixdealer,keyconverter
@@ -847,6 +848,22 @@ class RAG_FluxPipeline(
     @property
     def interrupt(self):
         return self._interrupt
+    
+    @property
+    def transformer_lora_adapters(self):
+        adapter_ids = set()
+        for module in self.transformer.modules():
+            if isinstance(module, BaseTunerLayer):
+                for adapter_id in module.active_adapters:
+                    adapter_ids.add(adapter_id)
+        return list(adapter_ids)
+    
+    def transformer_zero_lora_scalings(self):
+        zero_dict = { 
+            lora_id: 0.0
+            for lora_id in self.transformer_lora_adapters
+        }
+        self.transformer.scale_lora_layers_according_to_region(zero_dict)
 
     @torch.no_grad()
     @replace_example_docstring(EXAMPLE_DOC_STRING)
@@ -895,6 +912,7 @@ class RAG_FluxPipeline(
         callback_on_step_end: Optional[Callable[[int, int, Dict], None]] = None,
         callback_on_step_end_tensor_inputs: List[str] = ["latents"],
         max_sequence_length: int = 512,
+        lora_regional_scaling: Optional[List[Dict[str, Any]]] = None,
     ):
         r"""
         Function invoked when calling the pipeline for generation.
@@ -972,8 +990,8 @@ class RAG_FluxPipeline(
         self.h = height
         self.w = width
         self.regional_info(SR_prompt) 
-        keyconverter(self,self.split_ratio, False)
-        matrixdealer(self,self.split_ratio, 0.0)
+        keyconverter(self, self.split_ratio, False)
+        matrixdealer(self, self.split_ratio, 0.0)
 
         if (seed > 0):
             self.torch_fix_seed(seed = seed)
@@ -1166,6 +1184,8 @@ class RAG_FluxPipeline(
                 if self.interrupt:
                     continue
 
+                self.transformer_zero_lora_scalings()
+
                 # broadcast to batch dimension in a way that's compatible with ONNX/Core ML
                 timestep = t.expand(latents.shape[0]).to(latents.dtype)
 
@@ -1180,6 +1200,7 @@ class RAG_FluxPipeline(
                     "SR_norm_encoder_hidden_states_list": None,
                     "SR_hidden_states_list": None,
                     "SR_norm_hidden_states_list": None,
+                    "lora_regional_scaling": lora_regional_scaling,
                 }
 
                 if i < HB_replace:
@@ -1200,7 +1221,8 @@ class RAG_FluxPipeline(
                             HB_m_scale_list=HB_m_scale_list,
                             HB_n_scale_list=HB_n_scale_list,
                             latent_h=height//16,
-                            latent_w=width//16
+                            latent_w=width//16,
+                            lora_regional_scaling=lora_regional_scaling,
                         )[0]
                     else:
                         noise_pred, original_hidden_states_list = self.transformer(
@@ -1220,7 +1242,8 @@ class RAG_FluxPipeline(
                             HB_n_scale_list=HB_n_scale_list,
                             latent_h=height//16,
                             latent_w=width//16,
-                            return_hidden_states_list=True
+                            return_hidden_states_list=True,
+                            lora_regional_scaling=lora_regional_scaling,
                         )
                         noise_pred = noise_pred[0]
 
@@ -1236,6 +1259,7 @@ class RAG_FluxPipeline(
                             img_ids=latent_image_ids,
                             joint_attention_kwargs=self.joint_attention_kwargs,
                             return_dict=False,
+                            lora_regional_scaling=lora_regional_scaling,
                         )[0]
                     else:
                         noise_pred, original_hidden_states_list = self.transformer(
@@ -1248,7 +1272,8 @@ class RAG_FluxPipeline(
                             img_ids=latent_image_ids,
                             joint_attention_kwargs=self.joint_attention_kwargs,
                             return_dict=False,
-                            return_hidden_states_list=True
+                            return_hidden_states_list=True,
+                            lora_regional_scaling=lora_regional_scaling,
                         )
                         noise_pred = noise_pred[0]
 
@@ -1259,6 +1284,7 @@ class RAG_FluxPipeline(
                         "SR_norm_encoder_hidden_states_list": None,
                         "SR_hidden_states_list": None,
                         "SR_norm_hidden_states_list": None,
+                        "lora_regional_scaling": lora_regional_scaling,
                     }
 
                     Repainting_noise_pred = self.transformer(
@@ -1277,7 +1303,8 @@ class RAG_FluxPipeline(
                         Repainting=Repainting,
                         Repainting_single=Repainting_single,
                         latent_h=height//16,
-                        latent_w=width//16
+                        latent_w=width//16,
+                        lora_regional_scaling=lora_regional_scaling,
                     )[0]
 
                 # compute the previous noisy sample x_t -> x_t-1

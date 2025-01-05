@@ -26,6 +26,7 @@ fspace = lambda x: " {} ".format(x)
 fcountbrk = lambda x: x.count(KEYBRK)
 fint = lambda x: int(x)
 
+
 def floatdef(x, vdef):
     """Attempt conversion to float, use default value on error.    
     Mainly for empty ratios, double commas.
@@ -36,6 +37,7 @@ def floatdef(x, vdef):
         print("'{}' is not a number, converted to {}".format(x,vdef))
         return vdef
 
+
 class Region():
     """Specific Region used to split a layer to single prompts."""
     def __init__(self, st, ed, base, breaks):
@@ -45,6 +47,7 @@ class Region():
         self.base = base # How much of the base prompt is applied (difference).
         self.breaks = breaks # How many unrelated breaks the prompt contains.
 
+
 class Row():
     """Row containing cell refs and its own ratio range."""
     def __init__(self, st, ed, cols):
@@ -52,15 +55,18 @@ class Row():
         self.start = st # Range for the row.
         self.end = ed
         self.cols = cols # List of cells.
-        
+
+     
 def is_l2(l):
     return isinstance(l[0],list) 
+
 
 def l2_count(l):
     cnt = 0
     for row in l:
         cnt + cnt + len(row)
     return cnt
+
 
 def list_percentify(l):
     """
@@ -79,6 +85,7 @@ def list_percentify(l):
         row2 = [v / sum(row) for v in row]
         lret = row2
     return lret
+
 
 def list_cumsum(l):
     """
@@ -101,6 +108,7 @@ def list_cumsum(l):
         lret = row
     return lret
 
+
 def list_rangify(l):
     """
     Merge every 2 elems in L2 to a range, starting from 0.  
@@ -121,6 +129,7 @@ def list_rangify(l):
         lret = row3
     return lret
 
+
 def ratiosdealer(split_ratio2,split_ratio2r):
     split_ratio2 = list_percentify(split_ratio2)
     split_ratio2 = list_cumsum(split_ratio2)
@@ -130,6 +139,7 @@ def ratiosdealer(split_ratio2,split_ratio2r):
     split_ratio2r = list_rangify(split_ratio2r)
     return split_ratio2,split_ratio2r
 
+
 def round_dim(x,y):
     """Return division of two numbers, rounding 0.5 up.    
     Seems that dimensions which are exactly 0.5 are rounded up - see 680x488, second iter.
@@ -138,7 +148,8 @@ def round_dim(x,y):
     """
     return x // y + (x % y >= y // 2)       
 
-def keyconverter(self,split_ratio,usebase):
+
+def keyconverter(self, split_ratio, usebase):
     '''convert BREAKS to ADDCOMM/ADDBASE/ADDCOL/ADDROW'''
     if SPLROW not in split_ratio: # Commas only - interpret as 1d.
         split_ratio2 = split_l2(split_ratio, SPLROW, SPLCOL, map_function = ffloatd(1))
@@ -159,7 +170,8 @@ def keyconverter(self,split_ratio,usebase):
     keychanger=changer[:-1]
     for change in keychanger:
         if change == KEYBASE and KEYBASE in self.SR_prompt: continue
-        self.SR_prompt= self.SR_prompt.replace(KEYBRK,change,1)                        
+        self.SR_prompt = self.SR_prompt.replace(KEYBRK,change,1)                        
+
 
 def split_l2(s, key_row, key_col, indsingles = False, map_function = fidentity, split_struct = None):
     lret = []
@@ -214,7 +226,8 @@ def split_l2(s, key_row, key_col, indsingles = False, map_function = fidentity, 
             lsingles = lsingles + [lsingles[-1]] * (len(split_struct) - len(lsingles))
             lret = (lsingles,lcells)
     return lret
-    
+
+
 def matrixdealer(self, split_ratio, baseratio):
     # print(split_ratio, baseratio)
     prompt = self.SR_prompt
@@ -241,7 +254,7 @@ def matrixdealer(self, split_ratio, baseratio):
         # More like "bweights", applied per cell only.
         baseratio2 = split_l2(baseratio, SPLROW, SPLCOL, map_function = ffloatd(0), split_struct = lbreaks)
         # print(baseratio2)
-    (split_ratio,split_ratior) = ratiosdealer(split_ratio2,split_ratio2r)
+    (split_ratio, split_ratior) = ratiosdealer(split_ratio2, split_ratio2r)
     baseratio = baseratio2 
     
     # Merge various L2s to cells and rows.

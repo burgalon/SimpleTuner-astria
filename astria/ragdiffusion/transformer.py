@@ -20,6 +20,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from peft.tuners.tuners_utils import BaseTunerLayer
+
 from diffusers.configuration_utils import ConfigMixin, register_to_config
 from diffusers.loaders import FromOriginalModelMixin, PeftAdapterMixin
 from diffusers.models.attention import FeedForward
@@ -81,6 +83,12 @@ class RAG_FluxSingleTransformerBlock(nn.Module):
             pre_only=True,
         )
 
+    def scale_lora_layers_according_to_region(self, lora_scalings: Dict[str, Any]):
+        for module in self.modules():
+            if isinstance(module, BaseTunerLayer):
+                for adapter_id, adapter_scale in lora_scalings.items():
+                    module.set_scale(adapter_id, adapter_scale)
+
     def forward(
         self,
         hidden_states: torch.FloatTensor,
@@ -99,7 +107,11 @@ class RAG_FluxSingleTransformerBlock(nn.Module):
             SR_gate_list = []
             SR_mlp_hidden_states_list = []
 
-            for SR_hidden_states in joint_attention_kwargs["SR_hidden_states_list"]:
+            for SR_hidden_states, lora_scalings in zip(
+                joint_attention_kwargs["SR_hidden_states_list"],
+                joint_attention_kwargs["lora_regional_scaling"],
+            ):
+                self.scale_lora_layers_according_to_region(lora_scalings)
                 SR_residual = SR_hidden_states
                 SR_norm_hidden_states, SR_gate = self.norm(SR_hidden_states, emb=temb)
                 SR_mlp_hidden_states = self.act_mlp(self.proj_mlp(SR_norm_hidden_states))
@@ -132,7 +144,14 @@ class RAG_FluxSingleTransformerBlock(nn.Module):
         if joint_attention_kwargs is not None and "SR_encoder_hidden_states_list" in joint_attention_kwargs:
             SR_hidden_states_list = []
 
-            for SR_attn_output, SR_mlp_hidden_states, SR_gate,SR_residual in zip(SR_attn_output_list, SR_mlp_hidden_states_list, SR_gate_list, SR_residual_list):
+            for SR_attn_output, SR_mlp_hidden_states, SR_gate, SR_residual, lora_scalings in zip(
+                    SR_attn_output_list,
+                    SR_mlp_hidden_states_list,
+                    SR_gate_list,
+                    SR_residual_list,
+                    joint_attention_kwargs["lora_regional_scaling"],
+                ):
+                self.scale_lora_layers_according_to_region(lora_scalings)
                 SR_hidden_states = torch.cat([SR_attn_output, SR_mlp_hidden_states], dim=2)
                 SR_gate = SR_gate.unsqueeze(1)
                 SR_hidden_states = SR_gate * self.proj_out(SR_hidden_states)
@@ -197,6 +216,12 @@ class RAG_FluxTransformerBlock(nn.Module):
         self._chunk_size = None
         self._chunk_dim = 0
 
+    def scale_lora_layers_according_to_region(self, lora_scalings: Dict[str, Any]):
+        for module in self.modules():
+            if isinstance(module, BaseTunerLayer):
+                for adapter_id, adapter_scale in lora_scalings.items():
+                    module.set_scale(adapter_id, adapter_scale)
+
     def forward(
         self,
         hidden_states: torch.FloatTensor,
@@ -220,7 +245,11 @@ class RAG_FluxTransformerBlock(nn.Module):
             SR_c_gate_mlp_list = []
             SR_encoder_hidden_states_list = joint_attention_kwargs["SR_encoder_hidden_states_list"]
 
-            for SR_encoder_hidden_states in SR_encoder_hidden_states_list:
+            for SR_encoder_hidden_states, lora_scalings in zip(
+                    SR_encoder_hidden_states_list,
+                    joint_attention_kwargs["lora_regional_scaling"],
+                ):
+                self.scale_lora_layers_according_to_region(lora_scalings)
                 SR_norm_encoder_hidden_states, SR_c_gate_msa, SR_c_shift_mlp, SR_c_scale_mlp, SR_c_gate_mlp = self.norm1_context(
                     SR_encoder_hidden_states, emb=temb
                 )
@@ -275,7 +304,16 @@ class RAG_FluxTransformerBlock(nn.Module):
         if joint_attention_kwargs is not None and "SR_encoder_hidden_states_list" in joint_attention_kwargs:
             updated_SR_encoder_hidden_states_list = []
 
-            for SR_context_attn_output, SR_c_gate_msa, SR_encoder_hidden_states, SR_c_scale_mlp, SR_c_shift_mlp, SR_c_gate_mlp in zip(SR_context_attn_output_list, SR_c_gate_msa_list, SR_encoder_hidden_states_list, SR_c_scale_mlp_list, SR_c_shift_mlp_list, SR_c_gate_mlp_list):
+            for SR_context_attn_output, SR_c_gate_msa, SR_encoder_hidden_states, SR_c_scale_mlp, SR_c_shift_mlp, SR_c_gate_mlp, lora_scalings in zip(
+                    SR_context_attn_output_list,
+                    SR_c_gate_msa_list,
+                    SR_encoder_hidden_states_list,
+                    SR_c_scale_mlp_list,
+                    SR_c_shift_mlp_list,
+                    SR_c_gate_mlp_list,
+                    joint_attention_kwargs["lora_regional_scaling"],
+                ):
+                self.scale_lora_layers_according_to_region(lora_scalings)
                 SR_context_attn_output = SR_c_gate_msa.unsqueeze(1) * SR_context_attn_output
                 SR_encoder_hidden_states = SR_encoder_hidden_states + SR_context_attn_output
 
@@ -292,7 +330,7 @@ class RAG_FluxTransformerBlock(nn.Module):
         return encoder_hidden_states, hidden_states
 
 
-class RAG_FluxTransformer2DModel(ModelMixin):
+class RAG_FluxTransformer2DModel(ModelMixin, PeftAdapterMixin):
     """
     The Transformer model introduced in Flux.
 
@@ -510,6 +548,12 @@ class RAG_FluxTransformer2DModel(ModelMixin):
         if hasattr(module, "gradient_checkpointing"):
             module.gradient_checkpointing = value
 
+    def scale_lora_layers_according_to_region(self, lora_scalings: Dict[str, Any]):
+        for module in self.modules():
+            if isinstance(module, BaseTunerLayer):
+                for adapter_id, adapter_scale in lora_scalings.items():
+                    module.set_scale(adapter_id, adapter_scale)
+
     def HB_replace_hidden_states(self, hidden_states, HB_hidden_states_list_list, HB_m_offset_list,HB_n_offset_list,HB_m_scale_list,HB_n_scale_list, latent_h, latent_w, HB_idx):
         hidden_states = hidden_states.view(hidden_states.shape[0], latent_h,latent_w, hidden_states.shape[2])
 
@@ -560,6 +604,7 @@ class RAG_FluxTransformer2DModel(ModelMixin):
         Repainting_HB_n_offset: int=None,
         Repainting: torch.Tensor = None,
         Repainting_single: int=False,
+        lora_regional_scaling: Optional[List[Dict[str, Any]]] = None,
     ) -> Union[torch.FloatTensor, Transformer2DModelOutput]:
         """
         The [`FluxTransformer2DModel`] forward method.
@@ -607,11 +652,30 @@ class RAG_FluxTransformer2DModel(ModelMixin):
 
         if HB_hidden_states_list_list is not None:
             HB_idx = 0
-            hidden_states, HB_idx = self.HB_replace_hidden_states(hidden_states, HB_hidden_states_list_list, HB_m_offset_list, HB_n_offset_list, HB_m_scale_list, HB_n_scale_list, latent_h, latent_w, HB_idx)
+            hidden_states, HB_idx = self.HB_replace_hidden_states(
+                hidden_states,
+                HB_hidden_states_list_list,
+                HB_m_offset_list,
+                HB_n_offset_list,
+                HB_m_scale_list,
+                HB_n_scale_list,
+                latent_h,
+                latent_w,
+                HB_idx,
+            )
 
         if original_hidden_states_list is not None:
             Repainting_idx = 0
-            hidden_states, Repainting_idx = self.Repainting_replace_hidden_states(hidden_states, original_hidden_states_list, Repainting_HB_m_offset, Repainting_HB_n_offset, Repainting, latent_h, latent_w, Repainting_idx)
+            hidden_states, Repainting_idx = self.Repainting_replace_hidden_states(
+                hidden_states,
+                original_hidden_states_list,
+                Repainting_HB_m_offset,
+                Repainting_HB_n_offset,
+                Repainting,
+                latent_h,
+                latent_w,
+                Repainting_idx,
+            )
 
         if return_hidden_states_list:
             hidden_states_list.append(hidden_states)
@@ -632,6 +696,7 @@ class RAG_FluxTransformer2DModel(ModelMixin):
             joint_attention_kwargs["SR_encoder_hidden_states_list"] = [
                 self.context_embedder(SR_encoder_hidden_states) for SR_encoder_hidden_states in joint_attention_kwargs["SR_encoder_hidden_states_list"]
             ]
+            joint_attention_kwargs['lora_regional_scaling'] = lora_regional_scaling
 
         if txt_ids.ndim == 3:
             logger.warning(
@@ -690,10 +755,29 @@ class RAG_FluxTransformer2DModel(ModelMixin):
                     )
 
                 if HB_hidden_states_list_list is not None:
-                    hidden_states, HB_idx = self.HB_replace_hidden_states(hidden_states, HB_hidden_states_list_list, HB_m_offset_list, HB_n_offset_list, HB_m_scale_list, HB_n_scale_list, latent_h, latent_w, HB_idx)
+                    hidden_states, HB_idx = self.HB_replace_hidden_states(
+                        hidden_states,
+                        HB_hidden_states_list_list,
+                        HB_m_offset_list,
+                        HB_n_offset_list,
+                        HB_m_scale_list,
+                        HB_n_scale_list,
+                        latent_h,
+                        latent_w,
+                        HB_idx,
+                    )
 
                 if original_hidden_states_list is not None:
-                    hidden_states, Repainting_idx = self.Repainting_replace_hidden_states(hidden_states, original_hidden_states_list, Repainting_HB_m_offset, Repainting_HB_n_offset, Repainting, latent_h, latent_w, Repainting_idx)
+                    hidden_states, Repainting_idx = self.Repainting_replace_hidden_states(
+                        hidden_states,
+                        original_hidden_states_list,
+                        Repainting_HB_m_offset,
+                        Repainting_HB_n_offset,
+                        Repainting,
+                        latent_h,
+                        latent_w,
+                        Repainting_idx,
+                    )
 
                 if return_hidden_states_list:
                     hidden_states_list.append(hidden_states)
@@ -758,7 +842,13 @@ class RAG_FluxTransformer2DModel(ModelMixin):
                 if HB_hidden_states_list_list is not None:
                     hidden_states_clone = hidden_states.clone()[:, encoder_hidden_states.shape[1] :, ...].view(hidden_states.shape[0], latent_h, latent_w, hidden_states.shape[2])
 
-                    for HB_hidden_states_list, HB_m_offset, HB_n_offset, HB_m_scale,HB_n_scale in zip(HB_hidden_states_list_list, HB_m_offset_list, HB_n_offset_list, HB_m_scale_list, HB_n_scale_list):
+                    for HB_hidden_states_list, HB_m_offset, HB_n_offset, HB_m_scale, HB_n_scale in zip(
+                            HB_hidden_states_list_list,
+                            HB_m_offset_list,
+                            HB_n_offset_list,
+                            HB_m_scale_list,
+                            HB_n_scale_list,
+                        ):
                         HB_hidden_states = HB_hidden_states_list[HB_idx]
                         HB_hidden_states = HB_hidden_states[:, HB_hidden_states.shape[1]-HB_n_scale*HB_m_scale :, ...].view(HB_hidden_states.shape[0], HB_n_scale, HB_m_scale, HB_hidden_states.shape[2])
                         hidden_states_clone[:, HB_n_offset:HB_n_offset+HB_n_scale,HB_m_offset:HB_m_offset+HB_m_scale, :] = HB_hidden_states
@@ -769,9 +859,11 @@ class RAG_FluxTransformer2DModel(ModelMixin):
 
                 if original_hidden_states_list is not None:
                     if Repainting_single:
-                        hidden_states_clone = hidden_states.clone()[:, encoder_hidden_states.shape[1] :, ...].view(hidden_states.shape[0], latent_h, latent_w, hidden_states.shape[2])
+                        hidden_states_clone = hidden_states.clone()[:, encoder_hidden_states.shape[1] :, ...].view(
+                            hidden_states.shape[0], latent_h, latent_w, hidden_states.shape[2])
                         original_hidden_states = original_hidden_states_list[Repainting_idx]
-                        original_hidden_states = original_hidden_states[:, encoder_hidden_states.shape[1] :, ...].view(original_hidden_states.shape[0], latent_h, latent_w, original_hidden_states.shape[2])
+                        original_hidden_states = original_hidden_states[:, encoder_hidden_states.shape[1] :, ...].view(
+                            original_hidden_states.shape[0], latent_h, latent_w, original_hidden_states.shape[2])
                         original_hidden_states[:, Repainting_HB_n_offset:Repainting_HB_n_offset+Repainting.shape[1], Repainting_HB_m_offset:Repainting_HB_m_offset+Repainting.shape[2], :][Repainting == 1] = hidden_states_clone[:, Repainting_HB_n_offset:Repainting_HB_n_offset+Repainting.shape[1], Repainting_HB_m_offset:Repainting_HB_m_offset+Repainting.shape[2], :][Repainting == 1]
                         hidden_states_clone = original_hidden_states.view(hidden_states.shape[0], latent_h*latent_w, hidden_states.shape[2])
                         hidden_states[:, encoder_hidden_states.shape[1] :, ...] = hidden_states_clone
@@ -794,10 +886,29 @@ class RAG_FluxTransformer2DModel(ModelMixin):
         hidden_states = self.norm_out(hidden_states, temb)
 
         if HB_hidden_states_list_list is not None:
-            hidden_states, HB_idx = self.HB_replace_hidden_states(hidden_states, HB_hidden_states_list_list, HB_m_offset_list, HB_n_offset_list, HB_m_scale_list, HB_n_scale_list, latent_h, latent_w, HB_idx)
+            hidden_states, HB_idx = self.HB_replace_hidden_states(
+                hidden_states,
+                HB_hidden_states_list_list,
+                HB_m_offset_list,
+                HB_n_offset_list,
+                HB_m_scale_list,
+                HB_n_scale_list,
+                latent_h,
+                latent_w,
+                HB_idx,
+            )
 
         if original_hidden_states_list is not None:
-            hidden_states, Repainting_idx = self.Repainting_replace_hidden_states(hidden_states, original_hidden_states_list, Repainting_HB_m_offset, Repainting_HB_n_offset, Repainting, latent_h, latent_w, Repainting_idx)
+            hidden_states, Repainting_idx = self.Repainting_replace_hidden_states(
+                hidden_states,
+                original_hidden_states_list,
+                Repainting_HB_m_offset,
+                Repainting_HB_n_offset,
+                Repainting,
+                latent_h,
+                latent_w,
+                Repainting_idx,
+            )
 
         if return_hidden_states_list:
             hidden_states_list.append(hidden_states)
@@ -805,10 +916,29 @@ class RAG_FluxTransformer2DModel(ModelMixin):
         output = self.proj_out(hidden_states)
 
         if HB_hidden_states_list_list is not None:
-            hidden_states, HB_idx = self.HB_replace_hidden_states(hidden_states, HB_hidden_states_list_list, HB_m_offset_list, HB_n_offset_list, HB_m_scale_list, HB_n_scale_list, latent_h, latent_w, HB_idx)
+            hidden_states, HB_idx = self.HB_replace_hidden_states(
+                hidden_states,
+                HB_hidden_states_list_list,
+                HB_m_offset_list,
+                HB_n_offset_list,
+                HB_m_scale_list,
+                HB_n_scale_list,
+                latent_h,
+                latent_w,
+                HB_idx,
+            )
 
         if original_hidden_states_list is not None:
-            hidden_states, Repainting_idx = self.Repainting_replace_hidden_states(hidden_states, original_hidden_states_list, Repainting_HB_m_offset, Repainting_HB_n_offset, Repainting, latent_h, latent_w, Repainting_idx)
+            hidden_states, Repainting_idx = self.Repainting_replace_hidden_states(
+                hidden_states,
+                original_hidden_states_list,
+                Repainting_HB_m_offset,
+                Repainting_HB_n_offset,
+                Repainting,
+                latent_h,
+                latent_w,
+                Repainting_idx,
+            )
 
         if return_hidden_states_list:
             hidden_states_list.append(hidden_states)

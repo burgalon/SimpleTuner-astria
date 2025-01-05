@@ -2,13 +2,15 @@ import math
 import torch
 import torchvision.transforms.functional as F
 TOKENS = 75
-    
+
+
 def hook_forwards(self, root_module: torch.nn.Module):
     for name, module in root_module.named_modules():
         if "attn" in name and "transformer_blocks" in name  and "single_transformer_blocks" not in name and module.__class__.__name__ == "Attention":
             module.forward = FluxTransformerBlock_hook_forward(self, module)           
         elif "attn" in name and "single_transformer_blocks" in name and module.__class__.__name__ == "Attention":
             module.forward = FluxSingleTransformerBlock_hook_forward(self, module) 
+
 
 def FluxSingleTransformerBlock_hook_forward(self, module):
     def forward(
@@ -19,8 +21,13 @@ def FluxSingleTransformerBlock_hook_forward(self, module):
         SR_norm_encoder_hidden_states_list=None,
         SR_hidden_states_list=None,
         SR_norm_hidden_states_list=None,
+        lora_regional_scaling=None,
     ):
-        flux_hidden_states=module.processor(module, hidden_states=hidden_states, image_rotary_emb=image_rotary_emb)
+        flux_hidden_states = module.processor(
+            module,
+            hidden_states=hidden_states,
+            image_rotary_emb=image_rotary_emb,
+        )
 
         height = self.h 
         width = self.w
@@ -44,15 +51,21 @@ def FluxSingleTransformerBlock_hook_forward(self, module):
             latent_in = latent_h
             i = 0
             sumout = 0
-            SR_all_out_list=[]
+            SR_all_out_list = []
 
             for drow in self.split_ratio:
                 v_states = []
                 sumin = 0
                 for dcell in drow.cols:
                     context = contexts_list[i]
+                    lora_scalings = lora_regional_scaling[i]
+                    self.transformer.scale_lora_layers_according_to_region(lora_scalings)
                     i = i + 1 + dcell.breaks
-                    SR_all_out = module.processor(module, hidden_states=context, image_rotary_emb=image_rotary_emb)
+                    SR_all_out = module.processor(
+                        module,
+                        hidden_states=context,
+                        image_rotary_emb=image_rotary_emb,
+                    )
                     out = SR_all_out[:, 512 :, ...]
                     out = out.reshape(out.size()[0], latent_h, latent_w, out.size()[2])
                     addout = 0
@@ -88,6 +101,7 @@ def FluxSingleTransformerBlock_hook_forward(self, module):
     
     return forward
 
+
 def FluxTransformerBlock_hook_forward(self, module):
     def forward(
         hidden_states=None,
@@ -97,8 +111,14 @@ def FluxTransformerBlock_hook_forward(self, module):
         SR_norm_encoder_hidden_states_list=None,
         SR_hidden_states_list=None,
         SR_norm_hidden_states_list=None,
+        lora_regional_scaling=None,
     ):
-        flux_hidden_states, flux_encoder_hidden_states = module.processor(module, hidden_states=hidden_states, encoder_hidden_states=encoder_hidden_states, image_rotary_emb=image_rotary_emb)
+        flux_hidden_states, flux_encoder_hidden_states = module.processor(
+            module,
+            hidden_states=hidden_states,
+            encoder_hidden_states=encoder_hidden_states,
+            image_rotary_emb=image_rotary_emb,
+        )
         
         height = self.h 
         width = self.w
@@ -130,8 +150,15 @@ def FluxTransformerBlock_hook_forward(self, module):
                 sumin = 0
                 for dcell in drow.cols:
                     context = contexts_list[i]
+                    lora_scalings = lora_regional_scaling[i]
+                    self.transformer.scale_lora_layers_according_to_region(lora_scalings)
                     i = i + 1 + dcell.breaks
-                    out,SR_context_attn_output = module.processor(module, hidden_states=x, encoder_hidden_states=context, image_rotary_emb=image_rotary_emb)
+                    out,SR_context_attn_output = module.processor(
+                        module,
+                        hidden_states=x,
+                        encoder_hidden_states=context,
+                        image_rotary_emb=image_rotary_emb,
+                    )
                     out = out.reshape(out.size()[0], latent_h, latent_w, out.size()[2]) 
                     addout = 0
                     addin = 0
@@ -202,10 +229,12 @@ def init_forwards(self, root_module: torch.nn.Module):
         elif "attn" in name and "single_transformer_blocks" in name and module.__class__.__name__ == "Attention":
             module.forward = FluxSingleTransformerBlock_init_forward(self, module) 
 
+
 def FluxSingleTransformerBlock_init_forward(self, module):
     def forward(hidden_states=None, encoder_hidden_states=None, image_rotary_emb=None,RPG_encoder_hidden_states_list=None,RPG_norm_encoder_hidden_states_list=None,RPG_hidden_states_list=None,RPG_norm_hidden_states_list=None):
         return module.processor(module, hidden_states=hidden_states, image_rotary_emb=image_rotary_emb)
     return forward
+
 
 def FluxTransformerBlock_init_forward(self, module):
     def forward(hidden_states=None, encoder_hidden_states=None, image_rotary_emb=None,RPG_encoder_hidden_states_list=None,RPG_norm_encoder_hidden_states_list=None,RPG_hidden_states_list=None,RPG_norm_hidden_states_list=None):

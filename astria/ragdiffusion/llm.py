@@ -48,11 +48,11 @@ def parse_possible_list(value):
     return value
 
 
-def openai_gpt4o_get_regions(prompt):
+def openai_gpt4o_get_regions(prompt, cache=False):
     # Cache for debugging
-    # if test_pth.exists():
-    #     with open(test_pth, 'r') as f:
-    #         return json.load(f)
+    if test_pth.exists() and cache:
+        with open(test_pth, 'r') as f:
+            return json.load(f)
     
     api_key = os.environ.get('OPENAI_API_KEY', None)
     if api_key is None:
@@ -88,8 +88,9 @@ def openai_gpt4o_get_regions(prompt):
     text=obj['choices'][0]['message']['content']
 
     # Cache for debugging
-    # with open(test_pth, 'w') as f:
-    #     json.dump(get_params_dict(text), f, indent=2)
+    if cache:
+        with open(test_pth, 'w') as f:
+            json.dump(get_params_dict(text), f, indent=2)
 
     return get_params_dict(text)
 
