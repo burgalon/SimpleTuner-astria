@@ -854,7 +854,7 @@ class InferPipeline(InpaintFaceMixin, VtonMixin):
             HB_replace =  getattr(prompt, 'regional_hb_replace', 2)
             SR_delta =  getattr(prompt, 'regional_sr_delta', 1.0)
 
-            regions = openai_gpt4o_get_regions(prompt._prompt_with_lora_ids, cache=True)
+            regions = openai_gpt4o_get_regions(prompt._prompt_with_lora_ids)
             print(f"T#{prompt.tune_id} P#{prompt.id} regions={regions}")
 
             # Now that we have the regions, we need to assign LoRAs to each
