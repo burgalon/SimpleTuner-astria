@@ -132,6 +132,8 @@ def parse_args(prompt: JsonObj):
     for k, v in vars(args).items():
         setattr(prompt, k, v)
     prompt.text = " ".join(args.text+unknown)
+    if prompt.cfg_scale:
+        prompt.cfg_scale = float(prompt.cfg_scale)
     if prompt.only_upscale:
         print(f"T#{prompt.tune_id} P#{prompt.id} Only upscaling - resetting other attributes including controlnet")
         prompt.super_resolution = False
@@ -140,6 +142,8 @@ def parse_args(prompt: JsonObj):
         prompt.inpaint_faces = False
         prompt.controlnet = None
 
+def get_pipe_key_for_lora(pipe):
+    return 'fill' if isinstance(pipe, FluxFillPipeline) else 'pipe'
 
 class InferPipeline(InpaintFaceMixin, VtonMixin):
     reference_pattern = r'<(lora|faceid):([^>:]+):([\d\.]+)>'
@@ -156,7 +160,7 @@ class InferPipeline(InpaintFaceMixin, VtonMixin):
         self.pipe = None
         self.img2img = None
         self.inpaint = None
-        self.current_lora_weights = {'names': [], 'scales': []}
+        self.current_lora_weights_map = {}
         self.resolution = None
 
         self.reset_controlnet()
@@ -168,26 +172,43 @@ class InferPipeline(InpaintFaceMixin, VtonMixin):
         self.controlnet_txt2img = None
         self.controlnet_img2img = None
         self.controlnet_inpaint_txt2img = None
+        if 'fill' in self.current_lora_weights_map:
+            del self.current_lora_weights_map['fill']
         self.fill = None
         self.pulid_model = None
         self.pulid_pipe = None
         self.rag_diffusion_pipe = None
         torch.cuda.empty_cache()
 
-    def unload_lora_weights(self):
-        if self.pipe:
-            self.pipe.unload_lora_weights()
-        if self.fill:
-            self.fill.unload_lora_weights()
-        self.current_lora_weights = {'names': [], 'scales': []}
 
-    def load_references(self, prompt: JsonObj):
+    def warmup(self):
+        start_time = time.time()
+        self.init_pipe(MODELS_DIR + "/1504944-flux1")
+        print(f"Initialized pipeline in {time.time() - start_time:.2f}s")
+        start_time = time.time()
+        self.init_inpaint(JsonObj(fill=True))
+        print(f"Initialized inpaint in {time.time() - start_time:.2f}s")
+
+    def unload_lora_weights(self, pipe):
+        pipe_key = get_pipe_key_for_lora(pipe)
+        if pipe_key == 'fill':
+            self.fill.unload_lora_weights()
+        else:
+            self.pipe.unload_lora_weights()
+        self.current_lora_weights_map[pipe_key] = {'names': [], 'scales': []}
+
+    def load_references(self, prompt: JsonObj, pipe):
         names = []
         scales = []
         lora_fns = []
         setattr(prompt, '_prompt_with_lora_ids', prompt.text)
+        pipe_key = get_pipe_key_for_lora(pipe)
+        if pipe_key not in self.current_lora_weights_map:
+            self.current_lora_weights_map[pipe_key] = {'names': [], 'scales': []}
+        current_lora_weights = self.current_lora_weights_map[pipe_key]
 
-        for match_groups in re.findall(self.reference_pattern_re, prompt.text):
+        all_match_groups = re.findall(self.reference_pattern_re, prompt.text)
+        for match_groups in all_match_groups:
             type, token, scale = match_groups
             if type == "lora":
                 tune = next(iter([tune for tune in prompt.tunes if tune.token == token or str(tune.id) == token]), None)
@@ -203,52 +224,60 @@ class InferPipeline(InpaintFaceMixin, VtonMixin):
                     else:
                         # touch for access time so that it doesn't get cleaned up
                         os.utime(lora_fn)
-                names.append(str(tune.id))
-                scales.append(float(scale))
-                lora_fns.append(lora_fn)
+
+                # This is hack fix for bug in diffusers doe due to the new ` _maybe_expand_lora_state_dict`
+                # when first loading a small rank lora and then a higher rank lora
+                # and so Civit models which atr represented by token strings are usually higher ranks, so we load first
+                # until this is fixed in diffusers
+                if token == str(tune.id):
+                    names.append(str(tune.id))
+                    scales.append(float(scale))
+                    lora_fns.append(lora_fn)
+                else:
+                    # insert at the beginning
+                    names.insert(0, str(tune.id))
+                    scales.insert(0, float(scale))
+                    lora_fns.insert(0, lora_fn)
 
                 # Clean the match from the prompt
                 prompt.text = prompt.text.replace(f"<{type}:{token}:{scale}>", "")
                 prompt._prompt_with_lora_ids = prompt._prompt_with_lora_ids.replace(f"<{type}:{token}:{scale}>", f"{str(tune.id)}")
 
         if len(names) == 0:
-            print("Unloading LoRA weights")
             # No LoRA weights needed for this prompt
-            if self.current_lora_weights.get('names', []):
+            if current_lora_weights.get('names', []):
+                print(f"Unloading LoRA weights for pipe={pipe.__class__.__name__}")
                 # Unload any previously loaded LoRA weights
-                self.unload_lora_weights()
+                self.unload_lora_weights(pipe)
             return {}
 
         # Compare with current LoRA weights
-        if names == self.current_lora_weights.get('names', []) and scales == self.current_lora_weights.get('scales', []):
+        if names == current_lora_weights.get('names', []) and scales == current_lora_weights.get('scales', []):
             print("LoRA weights already loaded with the same scales")
         else:
-            if self.current_lora_weights.get('names', []):
-                self.unload_lora_weights()
+            if current_lora_weights.get('names', []):
+                self.unload_lora_weights(pipe)
             # Load new LoRA weights
             start_time = time.time()
             for name, lora_fn in zip(names, lora_fns):
-                self.pipe.load_lora_weights(lora_fn, adapter_name=name, low_cpu_mem_usage=True)
-                if self.fill:
-                    self.fill.load_lora_weights(lora_fn, adapter_name=name, low_cpu_mem_usage=True)
-                    print(f"[FILL] Loading LoRA weights {name}")
-            print(f"Loaded LoRA weights {names} in {time.time() - start_time:.2f}s")
-            self.current_lora_weights = {'names': names, 'scales': scales}
+                print(f"Loading LoRA weights {name} from {lora_fn}")
+                pipe.load_lora_weights(lora_fn, adapter_name=name, low_cpu_mem_usage=True)
+            print(f"Loaded LoRA weights {names} in {time.time() - start_time:.2f}s pipe={pipe.__class__.__name__}")
+            current_lora_weights['names'] = names
+            current_lora_weights['scales'] = scales
+            self.current_lora_weights_map[pipe_key] = current_lora_weights
+            if len(self.current_lora_weights_map.keys()) > 2:
+                print(f"current_lora_weights_map={[k.__class__.__name__ for k in self.current_lora_weights_map.keys()]}")
+                raise ValueError("current_lora_weights_map too large")
 
         # Set adapters
-        self.pipe.set_adapters(names, adapter_weights=scales)
-        if self.fill:
-            print(f"[FILL] set_adapters names={names} scales={scales}")
-            self.fill.set_adapters(names, adapter_weights=scales)
+        pipe.set_adapters(names, adapter_weights=scales)
 
-        # TODO: This is needed because of patching in lora_loading_patch.py
-        self.pipe = self.pipe.to("cuda")
         print(f"set_adapters names={names} scales={scales}")
 
         if len(names) > 1:
-            return { "scale": 1.0 }
-        
-        return { "scale": scales[0] }
+            return {"scale": 1.0}
+        return {"scale": scales[0]}
 
     def init_pipe(self, model_path):
         """Initialize both FluxPipeline and FluxImg2ImgPipeline."""
@@ -285,20 +314,19 @@ class InferPipeline(InpaintFaceMixin, VtonMixin):
         lock_file = f"{embedding_file}.lock"
 
         with FileLock(lock_file, timeout=60):
-            if os.path.exists(embedding_file):
+            if os.path.exists(embedding_file) and not os.environ.get("FORCE_PULID"):
                 if os.path.getsize(embedding_file) == 0:
                     raise RuntimeError(f"T#{tune.id} No embeddings can be calculated for this tune.")
-                if not os.environ.get("FORCE_PULID"):
-                    # Load the embedding and update access time
-                    print(f"T#{tune.id} Loading PulID embedding")
-                    pulid_embed = torch.load(embedding_file)
-                    os.utime(embedding_file)
-                    return pulid_embed
+                # Load the embedding and update access time
+                print(f"T#{tune.id} Loading PulID embedding")
+                pulid_embed = torch.load(embedding_file)
+                os.utime(embedding_file)
+                return pulid_embed
 
             try:
                 # Calculate the embedding and save it
                 start_time = time.time()
-                pulid_embed, _ = self.pulid_model.get_id_embedding_for_images_list(load_images(tune.face_swap_images))
+                pulid_embed, _ = self.pulid_model.get_id_embedding_for_images_list(load_images(tune.face_swap_images[:4]))
                 print(f"T#{tune.id} Calculated PulID embedding in {time.time() - start_time:.2f}s")
                 torch.save(pulid_embed, embedding_file)
                 os.utime(embedding_file)
@@ -420,6 +448,7 @@ class InferPipeline(InpaintFaceMixin, VtonMixin):
                 tokenizer_2=self.pipe.tokenizer_2,
             ).to(device)
 
+
     def poll_infer(self):
         tune = JsonObj()
         try:
@@ -460,8 +489,24 @@ class InferPipeline(InpaintFaceMixin, VtonMixin):
             w, h = int(np.round(prompt.w / 32.0) * 32), int(np.round(prompt.h / 32.0) * 32)
         else:
             w, h = orig_input_image.size
-            # calculate k so that the aspect ratio is preserved but w*h = resolution[0]*resolution[1]
-            k = (float(self.resolution[0] * self.resolution[1]) / (w * h)) ** 0.5
+            # if we're doing outpainting only, we want the output target to be always the same size
+            # so esssentially we only want to downsample (resize down) the input image
+            # moreover, when resizing we do not want to maintain the same total number of pixels but rather
+            # make sure the largest dimension is the same as the target size
+            if prompt.denoising_strength == 0 and prompt.outpaint:
+                if w>prompt.outpaint_width or h>prompt.outpaint_height:
+                    if float(w)/prompt.outpaint_width > float(h) / prompt.outpaint_height:
+                        k = prompt.outpaint_width / w
+                        print(f"T#{prompt.tune_id} P#{prompt.id} outpaint_width={prompt.outpaint_width} w={w} k={k:.2f}")
+                    else:
+                        k = prompt.outpaint_height / h
+                        print(f"T#{prompt.tune_id} P#{prompt.id} outpaint_height={prompt.outpaint_height} h={h} k={k:.2f}")
+                else:
+                    k =1
+                    print(f"T#{prompt.tune_id} P#{prompt.id} outpaint={prompt.outpaint_width}x{prompt.outpaint_height} input_image.size={orig_input_image.size} k=1")
+            else:
+                k = (float(self.resolution[0] * self.resolution[1]) / (w * h)) ** 0.5
+
             h *= k
             w *= k
             h = int(np.round(h / 32.0)) * 32
@@ -502,7 +547,7 @@ class InferPipeline(InpaintFaceMixin, VtonMixin):
     def outpaint(self, images, prompt, kwargs):
         out = []
         pipe = self.init_inpaint(JsonObj(fill=True))
-        print(f"T#{prompt.tune_id} P#{prompt.id} outpaint {prompt.outpaint} {prompt.outpaint_height}x{prompt.outpaint_width} text={prompt.outpaint_prompt}")
+        print(f"T#{prompt.tune_id} P#{prompt.id} outpaint {prompt.outpaint} {prompt.outpaint_height}x{prompt.outpaint_width} text={prompt.outpaint_prompt} from {images[0].size}")
         h = prompt.outpaint_height
         w = prompt.outpaint_width
         if not h or not w:
@@ -785,7 +830,7 @@ class InferPipeline(InpaintFaceMixin, VtonMixin):
                     kwargs['strength'] = float(prompt.denoising_strength if prompt.denoising_strength != None else 0.8)
         elif use_regional:
             self.init_rag_diffusion()
-            pipe = self.rag_diffusion_pipe        
+            pipe = self.rag_diffusion_pipe
         else:
             pipe = self.pipe
 
@@ -802,6 +847,7 @@ class InferPipeline(InpaintFaceMixin, VtonMixin):
             SR_delta =  getattr(prompt, 'regional_sr_delta', 1.0)
 
             regions = openai_gpt4o_get_regions(prompt._prompt_with_lora_ids)
+            print(f"T#{prompt.tune_id} P#{prompt.id} regions={regions}")
 
             # Now that we have the regions, we need to assign LoRAs to each
             # region, if relevant.
@@ -809,7 +855,7 @@ class InferPipeline(InpaintFaceMixin, VtonMixin):
             SR_prompt = regions["SR_prompt"]
             lora_regional_scaling = []
             for hb_prompt in HB_prompt_list:
-                scaling_values = { 
+                scaling_values = {
                     lora_id: 0.0
                     for lora_id in self.current_lora_weights.get('names', [])
                 }
@@ -827,7 +873,7 @@ class InferPipeline(InpaintFaceMixin, VtonMixin):
                 for lora_id in self.current_lora_weights.get('names', []):
                     hb_prompt = hb_prompt.replace(lora_id, "")
                 HB_prompt_list_cleaned.append(hb_prompt)
-            
+
             for lora_id in self.current_lora_weights.get('names', []):
                 SR_prompt = SR_prompt.replace(lora_id, "")
 
@@ -869,7 +915,7 @@ class InferPipeline(InpaintFaceMixin, VtonMixin):
         kwargs['prompt_embeds'] = prompt_embeds
         kwargs['pooled_prompt_embeds'] = pooled_prompt_embeds
 
-        print(f"T#{prompt.tune_id} P#{prompt.id} pipe={pipe.__class__.__name__} Infer image {prompt.text=} loras={self.current_lora_weights}")
+        print(f"T#{prompt.tune_id} P#{prompt.id} pipe={pipe.__class__.__name__} {prompt.text=} loras={self.current_lora_weights_map[get_pipe_key_for_lora(pipe)]}")
         for i_image in range(num_images):
             if 'image' in kwargs is not None and 'strength' in kwargs and kwargs['strength'] == 0:
                 print(f"T#{prompt.tune_id} P#{prompt.id} Skipping image {i_image} because strength=0. Probably just VTON or outpaint only?")
@@ -914,7 +960,7 @@ class InferPipeline(InpaintFaceMixin, VtonMixin):
         if prompt.base_pack and prompt.base_pack.watermark:
             images = add_watermark(images, prompt.base_pack.watermark)
 
-    # if it's inpainting, we need to resize the mask, and then paste back the original image
+        # if it's inpainting, we need to resize the mask, and then paste back the original image
         if prompt.restore_mask:
             print(f"T#{prompt.tune_id} P#{prompt.id} Restoring background")
 
@@ -938,10 +984,10 @@ class InferPipeline(InpaintFaceMixin, VtonMixin):
 def main():
     download_model_from_server(f"1504944-flux1")
     pipeline = InferPipeline()
-    if GPU_MEMORY_GB > 50:
-        pipeline.init_pipe(MODELS_DIR + "/1504944-flux1")
 
     def poll():
+        if GPU_MEMORY_GB > 50:
+            pipeline.warmup()
         i = 0
         max_sleeps = int(os.environ.get('MAX_SLEEPS', 90))
         while not is_terminated() and (i < max_sleeps or os.environ.get('DONT_STOP')):
@@ -961,6 +1007,7 @@ def main():
                     train(tune)
                     set_current_train_tune(None)
                     processed_jobs = 1
+                    pipeline.warmup()
 
             # Check both train + infer
             if processed_jobs == 0:
