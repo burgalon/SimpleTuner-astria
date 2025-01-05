@@ -323,28 +323,53 @@ class PuLID:
             device: str = 'cuda',
             dtype: torch.dtype = torch.bfloat16,
     ):
+        """
+        Create ID embeddings for a list of images and return their average, matching the
+        original (1, D) output shape from the single-image get_id_embedding function.
+
+        Args:
+            images (List[Union[PIL.Image.Image, np.ndarray]]): List of images (each is PIL or numpy).
+            cal_uncond (bool): Whether to also compute unconditional embedding.
+            device (str): Torch device.
+            dtype (torch.dtype): Data type for torch tensors.
+
+        Returns:
+            (tuple): (avg_id_embedding, avg_uncond_embedding or None)
+                     Both are shape (1, D) if multiple images are provided (or a single image in a list),
+                     exactly matching the shape your original get_id_embedding() returns.
+        """
+        if not images:
+            raise ValueError("The images list is empty.")
+
         all_embeddings = []
         all_uncond_embeddings = []
 
-        for img in images:
-            # Call your existing get_id_embedding() method for each image
-            id_emb, uncond_emb = self.get_id_embedding(
-                img,
-                cal_uncond=cal_uncond,
-                device=device,
-                dtype=dtype
-            )
-            all_embeddings.append(id_emb)
-            if cal_uncond and uncond_emb is not None:
-                all_uncond_embeddings.append(uncond_emb)
+        for i_img, img in enumerate(images):
+            # Reuse your original get_id_embedding() (unchanged)
+            try:
+                id_emb, uncond_emb = self.get_id_embedding(
+                    img,
+                    cal_uncond=cal_uncond,
+                    device=device,
+                    dtype=dtype
+                )
+                # id_emb shape: (1, D)
+                all_embeddings.append(id_emb)
+                if cal_uncond and uncond_emb is not None:
+                    all_uncond_embeddings.append(uncond_emb)
+            except RuntimeError as e:
+                print(f"Could not get embedding for image {i_img}: {e}")
 
-        # Stack embeddings to compute the mean
-        id_embeddings = torch.stack(all_embeddings, dim=0)
-        avg_id_embedding = id_embeddings.mean(dim=0, keepdim=True)
+        if len(all_embeddings) == 0:
+            raise RuntimeError("No embeddings were computed for any of the images.")
 
-        if cal_uncond and len(all_uncond_embeddings) > 0:
-            uncond_embeddings = torch.stack(all_uncond_embeddings, dim=0)
-            avg_uncond_embedding = uncond_embeddings.mean(dim=0, keepdim=True)
+        # all_embeddings is a list of (1, D) tensors; stacking on dim=0 -> (N, 1, D)
+        id_embeddings = torch.stack(all_embeddings, dim=0)   # shape: (N, 1, D)
+        avg_id_embedding = id_embeddings.mean(dim=0)         # shape: (1, D)
+
+        if cal_uncond and all_uncond_embeddings:
+            uncond_embeddings = torch.stack(all_uncond_embeddings, dim=0)   # shape: (N, 1, D)
+            avg_uncond_embedding = uncond_embeddings.mean(dim=0)            # shape: (1, D)
             return avg_id_embedding, avg_uncond_embedding
         else:
             return avg_id_embedding, None
@@ -352,6 +377,8 @@ class PuLID:
 if __name__ == '__main__':
     pulid_model = PuLID(local_dir='/data/cache/pulid')
     img = Image.open('astria_tests/fixtures/19477328-before-inpaint-0.jpg')
-    embed, _ = pulid_model.get_id_embedding_for_images_list([img, img])
+    embed_avg, _ = pulid_model.get_id_embedding_for_images_list([img, img])
     embed, _ = pulid_model.get_id_embedding(img)
-    print(embed.shape)
+    # show difference between embeddings
+    print(torch.norm(embed_avg - embed))
+    print(embed.shape, embed_avg.shape)

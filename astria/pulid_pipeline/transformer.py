@@ -31,15 +31,19 @@ from diffusers.models.transformers.transformer_flux import (
 )
 from diffusers.utils import USE_PEFT_BACKEND, logging, scale_lora_layers, unscale_lora_layers
 from diffusers.models.modeling_utils import ModelMixin
+from diffusers.loaders import PeftAdapterMixin
+from diffusers.loaders.peft import _SET_ADAPTER_SCALE_FN_MAPPING
 
 from .pulid_ext import PuLModel
 
 
 logger = logging.get_logger(__name__)  # pylint: disable=invalid-name
 
+# https://github.com/huggingface/diffusers/blob/main/src/diffusers/loaders/peft.py#L49
+_SET_ADAPTER_SCALE_FN_MAPPING["FluxTransformer2DModelWithPulID"] = lambda model_cls, weights: weights
 
 # ModelMixin, PeftAdapterMixin, FromOriginalModelMixin, ConfigMixin, ModelMixin
-class FluxTransformer2DModelWithPulID(ModelMixin):
+class FluxTransformer2DModelWithPulID(ModelMixin, PeftAdapterMixin):
     _supports_gradient_checkpointing = False
     _no_split_modules = ["FluxTransformerBlock", "FluxSingleTransformerBlock"]
 
