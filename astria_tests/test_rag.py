@@ -59,7 +59,7 @@ def test_regional_one_lora_person_and_cartoon_lora():
         **copy.copy(BASE_PROMPT.__dict__),
         use_regional=True,
     )
-    prompt.text=f"<lora:{FLUX_LORA_MAN.id}:1> {FLUX_LORA_MAN.train_token} man, real photograph portrait holding <lora:{FLUX_CARTOON.id}:1> {FLUX_CARTOON.train_token} sloth, white t-shirt, white background, professional headshot with cartoon sloth character"
+    prompt.text=f"<lora:{FLUX_LORA_MAN.id}:1> {FLUX_LORA_MAN.train_token} man, real photograph portrait holding <lora:{FLUX_CARTOON.id}:1> {FLUX_CARTOON.train_token} sloth, white t-shirt, white background, professional headshot with cartoon sloth character. The top half of the image is the man's shoulder and face, which the bottom half of the image is the 2d illustration being held in his arms. Compositing cinematography example, cartoon overlaid on photograph"
     prompt.tunes=[FLUX_LORA_MAN, FLUX_CARTOON]
     run_images(prompt)
     assert isinstance(pipe.last_pipe, RAG_FluxPipeline)
