@@ -9,6 +9,9 @@ TEST_FN = "test.txt"
 test_pth = Path(__file__).resolve().parent / 'prompts' / TEST_FN
 
 
+MAX_TRIES = 5
+
+
 def parse_possible_list(value):
     """
     Attempt to parse `value` (which is presumably a string) as:
@@ -63,36 +66,56 @@ def openai_gpt4o_get_regions(prompt, cache=False):
     template_pth = Path(__file__).resolve().parent / 'prompts' / 'prompt.txt'
     with open(template_pth, 'r',encoding="utf-8") as f:
         template=f.readlines()
-    user_textprompt=f"Caption:{prompt} \n Let's think step by step, please reply in plain text and do not use any bold or bullet-point Markdown formatting."
+    user_textprompt=f"Caption:{prompt} \n Let's think step by step, please reply in plain text and do not use any bold or bullet-point Markdown formatting for Step 1, then response with a markdown formatted JSON section for Step 2."
     
     textprompt= f"{' '.join(template)} \n {user_textprompt}"
     
-    payload = json.dumps({
-        "model": "gpt-4o",
-        "messages": [
-            {
-                "role": "user",
-                "content": textprompt
+    tries = 0
+    regions = None
+    while tries < MAX_TRIES and regions is None:
+        try:
+            payload = json.dumps({
+                "model": "gpt-4o",
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": textprompt
+                    }
+                ]
+            })
+            headers = {
+                'Accept': 'application/json',
+                'Authorization': f'Bearer {api_key}',
+                'User-Agent': 'Apifox/1.0.0 (https://apifox.com)',
+                'Content-Type': 'application/json'
             }
-        ]
-    })
-    headers = {
-        'Accept': 'application/json',
-        'Authorization': f'Bearer {api_key}',
-        'User-Agent': 'Apifox/1.0.0 (https://apifox.com)',
-        'Content-Type': 'application/json'
-    }
-    response = requests.request("POST", url, headers=headers, data=payload)
-    # response_txt = response.text
-    obj=response.json()
-    text=obj['choices'][0]['message']['content']
+            response = requests.request("POST", url, headers=headers, data=payload)
+            # response_txt = response.text
+            obj = response.json()
+            text = obj['choices'][0]['message']['content']
+
+            match = re.search(
+                r'```json\s*(.*?)\s*```',
+                text,
+                re.DOTALL,
+            )
+            if match:
+                json_raw_content = match.group(1)
+                regions = json.loads(json_raw_content)
+            else:
+                raise json.JSONDecodeError("No matching JSON block detected")
+
+        except json.JSONDecodeError as e:
+            print(f"Failed to get parseable response ({str(e)}), retrying...")
+            tries += 1
+            continue
 
     # Cache for debugging
     if cache:
         with open(test_pth, 'w') as f:
-            json.dump(get_params_dict(text), f, indent=2)
+            json.dump(regions, f, indent=2)
 
-    return get_params_dict(text)
+    return regions
 
 
 def get_params_dict(output_text):

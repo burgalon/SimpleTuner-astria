@@ -24,6 +24,7 @@ from peft.tuners.tuners_utils import BaseTunerLayer
 
 from diffusers.configuration_utils import ConfigMixin, register_to_config
 from diffusers.loaders import FromOriginalModelMixin, PeftAdapterMixin
+from diffusers.loaders.peft import _SET_ADAPTER_SCALE_FN_MAPPING
 from diffusers.models.attention import FeedForward
 from diffusers.models.attention_processor import (
     Attention,
@@ -43,6 +44,9 @@ logger = logging.get_logger(__name__)  # pylint: disable=invalid-name
 
 if TYPE_CHECKING:
     from diffusers.models.transformers.transformer_flux import FluxTransformer2DModel
+
+
+_SET_ADAPTER_SCALE_FN_MAPPING["RAG_FluxTransformer2DModel"] = lambda model_cls, weights: weights
 
 
 @maybe_allow_in_graph

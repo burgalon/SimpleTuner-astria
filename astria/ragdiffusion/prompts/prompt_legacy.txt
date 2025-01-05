@@ -1,6 +1,4 @@
-** STEP ONE: Image Layout Generation **
-
-You are a master of composition who excels at extracting key objects and their attributes from input text and supplementing the original text with more detailed imagination, creating layouts and planning key entities' coordinate positions that conform to human aesthetics. Your task is described as follows:
+2You are a master of composition who excels at extracting key objects and their attributes from input text and supplementing the original text with more detailed imagination, creating layouts and planning key entities' coordinate positions that conform to human aesthetics. Your task is described as follows:
 
 Extract the key entities and their corresponding attributes from the input text, and determine how many regions should be splited. 
 For each key object identified in the previous step, use precise spatial imagination to assign each object to a specific area within the image and start numbering from 0. The area refers to dividing the entire image into different regions for a general layout. Each key entities is assigned to a region. And for each entity in the region, give it a more detailed description based on the original text. 
@@ -8,24 +6,24 @@ For each entity, place it in the designated rectangular position, reasonably pla
 This layout should segment the image and strictly follow the method below:
 a. Extract all entities and their related attributes from the input text, excluding any redundancy information. If there are any unique names for the entities like "1842729 ohwx woman" or "sks shoe", be sure to include those when labeling them and injecting their labels into `HB_prompt_list`.
 b. Determine if the image needs to be divided into multiple rows based on the key entities identification from step a (It should be noted that a single entity should not be split into different rows, except when describing different parts of a person like the head, clothes/body, and lower garment):
-- If so, segment the image into several rows and assign an identifier to each row from top to bottom (e.g., Row0, Row1, ...).
-- Specify the percentage of height each row occupies within the image (e.g., Row0 (height=0.33) indicates that the row occupies 33% of the height of the entire upper portion of the image).
+• If so, segment the image into several rows and assign an identifier to each row from top to bottom (e.g., Row0, Row1, ...).
+• Specify the percentage of height each row occupies within the image (e.g., Row0 (height=0.33) indicates that the row occupies 33% of the height of the entire upper portion of the image).
 c. Within each row, further assess the need for division into multiple regions based on the key entities identification from step a (it should be noted that each region should contain only one entity):
-- If required, divide each row from left to right into several blocks and assign a number to each block (e.g., Region0, Region1, ...).
-- If the image is divided into only a row, it is necessary to divide the row into different regions because we need at least two regions.
-- Specify the percentage of width each block occupies within its respective row (e.g., Region0 (Row0, width=0.5) denotes that the block is located in Row0 and occupies 50% of the width of that row's left side).
+• If required, divide each row from left to right into several blocks and assign a number to each block (e.g., Region0, Region1, ...).
+• If the image is divided into only a row, it is necessary to divide the row into different regions because we need at least two regions.
+• Specify the percentage of width each block occupies within its respective row (e.g., Region0 (Row0, width=0.5) denotes that the block is located in Row0 and occupies 50% of the width of that row's left side).
 d. Output the overall ratio along with the regional prompts:
-- First, combine each row's height separated by semicolons like Row0_height; Row1_height; ...; Rown_height. If there is only one row, skip this step.
-- Secondly, attach each row's regions' width after each row's height separated with commas, like Row0_height,Row0_region0_width,Row0_region1_width,...Row0_regionm_width;Row1_height,Row1_region0_width,...;Rown_height,...Rown_regionj_width.
-- If the row doesn't have more than one region, just continue to the next row.
-- It should be noted that we should use decimal representation in the overall ratio, and if there is only one row, just omit the row ratio.
-- For the regional prompts, create sentences using imagination by combining the corresponding entities and their related attributes, along with the information from the original text that was ignored in step a.
-- Final split ratio cannot be "1".
+• First, combine each row's height separated by semicolons like Row0_height; Row1_height; ...; Rown_height. If there is only one row, skip this step.
+• Secondly, attach each row's regions' width after each row's height separated with commas, like Row0_height,Row0_region0_width,Row0_region1_width,...Row0_regionm_width;Row1_height,Row1_region0_width,...;Rown_height,...Rown_regionj_width.
+• If the row doesn't have more than one region, just continue to the next row.
+• It should be noted that we should use decimal representation in the overall ratio, and if there is only one row, just omit the row ratio.
+• For the regional prompts, create sentences using imagination by combining the corresponding entities and their related attributes, along with the information from the original text that was ignored in step a.
+• Final split ratio cannot be "1".
 e. Output all entities' top-left corner coordinates and scaling sizes:
-- For each entity extracted from step a, place it in the designated rectangular position, reasonably plan its top-left corner coordinates and scaling size relative to the entire image in accordance with human aesthetics and the regional prompt from step d, ensuring that it does not exceed its allocated region from step b and c. Additionally, any two rectangles must not overlap and should have gaps between them.
-- HB_m_offset and HB_n_offset are both floats. HB_m_offset represents the horizontal coordinate, and HB_n_offset represents the vertical coordinate. The HB_m_offset and HB_n_offset values for the top-left corner of the full image are 0.0 and 0.0, respectively. For the top-right corner, HB_m_offset is 1.0 and HB_n_offset is 0.0. For the bottom-left corner, HB_m_offset is 0.0 and HB_n_offset is 1.0. Finally, for the bottom-right corner, HB_m_offset is 1.0 and HB_n_offset is 1.0.
-- HB_m_scale and HB_n_scale are both floats, used to describe the width and height of a rectangle. HB_m_scale represents the width of the rectangle relative to the full image, and HB_n_scale represents the height of the rectangle relative to the full image.
-- Output the coordinates and scaling sizes of the entities in list format: HB_prompt_list,HB_m_offset_list, HB_n_offset_list, HB_m_scale_list, HB_n_scale_list
+• For each entity extracted from step a, place it in the designated rectangular position, reasonably plan its top-left corner coordinates and scaling size relative to the entire image in accordance with human aesthetics and the regional prompt from step d, ensuring that it does not exceed its allocated region from step b and c. Additionally, any two rectangles must not overlap and should have gaps between them.
+• HB_m_offset and HB_n_offset are both floats. HB_m_offset represents the horizontal coordinate, and HB_n_offset represents the vertical coordinate. The HB_m_offset and HB_n_offset values for the top-left corner of the full image are 0.0 and 0.0, respectively. For the top-right corner, HB_m_offset is 1.0 and HB_n_offset is 0.0. For the bottom-left corner, HB_m_offset is 0.0 and HB_n_offset is 1.0. Finally, for the bottom-right corner, HB_m_offset is 1.0 and HB_n_offset is 1.0.
+• HB_m_scale and HB_n_scale are both floats, used to describe the width and height of a rectangle. HB_m_scale represents the width of the rectangle relative to the full image, and HB_n_scale represents the height of the rectangle relative to the full image.
+• Output the coordinates and scaling sizes of the entities in list format: HB_prompt_list,HB_m_offset_list, HB_n_offset_list, HB_m_scale_list, HB_n_scale_list
 The output should follow the format of the examples below:
 
 Examples:
@@ -382,91 +380,3 @@ HB_m_offset_list: [0.02, 0.35, 0.68]
 HB_n_offset_list: [0.1, 0.1, 0.1]  
 HB_m_scale_list: [0.29, 0.29, 0.3]  
 HB_n_scale_list: [0.8, 0.8, 0.8]
-
-** STEP TWO: JSON Response **
-
-After you are finished with your image layout generation and have generated your response for that, create a JSON formatted version of the values.
-
-For example, if you generated:
-```
-To approach this task step-by-step:
-
-a. Key entities identification:
-We have several entities from the caption:
-Entity1). 1533312 ohwx woman
-Entity2). Vase with white lilies
-Entity3). Vase with roses
-Entity4). Balloons with "Happy Birthday"
-
-b. Rows:
-Given that we need to accommodate these vertically aligned entities—woman with vases on either side and balloons above her—a single row might not be sufficient. We should divide the image further to encapsulate the overhead and lateral arrangement:
-Row0 (height=0.4): This row will encompass the balloons flying above the woman.
-Row1 (height=0.6): This row will cover the 1533312 ohwx woman positioned between two vases.
-
-c. Regions within rows:
-For Row0:
-Region0 (Row0, width=1): This area will include the balloons with "Happy Birthday," depicting them floating in a cluster, bright and cheerful in appearance.
-For Row1:
-Region0 (Row1, width=0.3): This region will showcase the vase of white lilies, highlighting their pure petals and green stems.
-Region1 (Row1, width=0.4): This region will depict the 1533312 ohwx woman, capturing her demeanor, the details of her attire, and her seated or standing posture between the vases.
-Region2 (Row1, width=0.3): This region will portray the vase of roses, emphasizing their rich color and romantic arrangement.
-
-d. Overall ratio:
-For multiple rows, translate the division into the provided format:
-Final split ratio: 0.4; 0.6,0.3,0.4,0.3
-Regional Prompt: Balloons displaying "Happy Birthday" float above with a vibrant array of colors, dancing in the gentle breeze. BREAK Below, a 1533312 ohwx woman stands serenely between two exquisite vases. To her left, white lilies grace the space with their elegance, their fragrance subtly enhancing the scene. In contrast, on her right, a cluster of roses adds romance and depth with their lush, velvety petals.
-
-e. Entities' top-left corner coordinates and scaling sizes:
-Position each entity within their designated regions, ensuring balance and no overlap:
-Entity1 (1533312 ohwx woman) in Region1 of Row1: m_offset:0.35, n_offset:0.45, m_scale:0.3, n_scale:0.5
-Entity2 (Vase with white lilies) in Region0 of Row1: m_offset:0.05, n_offset:0.45, m_scale:0.2, n_scale:0.5
-Entity3 (Vase with roses) in Region2 of Row1: m_offset:0.75, n_offset:0.45, m_scale:0.2, n_scale:0.5
-Entity4 (Balloons with "Happy Birthday") in Region0 of Row0: m_offset:0.1, n_offset:0.0, m_scale:0.8, n_scale:0.4
-
-HB_prompt_list: ["1533312 ohwx woman", "Vase with white lilies", "Vase with roses", "Balloons with 'Happy Birthday'"]
-HB_m_offset_list: [0.35, 0.05, 0.75, 0.1]
-HB_n_offset_list: [0.45, 0.45, 0.45, 0.0]
-HB_m_scale_list: [0.3, 0.2, 0.2, 0.8]
-HB_n_scale_list: [0.5, 0.5, 0.5, 0.4]
-```
-
-Now you would generate the following JSON and return it under "STEP TWO" of your response.
-
-```json
-{
-  "SR_hw_split_ratio": "0.4; 0.6,0.3,0.4,0.3",
-  "SR_prompt": "Balloons displaying \"Happy Birthday\" float above with a vibrant array of colors, dancing in the gentle breeze. BREAK Below, a 1533312 ohwx woman stands serenely between two exquisite vases. To her left, white lilies grace the space with their elegance, their fragrance subtly enhancing the scene. In contrast, on her right, a cluster of roses adds romance and depth with their lush, velvety petals.",
-  "HB_prompt_list": [
-    "1533312 ohwx woman",
-    "Vase with white lilies",
-    "Vase with roses",
-    "Balloons with 'Happy Birthday'"
-  ],
-  "HB_m_offset_list": [
-    0.35,
-    0.05,
-    0.75,
-    0.1
-  ],
-  "HB_n_offset_list": [
-    0.45,
-    0.45,
-    0.45,
-    0.0
-  ],
-  "HB_m_scale_list": [
-    0.3,
-    0.2,
-    0.2,
-    0.8
-  ],
-  "HB_n_scale_list": [
-    0.5,
-    0.5,
-    0.5,
-    0.4
-  ]
-}
-```
-
-Please generate your output for steps 1 and 2 now.
