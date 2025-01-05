@@ -97,6 +97,16 @@ FLUX_FACEID = JsonObj(**{
     ]
 })
 
+FLUX_CARTOON = JsonObj(**{
+    "id": 1989689,
+    "name": "man",
+    "title": "Sloth",
+    "branch": "flux1",
+    "token": str(1989689),
+    "train_token": "ohwx",
+    "model_type": "lora",
+})
+
 FLUX_LORA_2 = JsonObj(**{
     "id": 1558021,
     "name": "man",

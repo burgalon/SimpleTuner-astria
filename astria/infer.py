@@ -143,9 +143,6 @@ def parse_args(prompt: JsonObj):
         prompt.controlnet = None
 
 def get_pipe_key_for_lora(pipe):
-    if isinstance(pipe, FluxFillPipeline): return 'fill'
-    if isinstance(pipe, FluxPipelineWithPulID): return 'pulid_pipe'
-    if isinstance(pipe, RAG_FluxPipeline): return 'rag_diffusion_pipe'
     return 'fill' if isinstance(pipe, FluxFillPipeline) else 'pipe'
 
 class InferPipeline(InpaintFaceMixin, VtonMixin):
@@ -196,20 +193,23 @@ class InferPipeline(InpaintFaceMixin, VtonMixin):
         pipe_key = get_pipe_key_for_lora(pipe)
         if pipe_key == 'fill':
             self.fill.unload_lora_weights()
-        elif pipe_key == 'pulid_pipe':
-            self.pulid_pipe.unload_lora_weights()
-        elif pipe_key == 'rag_diffusion_pipe':
-            self.rag_diffusion_pipe.unload_lora_weights()
         else:
             self.pipe.unload_lora_weights()
         self.current_lora_weights_map[pipe_key] = {'names': [], 'scales': []}
 
-    def load_references(self, prompt: JsonObj, pipe):
+    def load_references(self, prompt: JsonObj, is_fill=False):
         names = []
         scales = []
         lora_fns = []
         setattr(prompt, '_prompt_with_lora_ids', prompt.text)
+    
+        pipe = self.pipe if not is_fill else self.fill
         pipe_key = get_pipe_key_for_lora(pipe)
+        if pipe_key == 'fill':
+            self.fill.unload_lora_weights()
+        else:
+            self.pipe.unload_lora_weights()
+
         if pipe_key not in self.current_lora_weights_map:
             self.current_lora_weights_map[pipe_key] = {'names': [], 'scales': []}
 
@@ -846,7 +846,7 @@ class InferPipeline(InpaintFaceMixin, VtonMixin):
         self.last_pipe = pipe
         images = []
         num_images = int(os.environ.get('NUM_IMAGES', prompt.num_images))
-        joint_attention_kwargs = self.load_references(prompt, pipe)
+        joint_attention_kwargs = self.load_references(prompt, pipe == self.fill)
         prompt.text = prompt.text.strip(" ,").strip(" ").strip('"')
 
         # load_references mutates prompt.text, so this needs to be down here.
@@ -854,7 +854,7 @@ class InferPipeline(InpaintFaceMixin, VtonMixin):
             HB_replace =  getattr(prompt, 'regional_hb_replace', 2)
             SR_delta =  getattr(prompt, 'regional_sr_delta', 1.0)
 
-            regions = openai_gpt4o_get_regions(prompt._prompt_with_lora_ids)
+            regions = openai_gpt4o_get_regions(prompt._prompt_with_lora_ids, cache=True)
             print(f"T#{prompt.tune_id} P#{prompt.id} regions={regions}")
 
             # Now that we have the regions, we need to assign LoRAs to each
@@ -866,11 +866,11 @@ class InferPipeline(InpaintFaceMixin, VtonMixin):
             for sr_prompt in sr_prompts:
                 scaling_values = {
                     lora_id: 0.0
-                    for lora_id in self.current_lora_weights_map['rag_diffusion_pipe'].get('names', [])
+                    for lora_id in self.current_lora_weights_map['pipe'].get('names', [])
                 }
                 for lora_id, lora_scale in zip(
-                    self.current_lora_weights_map['rag_diffusion_pipe'].get('names', []),
-                    self.current_lora_weights_map['rag_diffusion_pipe'].get('scales', []),
+                    self.current_lora_weights_map['pipe'].get('names', []),
+                    self.current_lora_weights_map['pipe'].get('scales', []),
                 ):
                     if lora_id in sr_prompt:
                         scaling_values[lora_id] = lora_scale
@@ -879,11 +879,11 @@ class InferPipeline(InpaintFaceMixin, VtonMixin):
             # Clean the prompts of any LoRA IDs that might have been embedded.
             HB_prompt_list_cleaned = []
             for hb_prompt in HB_prompt_list:
-                for lora_id in self.current_lora_weights_map['rag_diffusion_pipe'].get('names', []):
+                for lora_id in self.current_lora_weights_map['pipe'].get('names', []):
                     hb_prompt = hb_prompt.replace(lora_id, "")
                 HB_prompt_list_cleaned.append(hb_prompt)
 
-            for lora_id in self.current_lora_weights_map['rag_diffusion_pipe'].get('names', []):
+            for lora_id in self.current_lora_weights_map['pipe'].get('names', []):
                 SR_prompt = SR_prompt.replace(lora_id, "")
 
             HB_replace = HB_replace
@@ -988,6 +988,16 @@ class InferPipeline(InpaintFaceMixin, VtonMixin):
         else:
             send_to_server(images, prompt.id)
         prompt.trained_at = True
+
+        if use_regional:
+            self.rag_diffusion_pipe.transformer_set_lora_scalings({
+                adapter_id: scaling
+                for adapter_id, scaling in zip(
+                    self.current_lora_weights_map['pipe'].get('names', []),
+                    self.current_lora_weights_map['pipe'].get('scales', []),
+                )
+            })
+
         return images
 
 def main():

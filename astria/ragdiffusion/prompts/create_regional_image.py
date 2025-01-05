@@ -14,27 +14,6 @@ HB_n_offset_list = prompt_regions['HB_n_offset_list']
 HB_m_scale_list = prompt_regions['HB_m_scale_list']
 HB_n_scale_list = prompt_regions['HB_n_scale_list']
 
-# --- Example data from your JSON ---
-# SR_hw_split_ratio = "0.3,1;0.7,0.2,0.6,0.2"
-# SR_prompt = (
-#     "Above the woman, a cluster of vibrant balloons float ... "
-#     "BREAK On the left, a vase is filled with elegant white lilies ... "
-#     "BREAK Centered between the floral arrangements, 1533312 ohwx woman stands ... "
-#     "BREAK On the right, a vase brimming with luscious red roses ..."
-# )
-
-# “HB” stands for “Hard Boundary” or specific bounding regions
-HB_prompt_list = [
-    "1533312 ohwx woman",
-    "Vase with white lilies",
-    "Vase with roses",
-    "Balloons with Happy Birthday"
-]
-HB_m_offset_list = [0.3, 0.05, 0.85, 0.1]     # x offset fraction
-HB_n_offset_list = [0.3, 0.3, 0.3, 0.05]     # y offset fraction
-HB_m_scale_list = [0.4, 0.1, 0.1, 0.8]       # width fraction
-HB_n_scale_list = [0.7, 0.7, 0.7, 0.25]      # height fraction
-
 # --- Create a blank image ---
 height, width = 1024, 1024
 image = np.ones((height, width, 3), dtype=np.uint8) * 255

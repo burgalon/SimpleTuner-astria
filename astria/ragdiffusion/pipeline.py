@@ -865,6 +865,9 @@ class RAG_FluxPipeline(
         }
         self.transformer.scale_lora_layers_according_to_region(zero_dict)
 
+    def transformer_set_lora_scalings(self, scaling_dict):
+        self.transformer.scale_lora_layers_according_to_region(scaling_dict)
+
     @torch.no_grad()
     @replace_example_docstring(EXAMPLE_DOC_STRING)
     def __call__(

@@ -1,7 +1,7 @@
 import copy
 
 from test_infer import pipe, BASE_PROMPT, run_images, IMG_POSE, FLUX_LORA, JsonObj, RAG_FluxPipeline, FLUX_LORA_SHOE, \
-    FLUX_LORA_MAN_MARCO, FLUX_LORA_MAN
+    FLUX_LORA_MAN_MARCO, FLUX_LORA_MAN, FLUX_CARTOON
 
 
 def test_regional():
@@ -54,3 +54,12 @@ def test_regional_two_lora_person_and_object():
     run_images(prompt)
     assert isinstance(pipe.last_pipe, RAG_FluxPipeline)
 
+def test_regional_one_lora_person_and_cartoon_lora():
+    prompt = JsonObj(
+        **copy.copy(BASE_PROMPT.__dict__),
+        use_regional=True,
+    )
+    prompt.text=f"<lora:{FLUX_LORA_MAN.id}:1> {FLUX_LORA_MAN.train_token} man, real photograph portrait holding <lora:{FLUX_CARTOON.id}:1> {FLUX_CARTOON.train_token} sloth, white t-shirt, white background, professional headshot with cartoon sloth character"
+    prompt.tunes=[FLUX_LORA_MAN, FLUX_CARTOON]
+    run_images(prompt)
+    assert isinstance(pipe.last_pipe, RAG_FluxPipeline)
