@@ -134,6 +134,9 @@ def pil2base64(image: Image, format="PNG") -> str:
     image.save(buffered, format=format, optimize=False, compression=0)
     return base64.b64encode(buffered.getvalue()).decode('utf-8')
 
+def load_images(images: list[Union[str, PIL.Image.Image]], convert = 'RGB') -> list[PIL.Image.Image]:
+    return [load_image(image, convert) for image in images]
+
 def load_image(image: Union[str, PIL.Image.Image], convert = 'RGB') -> PIL.Image.Image:
     """
     Args:
@@ -155,6 +158,3 @@ def load_image(image: Union[str, PIL.Image.Image], convert = 'RGB') -> PIL.Image
 
 def save_img(image: Image, fn: str, format="PNG") -> str:
     return image.save(fn, format=format, optimize=False, compression=0)
-
-if os.environ.get("MOCK_SERVER", False):
-    load_images = lambda imgs: [load_image(img) for img in imgs]
