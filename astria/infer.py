@@ -197,18 +197,14 @@ class InferPipeline(InpaintFaceMixin, VtonMixin):
             self.pipe.unload_lora_weights()
         self.current_lora_weights_map[pipe_key] = {'names': [], 'scales': []}
 
-    def load_references(self, prompt: JsonObj, is_fill=False):
+    def load_references(self, prompt: JsonObj, pipe):
         names = []
         scales = []
         lora_fns = []
         setattr(prompt, '_prompt_with_lora_ids', prompt.text)
-    
-        pipe = self.pipe if not is_fill else self.fill
+
+        pipe = self.fill if isinstance(pipe, FluxFillPipeline) else self.pipe
         pipe_key = get_pipe_key_for_lora(pipe)
-        if pipe_key == 'fill':
-            self.fill.unload_lora_weights()
-        else:
-            self.pipe.unload_lora_weights()
 
         if pipe_key not in self.current_lora_weights_map:
             self.current_lora_weights_map[pipe_key] = {'names': [], 'scales': []}
@@ -846,7 +842,7 @@ class InferPipeline(InpaintFaceMixin, VtonMixin):
         self.last_pipe = pipe
         images = []
         num_images = int(os.environ.get('NUM_IMAGES', prompt.num_images))
-        joint_attention_kwargs = self.load_references(prompt, pipe == self.fill)
+        joint_attention_kwargs = self.load_references(prompt, pipe)
         prompt.text = prompt.text.strip(" ,").strip(" ").strip('"')
 
         # load_references mutates prompt.text, so this needs to be down here.
