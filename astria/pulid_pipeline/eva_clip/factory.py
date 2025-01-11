@@ -8,6 +8,9 @@ from pathlib import Path
 from typing import Optional, Tuple, Union, Dict, Any
 import torch
 
+from tensorizer import TensorDeserializer
+from tensorizer.utils import no_init_or_tensor
+
 from .constants import OPENAI_DATASET_MEAN, OPENAI_DATASET_STD
 from .model import CLIP, CustomCLIP, convert_weights_to_lp, convert_to_custom_text_state_dict,\
     get_cast_dtype
@@ -161,14 +164,15 @@ def get_pretrained_tag(pretrained_model):
         return "other"
 
 def load_pretrained_checkpoint(
-        model,
-        visual_checkpoint_path,
-        text_checkpoint_path,
-        strict=True,
-        visual_model=None,
-        text_model=None,
-        model_key="model|module|state_dict",
-        skip_list=[]):
+    model,
+    visual_checkpoint_path,
+    text_checkpoint_path,
+    strict=True,
+    visual_model=None,
+    text_model=None,
+    model_key="model|module|state_dict",
+    skip_list=[],
+):
     visual_tag = get_pretrained_tag(visual_model)
     text_tag = get_pretrained_tag(text_model)
 
@@ -209,21 +213,22 @@ def load_pretrained_checkpoint(
     return visual_incompatible_keys, text_incompatible_keys
 
 def create_model(
-        model_name: str,
-        pretrained: Optional[str] = None,
-        precision: str = 'fp32',
-        device: Union[str, torch.device] = 'cpu',
-        jit: bool = False,
-        force_quick_gelu: bool = False,
-        force_custom_clip: bool = False,
-        force_patch_dropout: Optional[float] = None,
-        pretrained_image: str = '',
-        pretrained_text: str = '',
-        pretrained_hf: bool = True,
-        pretrained_visual_model: str = None,
-        pretrained_text_model: str = None,
-        cache_dir: Optional[str] = None,
-        skip_list: list  = [],
+    model_name: str,
+    pretrained: Optional[str] = None,
+    precision: str = 'fp32',
+    device: Union[str, torch.device] = 'cpu',
+    jit: bool = False,
+    force_quick_gelu: bool = False,
+    force_custom_clip: bool = False,
+    force_patch_dropout: Optional[float] = None,
+    pretrained_image: str = '',
+    pretrained_text: str = '',
+    pretrained_hf: bool = True,
+    pretrained_visual_model: str = None,
+    pretrained_text_model: str = None,
+    cache_dir: Optional[str] = None,
+    skip_list: list  = [],
+    use_tensorizer: Union[bool, str] = False,
 ):
     model_name = model_name.replace('/', '-')  # for callers using old naming with / in ViT names
     if isinstance(device, str):
@@ -264,12 +269,27 @@ def create_model(
         custom_clip = model_cfg.pop('custom_text', False) or force_custom_clip or ('hf_model_name' in model_cfg['text_cfg'])
 
 
-        if custom_clip:
-            if 'hf_model_name' in model_cfg.get('text_cfg', {}):
-                model_cfg['text_cfg']['hf_model_pretrained'] = pretrained_hf
-            model = CustomCLIP(**model_cfg, cast_dtype=cast_dtype)
+        if use_tensorizer:
+            if custom_clip:
+                if 'hf_model_name' in model_cfg.get('text_cfg', {}):
+                    model_cfg['text_cfg']['hf_model_pretrained'] = pretrained_hf
+                with no_init_or_tensor():
+                    model = CustomCLIP(**model_cfg, cast_dtype=cast_dtype)
+            else:
+                with no_init_or_tensor():
+                    model = CLIP(**model_cfg, cast_dtype=cast_dtype)
         else:
-            model = CLIP(**model_cfg, cast_dtype=cast_dtype)
+            if custom_clip:
+                if 'hf_model_name' in model_cfg.get('text_cfg', {}):
+                    model_cfg['text_cfg']['hf_model_pretrained'] = pretrained_hf
+                model = CustomCLIP(**model_cfg, cast_dtype=cast_dtype)
+            else:
+                model = CLIP(**model_cfg, cast_dtype=cast_dtype)
+
+        if use_tensorizer:
+            deserializer = TensorDeserializer(use_tensorizer, device=device)
+            deserializer.load_into_module(model.visual)
+            return model
 
         pretrained_cfg = {}
         if pretrained:
@@ -356,23 +376,24 @@ def create_model(
 
 
 def create_model_and_transforms(
-        model_name: str,
-        pretrained: Optional[str] = None,
-        precision: str = 'fp32',
-        device: Union[str, torch.device] = 'cpu',
-        jit: bool = False,
-        force_quick_gelu: bool = False,
-        force_custom_clip: bool = False,
-        force_patch_dropout: Optional[float] = None,
-        pretrained_image: str = '',
-        pretrained_text: str = '',
-        pretrained_hf: bool = True,
-        pretrained_visual_model: str = None,
-        pretrained_text_model: str = None,
-        image_mean: Optional[Tuple[float, ...]] = None,
-        image_std: Optional[Tuple[float, ...]] = None,
-        cache_dir: Optional[str] = None,
-        skip_list: list = [],
+    model_name: str,
+    pretrained: Optional[str] = None,
+    precision: str = 'fp32',
+    device: Union[str, torch.device] = 'cpu',
+    jit: bool = False,
+    force_quick_gelu: bool = False,
+    force_custom_clip: bool = False,
+    force_patch_dropout: Optional[float] = None,
+    pretrained_image: str = '',
+    pretrained_text: str = '',
+    pretrained_hf: bool = True,
+    pretrained_visual_model: str = None,
+    pretrained_text_model: str = None,
+    image_mean: Optional[Tuple[float, ...]] = None,
+    image_std: Optional[Tuple[float, ...]] = None,
+    cache_dir: Optional[str] = None,
+    skip_list: list = [],
+    use_tensorizer: Union[bool, str] = False,
 ):
     model = create_model(
         model_name,
@@ -390,6 +411,7 @@ def create_model_and_transforms(
         pretrained_text_model=pretrained_text_model,
         cache_dir=cache_dir,
         skip_list=skip_list,
+        use_tensorizer=use_tensorizer,
     )
 
     image_mean = image_mean or getattr(model.visual, 'image_mean', None)
@@ -467,19 +489,19 @@ def create_transforms(
     return preprocess_train, preprocess_val
 
 def create_model_from_pretrained(
-        model_name: str,
-        pretrained: str,
-        precision: str = 'fp32',
-        device: Union[str, torch.device] = 'cpu',
-        jit: bool = False,
-        force_quick_gelu: bool = False,
-        force_custom_clip: bool = False,
-        force_patch_dropout: Optional[float] = None,
-        return_transform: bool = True,
-        image_mean: Optional[Tuple[float, ...]] = None,
-        image_std: Optional[Tuple[float, ...]] = None,
-        cache_dir: Optional[str] = None,
-        is_frozen: bool = False,
+    model_name: str,
+    pretrained: str,
+    precision: str = 'fp32',
+    device: Union[str, torch.device] = 'cpu',
+    jit: bool = False,
+    force_quick_gelu: bool = False,
+    force_custom_clip: bool = False,
+    force_patch_dropout: Optional[float] = None,
+    return_transform: bool = True,
+    image_mean: Optional[Tuple[float, ...]] = None,
+    image_std: Optional[Tuple[float, ...]] = None,
+    cache_dir: Optional[str] = None,
+    is_frozen: bool = False,
 ):
     if not is_pretrained_cfg(model_name, pretrained) and not os.path.exists(pretrained):
         raise RuntimeError(

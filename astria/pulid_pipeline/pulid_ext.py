@@ -1,6 +1,8 @@
 import sys
 sys.path.append("astria/pulid_pipeline")
 from typing import Final, List, Union
+from tensorizer.utils import no_init_or_tensor
+from tensorizer import TensorDeserializer, TensorSerializer
 from eva_clip import create_model_and_transforms
 from eva_clip.constants import OPENAI_DATASET_MEAN, OPENAI_DATASET_STD
 from huggingface_hub import hf_hub_download, snapshot_download
@@ -103,16 +105,16 @@ class PuLModel(nn.Module):
     double_interval = 2
     single_interval = 4
 
-    def __init__(self, device, dtype):
+    def __init__(self):
         super().__init__()
-        self.pulid_encoder = IDFormer().to(device, dtype)
+        self.pulid_encoder = IDFormer()
         num_ca = 19 // self.double_interval + 38 // self.single_interval
         if 19 % self.double_interval != 0:
             num_ca += 1
         if 38 % self.single_interval != 0:
             num_ca += 1
         self.pulid_ca = nn.ModuleList([
-            PerceiverAttentionCA().to(device, dtype) for _ in range(num_ca)
+            PerceiverAttentionCA() for _ in range(num_ca)
         ])
 
 
@@ -127,23 +129,53 @@ class PuLID:
         ANTEL_LOCAL_DIR: Final[str] = f'{local_dir}/antelopev2'
         self.antel_local_dir = ANTEL_LOCAL_DIR
         encoder_path = PULID_MODEL_FILENAME_PATTERN.format(version=version)
-        if not os.path.exists(encoder_path):
-            hf_hub_download(PULID_REPO_ID, encoder_path, local_dir=local_dir)
-        self.model = PuLModel(device, dtype)
-        self.model.load_state_dict(load_file(os.path.join(local_dir, encoder_path)))
-        self.face_helper = PuLID.init_face_helper(device)
+
+        model = PuLModel()
+        model.load_state_dict(load_file(os.path.join(local_dir, encoder_path)))
+        serializer = TensorSerializer("/data/pulid_model.tensors")
+        serializer.write_module(model)  # or (), etc.
+        serializer.close()
+
         (
             self.clip_vision_model,
             self.eva_transform_mean,
             self.eva_transform_std,
         ) = PuLID.init_clip(device, dtype)
+        serializer = TensorSerializer("/data/clip_eva_vision_model.tensors")
+        serializer.write_module(self.clip_vision_model)  # or (), etc.
+        serializer.close()
+
+        import time
+        print('GET PULID INIT')
+        start = time.time()
+
+        if not os.path.exists(encoder_path):
+            hf_hub_download(PULID_REPO_ID, encoder_path, local_dir=local_dir)
+
+        with no_init_or_tensor():
+            self.model = PuLModel()
+        deserializer = TensorDeserializer("/data/pulid_model.tensors", device=device)
+        deserializer.load_into_module(self.model)
+        self.model = self.model.to(device, dtype)
+
+        self.model.load_state_dict(load_file(os.path.join(local_dir, encoder_path)))
+        print(f'PULID INIT PuLModel DONE IN {time.time() - start}')
+        self.face_helper = PuLID.init_face_helper(device)
+        print(f'PULID INIT FACE DONE IN {time.time() - start}')
+        (
+            self.clip_vision_model,
+            self.eva_transform_mean,
+            self.eva_transform_std,
+        ) = PuLID.init_clip(device, dtype, use_tensorizer="/data/clip_eva_vision_model.tensors")
+        print(f'PULID INIT CLIP DONE IN {time.time() - start}')
         if not os.path.exists(ANTEL_LOCAL_DIR):
             snapshot_download(ANTEL_REPO_ID, local_dir=ANTEL_LOCAL_DIR)
         self.app, self.handler_ante = self.init_insightface()
+        print(f'PULID INIT DONE IN {time.time() - start}')
 
     @staticmethod
-    def init_clip(device, dtype):
-        model, _, _ = create_model_and_transforms(EVA_CLIP_MODEL_NAME, EVA_CLIP_LIBRARY_NAME, force_custom_clip=True)
+    def init_clip(device, dtype, use_tensorizer=False):
+        model, _, _ = create_model_and_transforms(EVA_CLIP_MODEL_NAME, EVA_CLIP_LIBRARY_NAME, force_custom_clip=True, use_tensorizer=use_tensorizer)
         model = model.visual
         clip_vision_model = model.to(device, dtype=dtype)
         eva_transform_mean = getattr(clip_vision_model, 'image_mean', OPENAI_DATASET_MEAN)
