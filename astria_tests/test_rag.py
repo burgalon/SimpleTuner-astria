@@ -13,7 +13,9 @@ def test_regional_normal():
     run_images(prompt)
     assert isinstance(pipe.last_pipe, RAG_FluxPipeline)
 
-    run_images(BASE_PROMPT)
+    run_images(JsonObj(
+        **copy.copy(BASE_PROMPT.__dict__),
+    ))
 
 def test_regional_lora():
     prompt = JsonObj(

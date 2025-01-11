@@ -6,6 +6,7 @@ import shlex
 import sys
 import time
 import traceback
+import types
 
 from filelock import FileLock
 import cv2
@@ -15,12 +16,21 @@ from PIL import Image, ImageOps, ImageFilter
 from diffusers import FluxFillPipeline, FluxTransformer2DModel
 from diffusers import FluxPipeline, FluxImg2ImgPipeline, FluxControlNetPipeline, FluxControlNetModel, \
     FluxInpaintPipeline, FluxControlNetImg2ImgPipeline, FluxControlNetInpaintPipeline
+from diffusers.models.transformers.transformer_flux import (
+    FluxSingleTransformerBlock,
+    FluxTransformerBlock,
+)
 from torchvision import transforms
 
 from pulid_pipeline.pipeline import FluxPipelineWithPulID
 from pulid_pipeline.pulid_ext import PuLID
 
 from ragdiffusion import RAG_FluxPipeline, openai_gpt4o_get_regions
+from ragdiffusion.transformer import (
+    RAG_FluxSingleTransformerBlock,
+    RAG_FluxTransformer2DModel,
+    RAG_FluxTransformerBlock,
+)
 
 from add_clut import add_clut
 from add_grain import add_grain
@@ -180,7 +190,6 @@ class InferPipeline(InpaintFaceMixin, VtonMixin):
         self.rag_diffusion_pipe = None
         torch.cuda.empty_cache()
 
-
     def warmup(self):
         start_time = time.time()
         self.init_pipe(MODELS_DIR + "/1504944-flux1")
@@ -285,6 +294,7 @@ class InferPipeline(InpaintFaceMixin, VtonMixin):
 
     def init_pipe(self, model_path):
         """Initialize both FluxPipeline and FluxImg2ImgPipeline."""
+        setattr(self, '_model_path', model_path)
         if not self.pipe or self.model_path != model_path:
             # Initialize the FluxPipeline for text-to-image
             self.pipe = FluxPipeline.from_pretrained(
@@ -352,6 +362,7 @@ class InferPipeline(InpaintFaceMixin, VtonMixin):
                 tokenizer_2=self.pipe.tokenizer_2,
                 vae=self.pipe.vae,
                 transformer=self.pipe.transformer,
+                pipeline_name=self._model_path,
             ).to(device)
 
     def init_img2img(self):
@@ -990,15 +1001,14 @@ class InferPipeline(InpaintFaceMixin, VtonMixin):
         prompt.trained_at = True
 
         if use_regional:
-            # hack since we're hijacking the transformer
-            # self.rag_diffusion_pipe.transformer_set_lora_scalings({
-            #     adapter_id: scaling
-            #     for adapter_id, scaling in zip(
-            #         self.current_lora_weights_map['pipe'].get('names', []),
-            #         self.current_lora_weights_map['pipe'].get('scales', []),
-            #     )
-            # })
-            self.reset()
+            # hack since we're hijacking the shared transformer weights
+            self.rag_diffusion_pipe.transformer_set_lora_scalings({
+                adapter_id: scaling
+                for adapter_id, scaling in zip(
+                    self.current_lora_weights_map['pipe'].get('names', []),
+                    self.current_lora_weights_map['pipe'].get('scales', []),
+                )
+            })
 
         return images
 

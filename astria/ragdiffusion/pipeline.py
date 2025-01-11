@@ -206,10 +206,21 @@ class RAG_FluxPipeline(
         text_encoder_2: T5EncoderModel,
         tokenizer_2: T5TokenizerFast,
         transformer: FluxTransformer2DModel,
+        pipeline_name: Optional[str] = None,
     ):
         super().__init__()
 
-        transformer = RAG_FluxTransformer2DModel.from_transformer(transformer)
+        if pipeline_name is not None:
+            _transformer = RAG_FluxTransformer2DModel.from_pretrained(
+                pipeline_name,
+                subfolder="transformer",
+                torch_dtype=transformer.dtype,
+            )
+            _transformer.copy_transformer_weights(transformer)
+            _transformer = _transformer.to(
+                transformer.device,
+            )
+            transformer = _transformer
 
         self.register_modules(
             vae=vae,
