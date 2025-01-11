@@ -94,7 +94,7 @@ def parse_args(prompt: JsonObj):
     parser.add_argument("--vton_cfg_scale", help="VTON cfg_scale", type=float, default=None)
     parser.add_argument("--vton_hires", help="VTON Hi resolution", action='store_true', default=False)
     parser.add_argument(
-        "--use_regional",
+        "--use_regional", "--multi",
         help="Uses RAG diffusion with gpt4o prompt enhancement", action='store_true',
         default=getattr(prompt, 'use_regional', False),  # Will be False or None
     )
@@ -475,6 +475,7 @@ class InferPipeline(InpaintFaceMixin, VtonMixin):
         return 1
 
     def get_controlnet_hint(self, prompt: JsonObj, orig_mask_image: Image.Image = None):
+        print(f"get_controlnet_hint")
         assert prompt.input_image is not None
         try:
             orig_input_image = load_image(prompt.input_image)
@@ -491,13 +492,15 @@ class InferPipeline(InpaintFaceMixin, VtonMixin):
         if prompt.w and prompt.h:
             # Depth and inpainting specifically requires 32x32
             w, h = int(np.round(prompt.w / 32.0) * 32), int(np.round(prompt.h / 32.0) * 32)
+            print(f"T#{prompt.tune_id} P#{prompt.id} w={w} h={h}")
         else:
             w, h = orig_input_image.size
             # if we're doing outpainting only, we want the output target to be always the same size
-            # so esssentially we only want to downsample (resize down) the input image
+            # so essentially we only want to downsample (resize down) the input image
             # moreover, when resizing we do not want to maintain the same total number of pixels but rather
             # make sure the largest dimension is the same as the target size
             if prompt.denoising_strength == 0 and prompt.outpaint:
+                print(f"T#{prompt.tune_id} P#{prompt.id} outpainting only - resizing input image to match outpaint size")
                 if w>prompt.outpaint_width or h>prompt.outpaint_height:
                     if float(w)/prompt.outpaint_width > float(h) / prompt.outpaint_height:
                         k = prompt.outpaint_width / w
@@ -509,6 +512,7 @@ class InferPipeline(InpaintFaceMixin, VtonMixin):
                     k =1
                     print(f"T#{prompt.tune_id} P#{prompt.id} outpaint={prompt.outpaint_width}x{prompt.outpaint_height} input_image.size={orig_input_image.size} k=1")
             else:
+                print(f"T#{prompt.tune_id} P#{prompt.id} input_image.size={orig_input_image.size} w={w} h={h}")
                 k = (float(self.resolution[0] * self.resolution[1]) / (w * h)) ** 0.5
 
             h *= k
@@ -986,13 +990,15 @@ class InferPipeline(InpaintFaceMixin, VtonMixin):
         prompt.trained_at = True
 
         if use_regional:
-            self.rag_diffusion_pipe.transformer_set_lora_scalings({
-                adapter_id: scaling
-                for adapter_id, scaling in zip(
-                    self.current_lora_weights_map['pipe'].get('names', []),
-                    self.current_lora_weights_map['pipe'].get('scales', []),
-                )
-            })
+            # hack since we're hijacking the transformer
+            # self.rag_diffusion_pipe.transformer_set_lora_scalings({
+            #     adapter_id: scaling
+            #     for adapter_id, scaling in zip(
+            #         self.current_lora_weights_map['pipe'].get('names', []),
+            #         self.current_lora_weights_map['pipe'].get('scales', []),
+            #     )
+            # })
+            self.reset()
 
         return images
 
@@ -1047,6 +1053,13 @@ def main():
         if id == 'stop':
             kill_pod()
             break
+        if id == "json":
+            import json
+            # read test.json
+            ar = json.loads(open("test.json").read(), object_hook=lambda d: JsonObj(**d))
+            for tune in ar:
+                pipeline.infer(tune)
+            continue
         if id == "poll":
             poll()
             continue
