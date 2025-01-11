@@ -1,0 +1,237 @@
+<template>
+    <v-stage :width="stageWidth" :height="stageHeight" ref="stageRef">
+      <!-- SOFT REGION LAYER -->
+      <v-layer ref="softLayer">
+        <template v-for="sr in regionData.softRegions" :key="sr.id">
+          <v-rect
+            :x="sr.x"
+            :y="sr.y"
+            :width="sr.width"
+            :height="sr.height"
+            stroke="green"
+            stroke-width="2"
+            :draggable="false"
+            :listening="true"
+            ref="setSoftRectRef"
+            @transformend="(evt) => onSoftRegionTransform(evt, sr)"
+          />
+  
+          <!-- A Konva.Transformer for resizing the soft region. 
+               We set 'enabledAnchors' to only allow resizing from edges or corners. 
+               We do NOT enable dragging, so the user can't move the region, only resize it. -->
+          <v-transformer
+            ref="addSoftTransformerRef"
+            :enabledAnchors="['top-left','top-center','top-right','middle-left','middle-right','bottom-left','bottom-center','bottom-right']"
+          />
+  
+          <!-- Text label for the soft region -->
+          <v-text
+            :x="sr.x + 5"
+            :y="sr.y + 5"
+            :text="sr.prompt"
+            font-size="14"
+            fill="green"
+          />
+        </template>
+      </v-layer>
+  
+      <!-- HARD REGION LAYER -->
+      <v-layer ref="hardLayer">
+        <template v-for="hb in regionData.hardRegions" :key="hb.id">
+          <v-rect
+            :x="hb.x"
+            :y="hb.y"
+            :width="hb.width"
+            :height="hb.height"
+            stroke="red"
+            stroke-width="2"
+            :draggable="true"
+            :dragBoundFunc="(pos) => clampHardRegionDrag(pos, hb)"
+            ref="setHardRectRef"
+            @transformend="(evt) => onHardRegionTransform(evt, hb)"
+          />
+  
+          <!-- A Konva.Transformer for each Hard Region, 
+               allowing resizing but also ensuring we clamp after transform. -->
+          <v-transformer
+            ref="addHardTransformerRef"
+            :enabledAnchors="['top-left','top-center','top-right','middle-left','middle-right','bottom-left','bottom-center','bottom-right']"
+          />
+  
+          <v-text
+            :x="hb.x + 5"
+            :y="hb.y + 5"
+            :text="hb.prompt"
+            font-size="14"
+            fill="red"
+          />
+        </template>
+      </v-layer>
+    </v-stage>
+  </template>
+  
+  <script>
+  import { ref, onMounted, nextTick } from 'vue'
+  import Konva from 'konva'
+  
+  export default {
+    name: 'CanvasEditor',
+    props: {
+      regionData: {
+        type: Object,
+        required: true
+      },
+      stageWidth: {
+        type: Number,
+        default: 1024
+      },
+      stageHeight: {
+        type: Number,
+        default: 1024
+      }
+    },
+    setup(props) {
+      const stageRef = ref(null)
+  
+      // We'll store references to each soft rect & its corresponding transformer,
+      // and likewise for hard rects, so we can attach them properly.
+      // Because we generate them in a v-for, we need a pattern to store them.
+      const softRectRefs = []
+      const softTransformerRefs = []
+      const hardRectRefs = []
+      const hardTransformerRefs = []
+  
+      // "Collector" function used in v-for ref binding
+      function setSoftRectRef(el) {
+        if (el) softRectRefs.push(el.getNode())
+      }
+      function addSoftTransformerRef(el) {
+        if (el) softTransformerRefs.push(el.getNode())
+      }
+      function setHardRectRef(el) {
+        if (el) hardRectRefs.push(el.getNode())
+      }
+      function addHardTransformerRef(el) {
+        if (el) hardTransformerRefs.push(el.getNode())
+      }
+  
+      // After the component mounts and the v-for is rendered,
+      // we can link each rect with its corresponding transformer.
+      onMounted(async () => {
+        await nextTick()
+  
+        // Attach each transformer to its preceding rect
+        // Because the template is arranged so that rect and transformer
+        // appear in pairs, we can match them by index.
+        softRectRefs.forEach((rectNode, i) => {
+          const transformer = softTransformerRefs[i]
+          if (transformer) {
+            transformer.nodes([rectNode]) // attach to that one rect
+            transformer.getLayer().batchDraw()
+          }
+        })
+  
+        hardRectRefs.forEach((rectNode, i) => {
+          const transformer = hardTransformerRefs[i]
+          if (transformer) {
+            transformer.nodes([rectNode])
+            transformer.getLayer().batchDraw()
+          }
+        })
+      })
+  
+      // 1) Soft Region transform (resize).
+      //    No dragging is allowed, so we only handle size changes after transform.
+      function onSoftRegionTransform(evt, sr) {
+        const shape = evt.target
+        // shape.x(), shape.y() might have changed if the user dragged an anchor,
+        // but we’ll interpret that as resizing from edges.
+        sr.x = shape.x()
+        sr.y = shape.y()
+        sr.width = shape.width() * shape.scaleX()
+        sr.height = shape.height() * shape.scaleY()
+        shape.scaleX(1)
+        shape.scaleY(1)
+      }
+  
+      // 2) Hard Region: clamp while dragging, using dragBoundFunc
+      //    This is called on *every tick* of the drag to determine the next allowed position.
+      function clampHardRegionDrag(pos, hb) {
+        // `pos` is the { x, y } the user wants to drag to.
+        // We must clamp it so it stays inside the parent's bounding box.
+        const parent = findHardRegionParent(hb)
+        if (!parent) return pos // if no parent, let it move freely
+  
+        // clamp X
+        const minX = parent.x
+        const maxX = parent.x + parent.width - hb.width
+        let nextX = Math.max(minX, Math.min(pos.x, maxX))
+  
+        // clamp Y
+        const minY = parent.y
+        const maxY = parent.y + parent.height - hb.height
+        let nextY = Math.max(minY, Math.min(pos.y, maxY))
+  
+        return { x: nextX, y: nextY }
+      }
+  
+      // 3) Hard Region transform (resize). After the user completes a transform,
+      //    we clamp so it doesn’t exceed parent’s bounds.
+      function onHardRegionTransform(evt, hb) {
+        const shape = evt.target
+        let newX = shape.x()
+        let newY = shape.y()
+        let newW = shape.width() * shape.scaleX()
+        let newH = shape.height() * shape.scaleY()
+  
+        // reset scales
+        shape.scaleX(1)
+        shape.scaleY(1)
+  
+        // clamp to parent
+        const parent = findHardRegionParent(hb)
+        if (parent) {
+          // Ensure we don’t exceed parent width or height
+          if (newW > parent.width) newW = parent.width
+          if (newH > parent.height) newH = parent.height
+  
+          // After adjusting width/height, we might need to recalc x,y so we remain inside
+          const maxX = parent.x + parent.width - newW
+          const maxY = parent.y + parent.height - newH
+  
+          if (newX < parent.x) newX = parent.x
+          if (newY < parent.y) newY = parent.y
+          if (newX > maxX) newX = maxX
+          if (newY > maxY) newY = maxY
+        }
+  
+        // Assign
+        hb.x = newX
+        hb.y = newY
+        hb.width = newW
+        hb.height = newH
+      }
+  
+      // Helper to find which Soft Region is the parent of a Hard Region
+      function findHardRegionParent(hb) {
+        if (!hb.parentSoftRegionId) return null
+        return props.regionData.softRegions.find(sr => sr.id === hb.parentSoftRegionId) || null
+      }
+  
+      return {
+        stageRef,
+        onSoftRegionTransform,
+        onHardRegionTransform,
+        clampHardRegionDrag,
+        setSoftRectRef,
+        addSoftTransformerRef,
+        setHardRectRef,
+        addHardTransformerRef
+      }
+    }
+  }
+  </script>
+  
+  <style scoped>
+  /* styling as you wish */
+  </style>

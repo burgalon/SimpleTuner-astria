@@ -65,3 +65,5 @@ config/*.toml
 static
 templates
 api_state.json
+
+astria/ragdiffusion/editor/node_modules/
