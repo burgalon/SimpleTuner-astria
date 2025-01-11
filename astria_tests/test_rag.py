@@ -4,15 +4,16 @@ from test_infer import pipe, BASE_PROMPT, run_images, IMG_POSE, FLUX_LORA, JsonO
     FLUX_LORA_MAN_MARCO, FLUX_LORA_MAN, FLUX_CARTOON
 
 
-def test_regional():
+def test_regional_normal():
     prompt = JsonObj(
         **copy.copy(BASE_PROMPT.__dict__),
         use_regional=True,
     )
-    assert prompt.use_regional is True
     prompt.text = "a dog inbetween two vases full of flowers. the flowers on the left are white lillies, the flowers on the right are roses. the dog is a pembroke welsh corgi. above the corgi, there are balloons flying that say \"happy birthday\""
     run_images(prompt)
     assert isinstance(pipe.last_pipe, RAG_FluxPipeline)
+
+    run_images(BASE_PROMPT)
 
 def test_regional_lora():
     prompt = JsonObj(
