@@ -131,7 +131,7 @@ class PuLID:
             hf_hub_download(PULID_REPO_ID, encoder_path, local_dir=local_dir)
         self.model = PuLModel(device, dtype)
         self.model.load_state_dict(load_file(os.path.join(local_dir, encoder_path)))
-        self.face_helper = PuLID.init_face_helper(device)
+        self.face_helper = PuLID.init_face_helper(device, local_dir=local_dir)
         (
             self.clip_vision_model,
             self.eva_transform_mean,
@@ -158,7 +158,7 @@ class PuLID:
         return clip_vision_model, eva_transform_mean, eva_transform_std
 
     @staticmethod
-    def init_face_helper(device):
+    def init_face_helper(device, local_dir=None):
         face_helper = FaceRestoreHelper(
             upscale_factor=1,
             face_size=512,
@@ -166,9 +166,14 @@ class PuLID:
             det_model=FACE_DET_MODEL,
             save_ext=FACE_SAVE_EXT,
             device=device,
+            model_rootpath=local_dir,
         )
         face_helper.face_parse = None
-        face_helper.face_parse = init_parsing_model(model_name=FACE_PARSING_MODEL, device=device)
+        face_helper.face_parse = init_parsing_model(
+            model_name=FACE_PARSING_MODEL,
+            device=device,
+            model_rootpath=local_dir,
+        )
 
         return face_helper
 
