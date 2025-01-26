@@ -949,13 +949,13 @@ class InferPipeline(InpaintFaceMixin, VtonMixin):
 
             if prompt.SR_prompt:
                regions = {
-                   "-SR_hw_split_ratio": prompt.SR_hw_split_ratio,
-                   "-SR_prompt": prompt.SR_prompt,
-                   "-HB_prompt_list": prompt.HB_prompt_list,
-                   "-HB_m_offset_list": prompt.HB_m_offset_list,
-                   "-HB_n_offset_list": prompt.HB_n_offset_list,
-                   "-HB_m_scale_list": prompt.HB_m_scale_list,
-                   "-HB_n_scale_list": prompt.HB_n_scale_list,
+                   "SR_hw_split_ratio": prompt.SR_hw_split_ratio,
+                   "SR_prompt": prompt.SR_prompt,
+                   "HB_prompt_list": prompt.HB_prompt_list,
+                   "HB_m_offset_list": prompt.HB_m_offset_list,
+                   "HB_n_offset_list": prompt.HB_n_offset_list,
+                   "HB_m_scale_list": prompt.HB_m_scale_list,
+                   "HB_n_scale_list": prompt.HB_n_scale_list,
                }
             else:
                 regions = openai_gpt4o_get_regions(prompt._prompt_with_lora_ids)
