@@ -43,11 +43,7 @@ from typing import List
 logger = logging.get_logger(__name__)  # pylint: disable=invalid-name
 
 if TYPE_CHECKING:
-    from diffusers.models.transformers.transformer_flux import (
-        FluxTransformer2DModel,
-        FluxSingleTransformerBlock,
-        FluxTransformerBlock,
-    )
+    from diffusers.models.transformers.transformer_flux import FluxTransformer2DModel
 
 
 _SET_ADAPTER_SCALE_FN_MAPPING["RAG_FluxTransformer2DModel"] = lambda model_cls, weights: weights
@@ -90,28 +86,6 @@ class RAG_FluxSingleTransformerBlock(nn.Module):
             eps=1e-6,
             pre_only=True,
         )
-
-    def copy_flux_block_weights(
-        self,
-        original_block: "FluxSingleTransformerBlock",
-    ):
-        # Reassign parameters/buffers
-        self.norm.linear.weight = original_block.norm.linear.weight
-        self.norm.linear.bias = original_block.norm.linear.bias
-
-        # And so on for attn
-        self.attn.to_q.weight = original_block.attn.to_q.weight
-        self.attn.to_q.bias = original_block.attn.to_q.bias
-        self.attn.to_k.weight = original_block.attn.to_k.weight
-        self.attn.to_k.bias = original_block.attn.to_k.bias
-        self.attn.to_v.weight = original_block.attn.to_v.weight
-        self.attn.to_v.bias = original_block.attn.to_v.bias
-
-        self.proj_mlp.weight = original_block.proj_mlp.weight
-        self.proj_mlp.bias = original_block.proj_mlp.bias
-
-        self.proj_out.weight = original_block.proj_out.weight
-        self.proj_out.bias = original_block.proj_out.bias
 
     def scale_lora_layers_according_to_region(self, lora_scalings: Dict[str, Any]):
         for module in self.modules():
@@ -246,50 +220,6 @@ class RAG_FluxTransformerBlock(nn.Module):
         self._chunk_size = None
         self._chunk_dim = 0
 
-    def copy_flux_block_weights(
-        self,
-        original_block: "FluxTransformerBlock",
-    ):
-        # Attn
-        self.attn.add_k_proj.bias = original_block.attn.add_k_proj.bias
-        self.attn.add_k_proj.weight = original_block.attn.add_k_proj.weight
-        self.attn.add_q_proj.bias = original_block.attn.add_q_proj.bias
-        self.attn.add_q_proj.weight = original_block.attn.add_q_proj.weight
-        self.attn.add_v_proj.bias = original_block.attn.add_v_proj.bias
-        self.attn.add_v_proj.weight = original_block.attn.add_v_proj.weight
-        self.attn.norm_added_k.weight = original_block.attn.norm_added_k.weight
-        self.attn.norm_added_q.weight = original_block.attn.norm_added_q.weight
-        self.attn.norm_k.weight = original_block.attn.norm_k.weight
-        self.attn.norm_q.weight = original_block.attn.norm_q.weight
-        self.attn.to_add_out.bias = original_block.attn.to_add_out.bias
-        self.attn.to_add_out.weight = original_block.attn.to_add_out.weight
-        self.attn.to_k.bias = original_block.attn.to_k.bias
-        self.attn.to_k.weight = original_block.attn.to_k.weight
-        self.attn.to_out[0].bias = original_block.attn.to_out[0].bias
-        self.attn.to_out[0].weight = original_block.attn.to_out[0].weight
-        self.attn.to_q.bias = original_block.attn.to_q.bias
-        self.attn.to_q.weight = original_block.attn.to_q.weight
-        self.attn.to_v.bias = original_block.attn.to_v.bias
-        self.attn.to_v.weight = original_block.attn.to_v.weight
-
-        # Feedforward layers
-        self.ff.net[0].proj.bias = original_block.ff.net[0].proj.bias
-        self.ff.net[0].proj.weight = original_block.ff.net[0].proj.weight
-        self.ff.net[2].bias = original_block.ff.net[2].bias
-        self.ff.net[2].weight = original_block.ff.net[2].weight
-
-        # Feedforward context layers
-        self.ff_context.net[0].proj.bias = original_block.ff_context.net[0].proj.bias
-        self.ff_context.net[0].proj.weight = original_block.ff_context.net[0].proj.weight
-        self.ff_context.net[2].bias = original_block.ff_context.net[2].bias
-        self.ff_context.net[2].weight = original_block.ff_context.net[2].weight
-
-        # Normalization layers
-        self.norm1_context.linear.bias = original_block.norm1_context.linear.bias
-        self.norm1_context.linear.weight = original_block.norm1_context.linear.weight
-        self.norm1.linear.bias = original_block.norm1.linear.bias
-        self.norm1.linear.weight = original_block.norm1.linear.weight
-
     def scale_lora_layers_according_to_region(self, lora_scalings: Dict[str, Any]):
         for module in self.modules():
             if isinstance(module, BaseTunerLayer):
@@ -404,7 +334,7 @@ class RAG_FluxTransformerBlock(nn.Module):
         return encoder_hidden_states, hidden_states
 
 
-class RAG_FluxTransformer2DModel(ModelMixin, ConfigMixin, PeftAdapterMixin, FromOriginalModelMixin):
+class RAG_FluxTransformer2DModel(ModelMixin, PeftAdapterMixin):
     """
     The Transformer model introduced in Flux.
 
@@ -422,102 +352,101 @@ class RAG_FluxTransformer2DModel(ModelMixin, ConfigMixin, PeftAdapterMixin, From
         guidance_embeds (`bool`, defaults to False): Whether to use guidance embeddings.
     """
 
+    _supports_gradient_checkpointing = True
+    _no_split_modules = ["FluxTransformerBlock", "FluxSingleTransformerBlock"]
+
+    # @register_to_config
+    # def __init__(
+    #     self,
+    #     patch_size: int = 1,
+    #     in_channels: int = 64,
+    #     num_layers: int = 19,
+    #     num_single_layers: int = 38,
+    #     attention_head_dim: int = 128,
+    #     num_attention_heads: int = 24,
+    #     joint_attention_dim: int = 4096,
+    #     pooled_projection_dim: int = 768,
+    #     guidance_embeds: bool = False,
+    #     axes_dims_rope: Tuple[int] = (16, 56, 56),
+    # ):
+    #     super().__init__()
+    #     self.out_channels = in_channels
+    #     self.inner_dim = self.config.num_attention_heads * self.config.attention_head_dim
+
+    #     self.pos_embed = FluxPosEmbed(theta=10000, axes_dim=axes_dims_rope)
+
+    #     text_time_guidance_cls = (
+    #         CombinedTimestepGuidanceTextProjEmbeddings if guidance_embeds else CombinedTimestepTextProjEmbeddings
+    #     )
+    #     self.time_text_embed = text_time_guidance_cls(
+    #         embedding_dim=self.inner_dim, pooled_projection_dim=self.config.pooled_projection_dim
+    #     )
+
+    #     self.context_embedder = nn.Linear(self.config.joint_attention_dim, self.inner_dim)
+    #     self.x_embedder = torch.nn.Linear(self.config.in_channels, self.inner_dim)
+
+    #     self.transformer_blocks = nn.ModuleList(
+    #         [
+    #             FluxTransformerBlock(
+    #                 dim=self.inner_dim,
+    #                 num_attention_heads=self.config.num_attention_heads,
+    #                 attention_head_dim=self.config.attention_head_dim,
+    #             )
+    #             for i in range(self.config.num_layers)
+    #         ]
+    #     )
+
+    #     self.single_transformer_blocks = nn.ModuleList(
+    #         [
+    #             FluxSingleTransformerBlock(
+    #                 dim=self.inner_dim,
+    #                 num_attention_heads=self.config.num_attention_heads,
+    #                 attention_head_dim=self.config.attention_head_dim,
+    #             )
+    #             for i in range(self.config.num_single_layers)
+    #         ]
+    #     )
+
+    #     self.norm_out = AdaLayerNormContinuous(self.inner_dim, self.inner_dim, elementwise_affine=False, eps=1e-6)
+    #     self.proj_out = nn.Linear(self.inner_dim, patch_size * patch_size * self.out_channels, bias=True)
+
+    #     self.gradient_checkpointing = False
+
     _supports_gradient_checkpointing = False
     _no_split_modules = ["RAG_FluxTransformerBlock", "RAG_FluxSingleTransformerBlock"]
 
-    @register_to_config
     def __init__(
         self,
-        patch_size: int = 1,
+        transformer: "FluxTransformer2DModel",
         in_channels: int = 64,
-        num_layers: int = 19,
-        num_single_layers: int = 38,
-        attention_head_dim: int = 128,
-        num_attention_heads: int = 24,
-        joint_attention_dim: int = 4096,
-        pooled_projection_dim: int = 768,
-        guidance_embeds: bool = False,
-        axes_dims_rope: Tuple[int] = (16, 56, 56),
     ):
         super().__init__()
         self.out_channels = in_channels
-        self.inner_dim = self.config.num_attention_heads * self.config.attention_head_dim
 
-        self.pos_embed = FluxPosEmbed(theta=10000, axes_dim=axes_dims_rope)
+        for block in transformer.transformer_blocks:
+            block.__class__ = RAG_FluxTransformerBlock
+        for block in transformer.single_transformer_blocks:
+            block.__class__ = RAG_FluxSingleTransformerBlock
 
-        text_time_guidance_cls = (
-            CombinedTimestepGuidanceTextProjEmbeddings if guidance_embeds else CombinedTimestepTextProjEmbeddings
-        )
-        self.time_text_embed = text_time_guidance_cls(
-            embedding_dim=self.inner_dim, pooled_projection_dim=self.config.pooled_projection_dim
-        )
+        self.add_module("pos_embed", transformer.pos_embed)
+        self.add_module("time_text_embed", transformer.time_text_embed)
+        self.add_module("context_embedder", transformer.context_embedder)
+        self.add_module("x_embedder", transformer.x_embedder)
+        self.add_module("transformer_blocks", transformer.transformer_blocks)
+        self.add_module("single_transformer_blocks", transformer.single_transformer_blocks)
+        self.add_module("norm_out", transformer.norm_out)
+        self.add_module("proj_out", transformer.proj_out)
 
-        self.context_embedder = nn.Linear(self.config.joint_attention_dim, self.inner_dim)
-        self.x_embedder = torch.nn.Linear(self.config.in_channels, self.inner_dim)
-
-        self.transformer_blocks = nn.ModuleList(
-            [
-                RAG_FluxTransformerBlock(
-                    dim=self.inner_dim,
-                    num_attention_heads=self.config.num_attention_heads,
-                    attention_head_dim=self.config.attention_head_dim,
-                )
-                for i in range(self.config.num_layers)
-            ]
-        )
-
-        self.single_transformer_blocks = nn.ModuleList(
-            [
-                RAG_FluxSingleTransformerBlock(
-                    dim=self.inner_dim,
-                    num_attention_heads=self.config.num_attention_heads,
-                    attention_head_dim=self.config.attention_head_dim,
-                )
-                for i in range(self.config.num_single_layers)
-            ]
-        )
-
-        self.norm_out = AdaLayerNormContinuous(self.inner_dim, self.inner_dim, elementwise_affine=False, eps=1e-6)
-        self.proj_out = nn.Linear(self.inner_dim, patch_size * patch_size * self.out_channels, bias=True)
-
+        self.pulid_ca = None
+        self.config = transformer.config
         self.gradient_checkpointing = False
 
-    def copy_transformer_weights(self, tf: "FluxTransformer2DModel"):
-        # Shameless hack to get the pipelines to share weights
-        for idx, block in enumerate(tf.transformer_blocks):
-            self.transformer_blocks[idx].copy_flux_block_weights(block)
-        for idx, block in enumerate(tf.single_transformer_blocks):
-            self.single_transformer_blocks[idx].copy_flux_block_weights(block)
-
-        # Context embedder
-        self.context_embedder.bias = tf.context_embedder.bias
-        self.context_embedder.weight = tf.context_embedder.weight
-
-        # Time text embedder - text embedder
-        self.time_text_embed.text_embedder.linear_1.bias = tf.time_text_embed.text_embedder.linear_1.bias
-        self.time_text_embed.text_embedder.linear_1.weight = tf.time_text_embed.text_embedder.linear_1.weight
-        self.time_text_embed.text_embedder.linear_2.bias = tf.time_text_embed.text_embedder.linear_2.bias
-        self.time_text_embed.text_embedder.linear_2.weight = tf.time_text_embed.text_embedder.linear_2.weight
-
-        # Time text embedder - timestep embedder
-        self.time_text_embed.timestep_embedder.linear_1.bias = tf.time_text_embed.timestep_embedder.linear_1.bias
-        self.time_text_embed.timestep_embedder.linear_1.weight = tf.time_text_embed.timestep_embedder.linear_1.weight
-        self.time_text_embed.timestep_embedder.linear_2.bias = tf.time_text_embed.timestep_embedder.linear_2.bias
-        self.time_text_embed.timestep_embedder.linear_2.weight = tf.time_text_embed.timestep_embedder.linear_2.weight
-
-        # X embedder
-        self.x_embedder.bias = tf.x_embedder.bias
-        self.x_embedder.weight = tf.x_embedder.weight
-
-        # Norm out linear
-        self.norm_out.linear.bias = tf.norm_out.linear.bias
-        self.norm_out.linear.weight = tf.norm_out.linear.weight
-
-        # Projection out
-        self.proj_out.bias = tf.proj_out.bias
-        self.proj_out.weight = tf.proj_out.weight
-
-        self
+    @classmethod
+    def from_transformer(cls, tf: "FluxTransformer2DModel"):
+        return cls(
+            tf,
+            # guidance_embeds=tf.config.guidance_embeds,
+        )
 
     @property
     # Copied from diffusers.models.unets.unet_2d_condition.UNet2DConditionModel.attn_processors

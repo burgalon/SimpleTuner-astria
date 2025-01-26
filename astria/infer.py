@@ -1,12 +1,10 @@
 import argparse
 import os
-import random
 import re
 import shlex
 import sys
 import time
 import traceback
-import types
 
 from filelock import FileLock
 import cv2
@@ -16,21 +14,12 @@ from PIL import Image, ImageOps, ImageFilter
 from diffusers import FluxFillPipeline, FluxTransformer2DModel
 from diffusers import FluxPipeline, FluxImg2ImgPipeline, FluxControlNetPipeline, FluxControlNetModel, \
     FluxInpaintPipeline, FluxControlNetImg2ImgPipeline, FluxControlNetInpaintPipeline
-from diffusers.models.transformers.transformer_flux import (
-    FluxSingleTransformerBlock,
-    FluxTransformerBlock,
-)
 from torchvision import transforms
 
 from pulid_pipeline.pipeline import FluxPipelineWithPulID
 from pulid_pipeline.pulid_ext import PuLID
 
 from ragdiffusion import RAG_FluxPipeline, openai_gpt4o_get_regions
-from ragdiffusion.transformer import (
-    RAG_FluxSingleTransformerBlock,
-    RAG_FluxTransformer2DModel,
-    RAG_FluxTransformerBlock,
-)
 
 from add_clut import add_clut
 from add_grain import add_grain
@@ -60,6 +49,75 @@ from watermark_helper import add_watermark
 PIL2TENSOR = transforms.Compose([transforms.PILToTensor()])
 GPU_MEMORY_GB = torch.cuda.get_device_properties(0).total_memory / 1024**3
 print(f"GPU_MEMORY_GB={GPU_MEMORY_GB:.0f}")
+
+def parse_args_rag(parser):
+    parser.add_argument(
+        "--SR_hw_split_ratio",
+        type=str,
+        default="0.3,1; 0.5,0.33,0.34,0.33; 0.2,1",
+        help="String representing SR hardware split ratios."
+    )
+
+    parser.add_argument(
+        "--SR_prompt",
+        type=str,
+        default="Balloons with colorful 'Happy Birthday' text drift above, filling the air with festive joy. BREAK A vase full of white lilies, their delicate petals softly unfurling, lending a serene touch to the atmosphere. BREAK The Pembroke Welsh Corgi, delightfully nestled between the vases, adds a playful charm to the celebration with its gleeful demeanor and bright eyes. BREAK A vase with luscious roses, their deep hues vibrant and striking against the surrounding festivities, infusing the scene with romantic elegance.",
+        help="Prompt string for SR."
+    )
+
+    # For lists of strings or numeric values, use nargs='+'.
+    # Here, for string lists, we specify type=str; for numeric lists, we specify type=float.
+    parser.add_argument(
+        "--HB_prompt_list",
+        nargs="+",
+        type=str,
+        default=None,
+        # default=[
+        #     "Pembroke Welsh Corgi",
+        #     "Vase with white lilies",
+        #     "Vase with roses",
+        #     "Balloons with 'Happy Birthday' text"
+        # ],
+        help="List of prompts for HB."
+    )
+
+    parser.add_argument(
+        "--HB_m_offset_list",
+        nargs="+",
+        type=float,
+        default=None,
+        # default=[0.34, 0.02, 0.67, 0.2],
+        help="List of M offset values for HB."
+    )
+
+    parser.add_argument(
+        "--HB_n_offset_list",
+        nargs="+",
+        type=float,
+        default=None,
+        # default=[0.3, 0.3, 0.3, 0.05],
+        help="List of N offset values for HB."
+    )
+
+    parser.add_argument(
+        "--HB_m_scale_list",
+        nargs="+",
+        type=float,
+        default=None,
+        # default=[0.32, 0.31, 0.31, 0.6],
+        help="List of M scale values for HB."
+    )
+
+    parser.add_argument(
+        "--HB_n_scale_list",
+        nargs="+",
+        type=float,
+        default=None,
+        # default=[0.5, 0.5, 0.5, 0.25],
+        help="List of N scale values for HB."
+    )
+
+    return parser
 
 def parse_args(prompt: JsonObj):
     parser = argparse.ArgumentParser()
@@ -103,6 +161,7 @@ def parse_args(prompt: JsonObj):
     parser.add_argument("--fix_bindi", help="Inpaint dot on the forehead", action='store_true', default=False)
     parser.add_argument("--vton_cfg_scale", help="VTON cfg_scale", type=float, default=None)
     parser.add_argument("--vton_hires", help="VTON Hi resolution", action='store_true', default=False)
+    parser.add_argument("--remove_background", help="Remove background", action='store_true', default=False)
     parser.add_argument(
         "--use_regional", "--multi",
         help="Uses RAG diffusion with gpt4o prompt enhancement", action='store_true',
@@ -129,6 +188,7 @@ def parse_args(prompt: JsonObj):
 
     # Other inference
     parser.add_argument('--controlnet_txt2img', action='store_true', help="Use controlnet txt2img instead of img2img", default=prompt.controlnet_txt2img or False)
+    parse_args_rag(parser)
 
 
     try:
@@ -151,6 +211,10 @@ def parse_args(prompt: JsonObj):
         prompt.hires_fix = False
         prompt.inpaint_faces = False
         prompt.controlnet = None
+    if prompt.outpaint_width and not prompt.outpaint_height:
+        prompt.outpaint_height = prompt.outpaint_width
+    if prompt.outpaint_height and not prompt.outpaint_width:
+        prompt.outpaint_width = prompt.outpaint_height
 
 def get_pipe_key_for_lora(pipe):
     return 'fill' if isinstance(pipe, FluxFillPipeline) else 'pipe'
@@ -274,7 +338,13 @@ class InferPipeline(InpaintFaceMixin, VtonMixin):
             start_time = time.time()
             for name, lora_fn in zip(names, lora_fns):
                 print(f"Loading LoRA weights {name} from {lora_fn}")
-                pipe.load_lora_weights(lora_fn, adapter_name=name, low_cpu_mem_usage=True)
+                if os.environ.get('AKASH_DEPLOYMENT_SEQUENCE'):
+                    # use FileLock to to make sure only one process is loading at a time to avoid CPU spikes
+                    with FileLock(f"{lora_fn}.lock", timeout=60):
+                        pipe.load_lora_weights(lora_fn, adapter_name=name, low_cpu_mem_usage=True)
+                else:
+                    pipe.load_lora_weights(lora_fn, adapter_name=name, low_cpu_mem_usage=True)
+
             print(f"Loaded LoRA weights {names} in {time.time() - start_time:.2f}s pipe={pipe.__class__.__name__}")
             current_lora_weights['names'] = names
             current_lora_weights['scales'] = scales
@@ -294,7 +364,6 @@ class InferPipeline(InpaintFaceMixin, VtonMixin):
 
     def init_pipe(self, model_path):
         """Initialize both FluxPipeline and FluxImg2ImgPipeline."""
-        setattr(self, '_model_path', model_path)
         if not self.pipe or self.model_path != model_path:
             # Initialize the FluxPipeline for text-to-image
             self.pipe = FluxPipeline.from_pretrained(
@@ -309,7 +378,7 @@ class InferPipeline(InpaintFaceMixin, VtonMixin):
     def init_pulid(self):
         if not self.pulid_pipe:
             os.environ['NO_ALBUMENTATIONS_UPDATE'] = '1'
-            self.pulid_model = PuLID(local_dir=f'{CACHE_DIR}/pulid')
+            self.pulid_model = PuLID(local_dir=f'{CACHE_DIR}/pulid', models_dir=CACHE_DIR)
             self.pulid_model.clip_vision_model.to(device)
 
             self.pulid_pipe = FluxPipelineWithPulID(
@@ -362,7 +431,6 @@ class InferPipeline(InpaintFaceMixin, VtonMixin):
                 tokenizer_2=self.pipe.tokenizer_2,
                 vae=self.pipe.vae,
                 transformer=self.pipe.transformer,
-                pipeline_name=self._model_path,
             ).to(device)
 
     def init_img2img(self):
@@ -566,7 +634,6 @@ class InferPipeline(InpaintFaceMixin, VtonMixin):
     def outpaint(self, images, prompt, kwargs):
         out = []
         pipe = self.init_inpaint(JsonObj(fill=True))
-        print(f"T#{prompt.tune_id} P#{prompt.id} outpaint {prompt.outpaint} {prompt.outpaint_height}x{prompt.outpaint_width} text={prompt.outpaint_prompt} from {images[0].size}")
         h = prompt.outpaint_height
         w = prompt.outpaint_width
         if not h or not w:
@@ -579,7 +646,10 @@ class InferPipeline(InpaintFaceMixin, VtonMixin):
             w, h = new_w, new_h
 
         if prompt.outpaint_prompt is None:
-            prompt.outpaint_prompt = prompt.text
+            prompt.outpaint_prompt = ""
+        print(f"T#{prompt.tune_id} P#{prompt.id} outpaint {prompt.outpaint} {prompt.outpaint_height}x{prompt.outpaint_width} text={prompt.outpaint_prompt} from {images[0].size}")
+
+        # Encode text embeds
         (
             prompt_embeds,
             pooled_prompt_embeds,
@@ -692,6 +762,18 @@ class InferPipeline(InpaintFaceMixin, VtonMixin):
             print(f"T={tune.id} {i_prompt}/{len(tune.prompts)} P={prompt.id} U={prompt.user_id} https://www.astria.ai/admin/prompts/{prompt.id} {(time.time() - start_time):.2f} seconds")
         set_current_infer_tune(None)
         return images
+
+    def remove_background(self, images):
+        birefnet = BiRefNet_node()
+        for i_image, image in enumerate(images):
+            print(f"Remove background {i_image=}")
+            alpha_tensor : torch.Tensor = birefnet.matting(image, 'cuda')
+            alpha = alpha_tensor.squeeze().cpu().numpy()
+            image.putalpha(Image.fromarray((alpha * 255).astype(np.uint8)))
+
+            images[i_image] = image
+        return images
+
 
     def infer_mask(self, prompt):
         print(f"T#{prompt.tune_id} P#{prompt.id} Infer mask {prompt.mask_prompt=}")
@@ -865,7 +947,18 @@ class InferPipeline(InpaintFaceMixin, VtonMixin):
             HB_replace =  getattr(prompt, 'regional_hb_replace', 2)
             SR_delta =  getattr(prompt, 'regional_sr_delta', 1.0)
 
-            regions = openai_gpt4o_get_regions(prompt._prompt_with_lora_ids)
+            if prompt.SR_prompt:
+               regions = {
+                   "-SR_hw_split_ratio": prompt.SR_hw_split_ratio,
+                   "-SR_prompt": prompt.SR_prompt,
+                   "-HB_prompt_list": prompt.HB_prompt_list,
+                   "-HB_m_offset_list": prompt.HB_m_offset_list,
+                   "-HB_n_offset_list": prompt.HB_n_offset_list,
+                   "-HB_m_scale_list": prompt.HB_m_scale_list,
+                   "-HB_n_scale_list": prompt.HB_n_scale_list,
+               }
+            else:
+                regions = openai_gpt4o_get_regions(prompt._prompt_with_lora_ids)
             print(f"T#{prompt.tune_id} P#{prompt.id} regions={regions}")
 
             # Now that we have the regions, we need to assign LoRAs to each
@@ -992,23 +1085,30 @@ class InferPipeline(InpaintFaceMixin, VtonMixin):
                 image = Image.composite(image, input_image.resize(image.size, Image.LANCZOS), mask_image.resize(image.size, Image.LANCZOS))
                 images[i_image] = image
 
+        if prompt.remove_background:
+            images = self.remove_background(images)
 
         if os.environ.get('DEBUG'):
             for i_image, image in enumerate(images):
-                image.save(f"{MODELS_DIR}/{prompt.id}-{i_image}.jpg")
+                if prompt.remove_background:
+                    image.save(f"{MODELS_DIR}/{prompt.id}-{i_image}.png")
+                else:
+                    image.save(f"{MODELS_DIR}/{prompt.id}-{i_image}.jpg")
         else:
-            send_to_server(images, prompt.id)
+            content_types = ["image/png" if prompt.remove_background else "image/jpeg"] * len(images)
+            send_to_server(images, prompt.id, content_types)
         prompt.trained_at = True
 
         if use_regional:
-            # hack since we're hijacking the shared transformer weights
-            self.rag_diffusion_pipe.transformer_set_lora_scalings({
-                adapter_id: scaling
-                for adapter_id, scaling in zip(
-                    self.current_lora_weights_map['pipe'].get('names', []),
-                    self.current_lora_weights_map['pipe'].get('scales', []),
-                )
-            })
+            # hack since we're hijacking the transformer
+            # self.rag_diffusion_pipe.transformer_set_lora_scalings({
+            #     adapter_id: scaling
+            #     for adapter_id, scaling in zip(
+            #         self.current_lora_weights_map['pipe'].get('names', []),
+            #         self.current_lora_weights_map['pipe'].get('scales', []),
+            #     )
+            # })
+            self.reset()
 
         return images
 

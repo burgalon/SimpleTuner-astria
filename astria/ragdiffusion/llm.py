@@ -22,14 +22,14 @@ def parse_possible_list(value):
     # If not a string, we don't need to parse it.
     if not isinstance(value, str):
         return value
-    
+
     # 1. Try to parse as JSON (e.g. "[1, 2, 3]" or "\"Hello\"" or "true")
     try:
         parsed_json = json.loads(value)
         return parsed_json
     except (json.JSONDecodeError, TypeError):
         pass
-    
+
     # 2. Try to parse as a comma-separated list of numeric values:
     #    e.g., "0.33, 0.34, 0.33" -> [0.33, 0.34, 0.33]
     parts = [x.strip() for x in value.split(",")]
@@ -46,7 +46,7 @@ def parse_possible_list(value):
                 break
         if all_numeric:
             return parsed_list
-    
+
     # 3. If all attempts fail, just return the original string
     return value
 
@@ -56,20 +56,20 @@ def openai_gpt4o_get_regions(prompt, cache=False):
     if test_pth.exists() and cache:
         with open(test_pth, 'r') as f:
             return json.load(f)
-    
+
     api_key = os.environ.get('OPENAI_API_KEY', None)
     if api_key is None:
         raise ValueError('Please provide an OpenAI API key via `OPENAI_API_KEY`')
-    
+
     url = "https://api.openai.com/v1/chat/completions"
 
     template_pth = Path(__file__).resolve().parent / 'prompts' / 'prompt.txt'
     with open(template_pth, 'r',encoding="utf-8") as f:
         template=f.readlines()
     user_textprompt=f"Caption:{prompt} \n Let's think step by step, please reply in plain text and do not use any bold or bullet-point Markdown formatting for Step 1, then response with a markdown formatted JSON section for Step 2."
-    
+
     textprompt= f"{' '.join(template)} \n {user_textprompt}"
-    
+
     tries = 0
     regions = None
     while tries < MAX_TRIES and regions is None:
@@ -152,7 +152,7 @@ def get_params_dict(output_text):
     else:
         HB_m_offset_list="NULL"
         # print("x_offset_list not found.")
-    
+
     HB_n_offset_list_match = re.search(r"HB_n_offset_list: (.*?)(?=\n|\Z)", response)
     if HB_n_offset_list_match:
         HB_n_offset_list = HB_n_offset_list_match.group(1).strip()

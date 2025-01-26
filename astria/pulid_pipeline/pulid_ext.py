@@ -123,23 +123,34 @@ class PuLID:
         dtype=torch.bfloat16,
         version=PULID_VERSION,
         local_dir=PULID_LOCAL_DIR,
+        models_dir=PULID_LOCAL_DIR,
     ):
-        ANTEL_LOCAL_DIR: Final[str] = f'{local_dir}/antelopev2'
-        self.antel_local_dir = ANTEL_LOCAL_DIR
-        encoder_path = PULID_MODEL_FILENAME_PATTERN.format(version=version)
-        if not os.path.exists(encoder_path):
-            hf_hub_download(PULID_REPO_ID, encoder_path, local_dir=local_dir)
+        # call download_models static method
+        encoder_path, self.antel_local_dir = PuLID.download_models(version, local_dir, models_dir)
         self.model = PuLModel(device, dtype)
         self.model.load_state_dict(load_file(os.path.join(local_dir, encoder_path)))
-        self.face_helper = PuLID.init_face_helper(device)
+        self.face_helper = PuLID.init_face_helper(device, models_dir)
         (
             self.clip_vision_model,
             self.eva_transform_mean,
             self.eva_transform_std,
         ) = PuLID.init_clip(device, dtype)
-        if not os.path.exists(ANTEL_LOCAL_DIR):
-            snapshot_download(ANTEL_REPO_ID, local_dir=ANTEL_LOCAL_DIR)
         self.app, self.handler_ante = self.init_insightface()
+
+    @staticmethod
+    def download_models(
+            version=PULID_VERSION,
+            local_dir=PULID_LOCAL_DIR,
+            models_dir=PULID_LOCAL_DIR,
+    ):
+        encoder_path = PULID_MODEL_FILENAME_PATTERN.format(version=version)
+        if not os.path.exists(encoder_path):
+            hf_hub_download(PULID_REPO_ID, encoder_path, local_dir=local_dir)
+        antel_local_dir: Final[str] = f'{local_dir}/antelopev2'
+        if not os.path.exists(antel_local_dir):
+            snapshot_download(ANTEL_REPO_ID, local_dir=antel_local_dir)
+        return encoder_path, antel_local_dir
+
 
     @staticmethod
     def init_clip(device, dtype):
@@ -158,7 +169,8 @@ class PuLID:
         return clip_vision_model, eva_transform_mean, eva_transform_std
 
     @staticmethod
-    def init_face_helper(device):
+    def init_face_helper(device, models_dir):
+        print(f'init face helper {models_dir=}')
         face_helper = FaceRestoreHelper(
             upscale_factor=1,
             face_size=512,
@@ -166,9 +178,14 @@ class PuLID:
             det_model=FACE_DET_MODEL,
             save_ext=FACE_SAVE_EXT,
             device=device,
+            model_rootpath=models_dir,
         )
         face_helper.face_parse = None
-        face_helper.face_parse = init_parsing_model(model_name=FACE_PARSING_MODEL, device=device)
+        face_helper.face_parse = init_parsing_model(
+            model_name=FACE_PARSING_MODEL,
+            device=device,
+            model_rootpath=models_dir,
+        )
 
         return face_helper
 
@@ -375,7 +392,7 @@ class PuLID:
             return avg_id_embedding, None
 
 if __name__ == '__main__':
-    pulid_model = PuLID(local_dir='/data/cache/pulid')
+    pulid_model = PuLID(local_dir='/data/cache/pulid', models_dir='/data/cache')
     img = Image.open('astria_tests/fixtures/19477328-before-inpaint-0.jpg')
     embed_avg, _ = pulid_model.get_id_embedding_for_images_list([img, img])
     embed, _ = pulid_model.get_id_embedding(img)
