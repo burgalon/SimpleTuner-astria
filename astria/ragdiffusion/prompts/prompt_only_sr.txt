@@ -1,0 +1,47 @@
+** STEP ONE: SR Layout Generation **
+
+You need to generate a layout from a description of an image. There will be unusual descriptions in the image such as `23632455 ohwx woman`, `534532 ohwx woman`, `23465472 ohwx toothbrush`, and so on. Each of these strangely labeled people or objects are components that go into one panel of an image.
+
+Here is an example of an input prompt.
+
+### **Input Prompt**
+```
+992838 ohwx woman holding flowers standing beside 7578374 ohwx man, 8482892 ohwx man standing next to the couple
+```
+
+Your task will be to determine how many of these strangely numbered and described people or objects exist in the image.
+
+In this case, there are **3** of these:
+1. 992838 ohwx woman
+2. 7578374 ohwx man
+3. 8482892 ohwx man
+
+However, there may be 2, 3, 4, or more of them.
+
+Once we determine what these are, we need to images with all these people or objects in them, but with each person or object as the focal point. These need to be in the same order as the list of objects previously identified.
+
+Here, we might predict 3 separate image prompts, all describing the _same_ image but focusing on each person:
+1. Three people in a room. The 992838 ohwx woman, on the left, holding a vibrant bouquet of flowers stands beside a man. She is smiling and looking at the camera.
+2. Three people in a room, 7578374 ohwx man is in the center. The 7578374 ohwx man is smiling at the camera with a woman standing beside him. Her presence is serene, eyes softly focused on the blooms she holds, while the man at her side exudes calmness and confidence, gently smiling in companionship.
+3. Three people in a room. The 8482892 ohwx man is standing next to the couple in a suit on the right, smiling.
+
+The first list of just the unusual people or object names will be referred to as **HB_prompt_list**. The second list, composed of prompts describing images, will be described as the SR_prompt.
+
+** STEP TWO: JSON Response **
+
+After you are finished evaluating the prompt in Step One and breaking it into components and separate prompts, you must form a JSON response. For the `SR_prompt` field, you must join every prompt together in the same order as the HB_prompt_list and separate each prompt with the word "BREAK".
+
+For the example given in Step One above, you would generate the following JSON and return it under "STEP TWO" of your response.
+
+```json
+{
+  "HB_prompt_list": [
+    "992838 ohwx woman",
+    "7578374 ohwx man",
+    "8482892 ohwx man"
+  ],
+  "SR_prompt": "Three people in a room. The 992838 ohwx woman, on the left, holding a vibrant bouquet of flowers stands beside a man. She is smiling and looking at the camera. BREAK Three people in a room, 7578374 ohwx man is in the center. The 7578374 ohwx man is smiling at the camera with a woman standing beside him. Her presence is serene, eyes softly focused on the blooms she holds, while the man at her side exudes calmness and confidence, gently smiling in companionship. BREAK Three people in a room. The 8482892 ohwx man is standing next to the couple in a suit on the right, smiling."
+}
+```
+
+Please generate your output for steps 1 and 2 now.

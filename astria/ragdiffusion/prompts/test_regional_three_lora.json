@@ -1,0 +1,29 @@
+{
+    "SR_hw_split_ratio": "0.3333,0.3333,0.3333",
+    "SR_prompt": "Three people in a room. The 1533312 ohwx woman, on the left, holding a vibrant bouquet of flowers stands beside a man. She is smiling and looking at the camera. BREAK Three people in a room, 1557315 ohwx man is in the center. The 1557315 ohwx man is smiling at the camera with a woman standing beside him. Her presence is serene, eyes softly focused on the blooms she holds, while the man at her side exudes calmness and confidence, gently smiling in companionship. The scene captures an intimate yet open expression of their relationship. BREAK Three people in a room. The 1979152 ohwx man is standing next to the couple in a suit on the right, smiling",
+    "HB_prompt_list": [
+      "1533312 ohwx woman holding flowers",
+      "1557315 ohwx man",
+      "1979152 ohwx man"
+    ],
+    "HB_m_offset_list": [
+      0.033,
+      0.367,
+      0.7
+    ],
+    "HB_n_offset_list": [
+      0.1,
+      0.1,
+      0.1
+    ],
+    "HB_m_scale_list": [
+      0.267,
+      0.267,
+      0.267
+    ],
+    "HB_n_scale_list": [
+      0.8,
+      0.8,
+      0.8
+    ]  
+  }

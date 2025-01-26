@@ -1,4 +1,5 @@
 import argparse
+import json
 import os
 import re
 import shlex
@@ -19,7 +20,12 @@ from torchvision import transforms
 from pulid_pipeline.pipeline import FluxPipelineWithPulID
 from pulid_pipeline.pulid_ext import PuLID
 
-from ragdiffusion import RAG_FluxPipeline, openai_gpt4o_get_regions
+from ragdiffusion import (
+    RAG_FluxPipeline,
+    generate_n_column_layout_regions,
+    openai_gpt4o_get_multi_lora_prompts,
+    openai_gpt4o_get_regions,
+)
 
 from add_clut import add_clut
 from add_grain import add_grain
@@ -185,6 +191,7 @@ def parse_args(prompt: JsonObj):
             else 1.0,
         help="SR delta",
     )
+    parser.add_argument("--regional_json", type=str, default=getattr(prompt, 'regional_json', None))
     parser.add_argument('text', nargs='*', help='Text to be processed')
 
 
@@ -776,7 +783,6 @@ class InferPipeline(InpaintFaceMixin, VtonMixin):
             images[i_image] = image
         return images
 
-
     def infer_mask(self, prompt):
         print(f"T#{prompt.tune_id} P#{prompt.id} Infer mask {prompt.mask_prompt=}")
         if prompt.mask_prompt == 'background':
@@ -944,12 +950,25 @@ class InferPipeline(InpaintFaceMixin, VtonMixin):
         joint_attention_kwargs = self.load_references(prompt, pipe)
         prompt.text = prompt.text.strip(" ,").strip(" ").strip('"')
 
-        # load_references mutates prompt.text, so this needs to be down here.
-        if use_regional:
-            HB_replace =  getattr(prompt, 'regional_hb_replace', 2)
-            SR_delta =  getattr(prompt, 'regional_sr_delta', 1.0)
+        all_tunes_are_human_and_more_than_one = (
+            all(tune.name in HUMAN_CLASS_NAMES for tune in prompt.tunes)
+            and len(prompt.tunes) > 1
+        )
 
-            if prompt.SR_prompt:
+        # load_references mutates prompt.text, so this needs to be down here.
+        if use_regional or all_tunes_are_human_and_more_than_one:
+            HB_replace = getattr(prompt, 'regional_hb_replace', 2)
+            SR_delta = getattr(prompt, 'regional_sr_delta', 1.0)
+
+            if (
+                prompt.SR_prompt
+                and prompt.SR_hw_split_ratio
+                and prompt.HB_prompt_list
+                and prompt.HB_m_offset_list
+                and prompt.HB_n_offset_list
+                and prompt.HB_m_scale_list
+                and prompt.HB_n_scale_list
+            ):
                regions = {
                    "SR_hw_split_ratio": prompt.SR_hw_split_ratio,
                    "SR_prompt": prompt.SR_prompt,
@@ -959,6 +978,28 @@ class InferPipeline(InpaintFaceMixin, VtonMixin):
                    "HB_m_scale_list": prompt.HB_m_scale_list,
                    "HB_n_scale_list": prompt.HB_n_scale_list,
                }
+            elif prompt.regional_json is not None:
+                regions = json.loads(prompt.regional_json)
+                if "SR_hw_split_ratio" not in regions.keys():
+                    raise ValueError('SR_hw_split_ratio required in regional_json')
+                if "SR_prompt" not in regions.keys():
+                    raise ValueError('SR_prompt required in regional_json')
+                if "HB_prompt_list" not in regions.keys():
+                    raise ValueError('HB_prompt_list required in regional_json')
+                if "HB_m_offset_list" not in regions.keys():
+                    raise ValueError('HB_m_offset_list required in regional_json')
+                if "HB_n_offset_list" not in regions.keys():
+                    raise ValueError('HB_n_offset_list required in regional_json')
+                if "HB_m_scale_list" not in regions.keys():
+                    raise ValueError('HB_m_scale_list required in regional_json')
+                if "HB_n_scale_list" not in regions.keys():
+                    raise ValueError('HB_n_scale_list required in regional_json')
+            elif all_tunes_are_human_and_more_than_one:
+                regions = generate_n_column_layout_regions(len(prompt.tunes))
+                regions_oai_resp = openai_gpt4o_get_multi_lora_prompts(
+                    prompt._prompt_with_lora_ids, len(prompt.tunes))
+                regions['SR_prompt'] = regions_oai_resp['SR_prompt']
+                regions['HB_prompt_list'] = regions_oai_resp['HB_prompt_list']
             else:
                 regions = openai_gpt4o_get_regions(prompt._prompt_with_lora_ids)
             print(f"T#{prompt.tune_id} P#{prompt.id} regions={regions}")

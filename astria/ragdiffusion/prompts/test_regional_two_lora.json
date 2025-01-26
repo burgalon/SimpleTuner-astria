@@ -1,0 +1,24 @@
+{
+  "SR_hw_split_ratio": "0.5,0.5",
+  "SR_prompt": "The 1533312 ohwx woman, holding a vibrant bouquet of flowers stands beside a man. She is smiling and looking at the camera. BREAK The 1557315 ohwx man is smiling at the camera with a woman standing beside him. Her presence is serene, eyes softly focused on the blooms she holds, while the man at her side exudes calmness and confidence, gently smiling in companionship. The scene captures an intimate yet open expression of their relationship.",
+  "HB_prompt_list": [
+    "1533312 ohwx woman holding flowers",
+    "1557315 ohwx man"
+  ],
+  "HB_m_offset_list": [
+    0.05,
+    0.55
+  ],
+  "HB_n_offset_list": [
+    0.1,
+    0.1
+  ],
+  "HB_m_scale_list": [
+    0.4,
+    0.4
+  ],
+  "HB_n_scale_list": [
+    0.8,
+    0.8
+  ]
+}

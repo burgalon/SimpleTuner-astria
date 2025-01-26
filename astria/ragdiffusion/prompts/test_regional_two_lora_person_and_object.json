@@ -1,0 +1,24 @@
+{
+  "SR_hw_split_ratio": "0.7;0.3",
+  "SR_prompt": "1979152 ohwx man, walking confidently on a gravel path amidst the forest, his determined expression capturing the adventure of the moment as sunlight filters through the trees. BREAK The 1612840 ohwx shoe, prominently visible, showcases its sleek design, contrasting vividly with the rough texture of the gravel path.",
+  "HB_prompt_list": [
+    "1979152 ohwx man",
+    "1612840 ohwx shoe"
+  ],
+  "HB_m_offset_list": [
+    0.1,
+    0.3
+  ],
+  "HB_n_offset_list": [
+    0.05,
+    0.75
+  ],
+  "HB_m_scale_list": [
+    0.8,
+    0.4
+  ],
+  "HB_n_scale_list": [
+    0.65,
+    0.2
+  ]
+}

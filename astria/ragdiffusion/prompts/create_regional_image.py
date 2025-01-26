@@ -3,7 +3,7 @@ import json
 import numpy as np
 
 prompt_regions = None
-with open('test.txt', 'r') as f:
+with open('test_regional_three_lora.json', 'r') as f:
     prompt_regions = json.load(f)
 
 SR_hw_split_ratio = prompt_regions['SR_hw_split_ratio']
@@ -13,6 +13,9 @@ HB_m_offset_list = prompt_regions['HB_m_offset_list']
 HB_n_offset_list = prompt_regions['HB_n_offset_list']
 HB_m_scale_list = prompt_regions['HB_m_scale_list']
 HB_n_scale_list = prompt_regions['HB_n_scale_list']
+
+if ';' not in SR_hw_split_ratio:
+    SR_hw_split_ratio = f"1.0,{SR_hw_split_ratio}"
 
 # --- Create a blank image ---
 height, width = 1024, 1024

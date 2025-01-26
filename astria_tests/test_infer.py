@@ -61,6 +61,16 @@ FLUX_LORA_MAN_MARCO = JsonObj(**{
     ]
 })
 
+FLUX_LORA_WOMAN_2 = JsonObj(**{
+    "id": 1617347,
+    "name": "woman",
+    "title": "Woman",
+    "branch": "flux1",
+    "token": str(1617347),
+    "train_token": "ohwx",
+    "model_type": "lora"
+})
+
 FLUX_LORA_SHOE = JsonObj(**{
     "id": 1612840,
     "name": "man",

@@ -1,0 +1,24 @@
+{
+  "SR_hw_split_ratio": "0.5; 0.5",
+  "SR_prompt": "The top half showcases a professional headshot of the 1979152 ohwx man against a seamless white background. His confident expression and white t-shirt blend into the modern aesthetic, perfectly captured through the lens. BREAK Below, held in his arms, the 1989689 ohwx sloth as a 2D illustration shines with a whimsical touch, its playful cartoon features creating a delightful contrast with the photographic realism above.",
+  "HB_prompt_list": [
+    "1979152 ohwx man",
+    "1989689 ohwx sloth"
+  ],
+  "HB_m_offset_list": [
+    0.1,
+    0.1
+  ],
+  "HB_n_offset_list": [
+    0.05,
+    0.55
+  ],
+  "HB_m_scale_list": [
+    0.8,
+    0.8
+  ],
+  "HB_n_scale_list": [
+    0.4,
+    0.4
+  ]
+}
