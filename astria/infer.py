@@ -153,6 +153,8 @@ def parse_args(prompt: JsonObj):
         prompt.controlnet = None
 
 def get_pipe_key_for_lora(pipe):
+    if isinstance(pipe, RAG_FluxPipeline):
+        return 'rag_diffusion_pipe'
     return 'fill' if isinstance(pipe, FluxFillPipeline) else 'pipe'
 
 class InferPipeline(InpaintFaceMixin, VtonMixin):
@@ -199,11 +201,9 @@ class InferPipeline(InpaintFaceMixin, VtonMixin):
         print(f"Initialized inpaint in {time.time() - start_time:.2f}s")
 
     def unload_lora_weights(self, pipe):
+        print('calling unload on', pipe)
         pipe_key = get_pipe_key_for_lora(pipe)
-        if pipe_key == 'fill':
-            self.fill.unload_lora_weights()
-        else:
-            self.pipe.unload_lora_weights()
+        pipe.unload_lora_weights()
         self.current_lora_weights_map[pipe_key] = {'names': [], 'scales': []}
 
     def load_references(self, prompt: JsonObj, pipe):
@@ -212,11 +212,26 @@ class InferPipeline(InpaintFaceMixin, VtonMixin):
         lora_fns = []
         setattr(prompt, '_prompt_with_lora_ids', prompt.text)
 
-        pipe = self.fill if isinstance(pipe, FluxFillPipeline) else self.pipe
+        # pipe = self.fill if isinstance(pipe, FluxFillPipeline) else self.pipe
         pipe_key = get_pipe_key_for_lora(pipe)
 
         if pipe_key not in self.current_lora_weights_map:
             self.current_lora_weights_map[pipe_key] = {'names': [], 'scales': []}
+
+        # When swapping between normal pipeline and RAG diffusion pipe, if there
+        # are any LoRAs loaded for the other pipelines unload them now.
+        if (
+            pipe != self.rag_diffusion_pipe
+            and self.rag_diffusion_pipe is not None
+            and len(self.rag_diffusion_pipe.get_list_adapters().get('transformer', [])) > 0
+        ):
+            self.unload_lora_weights(self.rag_diffusion_pipe)
+        if (
+            pipe == self.rag_diffusion_pipe
+            and self.pipe is not None
+            and len(self.pipe.get_list_adapters().get('transformer', [])) > 0
+        ):
+            self.unload_lora_weights(self.pipe)
 
         current_lora_weights = self.current_lora_weights_map[pipe_key]
 
@@ -264,24 +279,39 @@ class InferPipeline(InpaintFaceMixin, VtonMixin):
                 self.unload_lora_weights(pipe)
             return {}
 
-        # Compare with current LoRA weights
-        if names == current_lora_weights.get('names', []) and scales == current_lora_weights.get('scales', []):
-            print("LoRA weights already loaded with the same scales")
-        else:
-            if current_lora_weights.get('names', []):
-                self.unload_lora_weights(pipe)
-            # Load new LoRA weights
-            start_time = time.time()
-            for name, lora_fn in zip(names, lora_fns):
-                print(f"Loading LoRA weights {name} from {lora_fn}")
-                pipe.load_lora_weights(lora_fn, adapter_name=name, low_cpu_mem_usage=True)
-            print(f"Loaded LoRA weights {names} in {time.time() - start_time:.2f}s pipe={pipe.__class__.__name__}")
-            current_lora_weights['names'] = names
-            current_lora_weights['scales'] = scales
-            self.current_lora_weights_map[pipe_key] = current_lora_weights
-            if len(self.current_lora_weights_map.keys()) > 2:
-                print(f"current_lora_weights_map={[k.__class__.__name__ for k in self.current_lora_weights_map.keys()]}")
-                raise ValueError("current_lora_weights_map too large")
+        # Compare with current LoRA weights. Unload all LoRA weights if there
+        # are existing weights that are not in the currently asked for inference.
+        adapters_to_remove = list(set(current_lora_weights.get('names', [])).difference(set(names)))
+        if len(adapters_to_remove) > 0:
+            pipe.delete_adapters(adapters_to_remove)
+
+        loaded_lora_map = {
+            loaded_lora_name: loaded_lora_scale
+            for loaded_lora_name, loaded_lora_scale in sorted(zip(
+                current_lora_weights.get('names', []),
+                current_lora_weights.get('scales', []),
+            ))
+        }
+        for to_load_lora_name, to_load_lora_scale in sorted(zip(names, scales)):
+            loaded_lora_scale = loaded_lora_map.get(to_load_lora_name, None)
+
+            if loaded_lora_scale is not None and loaded_lora_scale == to_load_lora_scale:
+                print("LoRA weights already loaded with the same scales")
+            elif loaded_lora_scale is not None and loaded_lora_scale == to_load_lora_scale:
+                print("LoRA weights already loaded but the scale has changed, tweaking scale")
+            else:
+                # Load new LoRA weights
+                start_time = time.time()
+                print(f"Loading LoRA weights {to_load_lora_name} from {lora_fn}")
+                pipe.load_lora_weights(lora_fn, adapter_name=to_load_lora_name, low_cpu_mem_usage=True)
+
+                print(f"Loaded LoRA weights {names} in {time.time() - start_time:.2f}s pipe={pipe.__class__.__name__}")
+                current_lora_weights['names'].append(to_load_lora_name)
+                current_lora_weights['scales'].append(to_load_lora_scale)
+
+                if len(self.current_lora_weights_map.keys()) > 2:
+                    print(f"current_lora_weights_map={[k.__class__.__name__ for k in self.current_lora_weights_map.keys()]}")
+                    raise ValueError("current_lora_weights_map too large")
 
         # Set adapters
         pipe.set_adapters(names, adapter_weights=scales)
@@ -877,11 +907,11 @@ class InferPipeline(InpaintFaceMixin, VtonMixin):
             for sr_prompt in sr_prompts:
                 scaling_values = {
                     lora_id: 0.0
-                    for lora_id in self.current_lora_weights_map['pipe'].get('names', [])
+                    for lora_id in self.current_lora_weights_map['rag_diffusion_pipe'].get('names', [])
                 }
                 for lora_id, lora_scale in zip(
-                    self.current_lora_weights_map['pipe'].get('names', []),
-                    self.current_lora_weights_map['pipe'].get('scales', []),
+                    self.current_lora_weights_map['rag_diffusion_pipe'].get('names', []),
+                    self.current_lora_weights_map['rag_diffusion_pipe'].get('scales', []),
                 ):
                     if lora_id in sr_prompt:
                         scaling_values[lora_id] = lora_scale
@@ -890,11 +920,11 @@ class InferPipeline(InpaintFaceMixin, VtonMixin):
             # Clean the prompts of any LoRA IDs that might have been embedded.
             HB_prompt_list_cleaned = []
             for hb_prompt in HB_prompt_list:
-                for lora_id in self.current_lora_weights_map['pipe'].get('names', []):
+                for lora_id in self.current_lora_weights_map['rag_diffusion_pipe'].get('names', []):
                     hb_prompt = hb_prompt.replace(lora_id, "")
                 HB_prompt_list_cleaned.append(hb_prompt)
 
-            for lora_id in self.current_lora_weights_map['pipe'].get('names', []):
+            for lora_id in self.current_lora_weights_map['rag_diffusion_pipe'].get('names', []):
                 SR_prompt = SR_prompt.replace(lora_id, "")
 
             HB_replace = HB_replace
@@ -1000,15 +1030,15 @@ class InferPipeline(InpaintFaceMixin, VtonMixin):
             send_to_server(images, prompt.id)
         prompt.trained_at = True
 
-        if use_regional:
-            # hack since we're hijacking the shared transformer weights
-            self.rag_diffusion_pipe.transformer_set_lora_scalings({
-                adapter_id: scaling
-                for adapter_id, scaling in zip(
-                    self.current_lora_weights_map['pipe'].get('names', []),
-                    self.current_lora_weights_map['pipe'].get('scales', []),
-                )
-            })
+        # if use_regional:
+        #     # hack since we're hijacking the shared transformer weights
+        #     self.rag_diffusion_pipe.transformer_set_lora_scalings({
+        #         adapter_id: scaling
+        #         for adapter_id, scaling in zip(
+        #             self.current_lora_weights_map['rag_diffusion_pipe'].get('names', []),
+        #             self.current_lora_weights_map['rag_diffusion_pipe'].get('scales', []),
+        #         )
+        #     })
 
         return images
 
