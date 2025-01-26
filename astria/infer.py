@@ -54,14 +54,16 @@ def parse_args_rag(parser):
     parser.add_argument(
         "--SR_hw_split_ratio",
         type=str,
-        default="0.3,1; 0.5,0.33,0.34,0.33; 0.2,1",
+        default=None,
+        # default="0.3,1; 0.5,0.33,0.34,0.33; 0.2,1",
         help="String representing SR hardware split ratios."
     )
 
     parser.add_argument(
         "--SR_prompt",
         type=str,
-        default="Balloons with colorful 'Happy Birthday' text drift above, filling the air with festive joy. BREAK A vase full of white lilies, their delicate petals softly unfurling, lending a serene touch to the atmosphere. BREAK The Pembroke Welsh Corgi, delightfully nestled between the vases, adds a playful charm to the celebration with its gleeful demeanor and bright eyes. BREAK A vase with luscious roses, their deep hues vibrant and striking against the surrounding festivities, infusing the scene with romantic elegance.",
+        default=None,
+        # default="Balloons with colorful 'Happy Birthday' text drift above, filling the air with festive joy. BREAK A vase full of white lilies, their delicate petals softly unfurling, lending a serene touch to the atmosphere. BREAK The Pembroke Welsh Corgi, delightfully nestled between the vases, adds a playful charm to the celebration with its gleeful demeanor and bright eyes. BREAK A vase with luscious roses, their deep hues vibrant and striking against the surrounding festivities, infusing the scene with romantic elegance.",
         help="Prompt string for SR."
     )
 
