@@ -55,6 +55,8 @@ from watermark_helper import add_watermark
 PIL2TENSOR = transforms.Compose([transforms.PILToTensor()])
 GPU_MEMORY_GB = torch.cuda.get_device_properties(0).total_memory / 1024**3
 print(f"GPU_MEMORY_GB={GPU_MEMORY_GB:.0f}")
+UNIT_NUMBERS = {0: 'zero', 1: 'one', 2: 'two', 3: 'three', 4: 'four', 
+           5: 'five', 6: 'six', 7: 'seven', 8: 'eight', 9: 'nine'}
 
 def parse_args(prompt: JsonObj):
     parser = argparse.ArgumentParser()
@@ -211,6 +213,7 @@ class InferPipeline(InpaintFaceMixin, VtonMixin):
         names = []
         scales = []
         lora_fns = []
+        setattr(prompt, '_prompt_raw', prompt.text)
         setattr(prompt, '_prompt_with_lora_ids', prompt.text)
 
         pipe = self.fill if isinstance(pipe, FluxFillPipeline) else self.pipe
@@ -468,6 +471,38 @@ class InferPipeline(InpaintFaceMixin, VtonMixin):
                 tokenizer_2=self.pipe.tokenizer_2,
             ).to(device)
 
+    @staticmethod
+    def sort_tunes_according_to_prompt(prompt):
+        # 1. Extract the ordered list of IDs from the prompt text.
+        #    The regex captures numbers that follow "<lora:" and precede the next colon.
+        ordered_ids = [int(match) for match in re.findall(r"<lora:(\d+):", prompt.text)]
+        # For the provided text, ordered_ids becomes: [1979152, 1533312, 1557315]
+
+        # 2. Build a lookup dictionary mapping each tune ID to its order index.
+        order_lookup = {tune_id: index for index, tune_id in enumerate(ordered_ids)}
+
+        # 3. Sort prompt_tunes based on the order of IDs in prompt_text.
+        #    If an ID from prompt_tunes isn't found in the lookup, it will be sorted to the end.
+        sorted_tunes = sorted(prompt.tunes, key=lambda tune: order_lookup.get(int(getattr(tune, 'id')), 2**64))
+
+        prompt.tunes = sorted_tunes
+
+    @staticmethod
+    def purge_lora_ids_from_rag_input_for_unified_prompt(prompt, all_people: bool=False) -> str:
+        prompt_cleaned = prompt._prompt_with_lora_ids
+        for lora in prompt.tunes:
+            prompt_cleaned = prompt_cleaned.replace(f'{lora.id} {lora.train_token} {lora.name}', lora.name)
+
+        if all_people and len(prompt.tunes) > 1:
+            num_people = len(prompt.tunes)
+
+            # Just put a sane limit on the number of people in RAG diffusion...
+            # It is probably lower than this.
+            if num_people > 9:
+                raise ValueError('Too many LoRAs')
+            prompt_cleaned = f'{UNIT_NUMBERS[num_people]} people. {prompt_cleaned}'
+
+        return prompt_cleaned
 
     def poll_infer(self):
         tune = JsonObj()
@@ -778,14 +813,12 @@ class InferPipeline(InpaintFaceMixin, VtonMixin):
 
         input_image_tensor, controlnet_hint, w, h, orig_input_image, input_image, mask_image = None, None, None, None, None, None, None
 
-
         all_tunes_are_human_and_more_than_one = (
                 all(tune.name in HUMAN_CLASS_NAMES for tune in prompt.tunes)
                 and len(prompt.tunes) > 1
         )
         use_regional =  getattr(prompt, 'use_regional', False) or all_tunes_are_human_and_more_than_one
 
-        # load_references mutates prompt.text, so this needs to be down here.
         if use_regional:
             self.init_rag_diffusion()
             pipe = self.rag_diffusion_pipe
@@ -884,12 +917,18 @@ class InferPipeline(InpaintFaceMixin, VtonMixin):
         self.last_pipe = pipe
         images = []
         num_images = int(os.environ.get('NUM_IMAGES', prompt.num_images))
+
+        if use_regional:
+            self.sort_tunes_according_to_prompt(prompt)
         joint_attention_kwargs = self.load_references(prompt, pipe)
         prompt.text = prompt.text.strip(" ,").strip(" ").strip('"')
 
+        # load_references mutates prompt.text, so this needs to be down here.
         if use_regional:
             kwargs = {**kwargs, **self.get_rag_kwargs(prompt)}
             prompt.inpaint_faces = False
+            prompt.text = kwargs['prompt_main']
+            del kwargs['prompt_main']
 
         # Encode text embeds
         (
@@ -994,6 +1033,12 @@ class InferPipeline(InpaintFaceMixin, VtonMixin):
                 all(tune.name in HUMAN_CLASS_NAMES for tune in prompt.tunes)
                 and len(prompt.tunes) > 1
         )
+
+        prompt_main = self.purge_lora_ids_from_rag_input_for_unified_prompt(
+            prompt,
+            all_people=all_tunes_are_human_and_more_than_one,
+        )
+
         HB_replace = getattr(prompt, 'regional_hb_replace', 2)
         SR_delta = getattr(prompt, 'regional_sr_delta', 1.0)
         if (
@@ -1032,13 +1077,20 @@ class InferPipeline(InpaintFaceMixin, VtonMixin):
                 raise ValueError('HB_n_scale_list required in regional_json')
         elif all_tunes_are_human_and_more_than_one:
             regions = generate_n_column_layout_regions(len(prompt.tunes))
-            regions_oai_resp = openai_gpt4o_get_multi_lora_prompts(
-                prompt._prompt_with_lora_ids, len(prompt.tunes))
-            regions['SR_prompt'] = regions_oai_resp['SR_prompt']
-            regions['HB_prompt_list'] = regions_oai_resp['HB_prompt_list']
+            # regions_oai_resp = openai_gpt4o_get_multi_lora_prompts(
+            #     prompt._prompt_with_lora_ids, len(prompt.tunes))
+            # regions['SR_prompt'] = regions_oai_resp['SR_prompt']
+            # regions['HB_prompt_list'] = regions_oai_resp['HB_prompt_list']
+            regions['SR_prompt'] = ' BREAK '.join(
+                f'{lora.id} {lora.train_token} {lora.name}. {prompt_main}'
+                for lora in prompt.tunes)
+            regions['HB_prompt_list'] = [f'{lora.train_token} {lora.name}'
+                for lora in prompt.tunes]
+            
         else:
             regions = openai_gpt4o_get_regions(prompt._prompt_with_lora_ids)
         print(f"T#{prompt.tune_id} P#{prompt.id} regions={regions}")
+
         # Now that we have the regions, we need to assign LoRAs to each
         # region, if relevant.
         HB_prompt_list = regions["HB_prompt_list"]
@@ -1084,6 +1136,7 @@ class InferPipeline(InpaintFaceMixin, VtonMixin):
             HB_replace=HB_replace,
             seed=prompt.seed or 42,
             lora_regional_scaling=lora_regional_scaling,
+            prompt_main=prompt_main,
         )
 
 
