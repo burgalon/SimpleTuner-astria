@@ -1,0 +1,24 @@
+{
+  "SR_hw_split_ratio": "0.45;0.55",
+  "SR_prompt": "1533312 ohwx woman full-body, showcasing a pair of pants while at a fancy luncheon BREAK a photo of a woman full-body wearing 2005693 pants while at a fancy luncheon",
+  "HB_prompt_list": [
+    "1533312 ohwx woman",
+    "2005693 ohwx pants"
+  ],
+  "HB_m_offset_list": [
+    0.35,
+    0.3
+  ],
+  "HB_n_offset_list": [
+    0.05,
+    0.46
+  ],
+  "HB_m_scale_list": [
+    0.3,
+    0.4
+  ],
+  "HB_n_scale_list": [
+    0.15,
+    0.45
+  ]
+}

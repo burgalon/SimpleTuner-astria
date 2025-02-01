@@ -6,7 +6,7 @@ sys.path.append("astria")
 
 from infer import *
 from test_infer import pipe, BASE_PROMPT, run_images, IMG_POSE, FLUX_LORA, JsonObj, RAG_FluxPipeline, FLUX_LORA_SHOE, \
-    FLUX_LORA_MAN_MARCO, FLUX_LORA_MAN, FLUX_CARTOON, FLUX_LORA_WOMAN_2, FLUX_LORA_DRESS
+    FLUX_LORA_MAN_MARCO, FLUX_LORA_MAN, FLUX_CARTOON, FLUX_LORA_WOMAN_2, FLUX_LORA_DRESS, FLUX_LORA_COAT, FLUX_LORA_PANTS
 from pathlib import Path
 
 
@@ -119,7 +119,7 @@ def test_regional_two_lora():
 
 def test_regional_two_lora_with_dress():
     regional_json = ''
-    json_pth = Path(__file__).resolve().parent.parent / 'astria' / 'ragdiffusion' / 'prompts' / 'test_regional_two_lora_person_and_dress.json'
+    json_pth = Path(__file__).resolve().parent.parent / 'astria' / 'ragdiffusion' / 'prompts' / 'test_regional_two_lora_person_and_full_body.json'
     with open(json_pth, 'r') as f:
         regional_json = json.dumps(json.load(f))
     prompt = JsonObj(
@@ -130,6 +130,60 @@ def test_regional_two_lora_with_dress():
 
     prompt.text=f"<lora:{FLUX_LORA.id}:1> {FLUX_LORA.train_token} woman is posing indoors wearing a <lora:{FLUX_LORA_DRESS.id}:1> {FLUX_LORA_DRESS.train_token} dress"
     prompt.tunes=[FLUX_LORA, FLUX_LORA_DRESS]
+    run_images(prompt)
+    assert pipe.last_pipe is None
+
+def test_regional_two_lora_with_full_body_no_premade_json():
+    prompt = JsonObj(
+        **copy.copy(BASE_PROMPT.__dict__),
+        use_regional=True,
+    )
+
+    prompt.text=f"<lora:{FLUX_LORA.id}:1> {FLUX_LORA.train_token} woman is posing indoors wearing a <lora:{FLUX_LORA_DRESS.id}:1> {FLUX_LORA_DRESS.train_token} dress"
+    prompt.tunes=[FLUX_LORA, FLUX_LORA_DRESS]
+    run_images(prompt)
+    assert pipe.last_pipe is None
+
+def test_regional_two_lora_with_upper_body():
+    regional_json = ''
+    json_pth = Path(__file__).resolve().parent.parent / 'astria' / 'ragdiffusion' / 'prompts' / 'test_regional_two_lora_person_and_upper_body.json'
+    with open(json_pth, 'r') as f:
+        regional_json = json.dumps(json.load(f))
+    prompt = JsonObj(
+        **copy.copy(BASE_PROMPT.__dict__),
+        use_regional=True,
+        regional_json=regional_json,
+    )
+
+    prompt.text=f"<lora:{FLUX_LORA_MAN.id}:1> {FLUX_LORA_MAN.train_token} man is posing outdoors on a ski hill wearing a <lora:{FLUX_LORA_COAT.id}:1> {FLUX_LORA_COAT.train_token} coat"
+    prompt.tunes=[FLUX_LORA_MAN, FLUX_LORA_COAT]
+    run_images(prompt)
+    assert pipe.last_pipe is None
+
+def test_regional_two_lora_with_upper_body_no_premade_json():
+    prompt = JsonObj(
+        **copy.copy(BASE_PROMPT.__dict__),
+        use_regional=True,
+    )
+
+    prompt.text=f"<lora:{FLUX_LORA_MAN.id}:1> {FLUX_LORA_MAN.train_token} man is posing outdoors on a ski hill wearing a <lora:{FLUX_LORA_COAT.id}:1> {FLUX_LORA_COAT.train_token} coat"
+    prompt.tunes=[FLUX_LORA_MAN, FLUX_LORA_COAT]
+    run_images(prompt)
+    assert pipe.last_pipe is None
+
+def test_regional_two_lora_with_lower_body():
+    regional_json = ''
+    json_pth = Path(__file__).resolve().parent.parent / 'astria' / 'ragdiffusion' / 'prompts' / 'test_regional_two_lora_person_and_lower_body.json'
+    with open(json_pth, 'r') as f:
+        regional_json = json.dumps(json.load(f))
+    prompt = JsonObj(
+        **copy.copy(BASE_PROMPT.__dict__),
+        use_regional=True,
+        regional_json=regional_json,
+    )
+
+    prompt.text=f"full body photo of <lora:{FLUX_LORA.id}:1> {FLUX_LORA.train_token} woman is a at a fancy luncheon wearing <lora:{FLUX_LORA_PANTS.id}:1> {FLUX_LORA_PANTS.train_token} pants"
+    prompt.tunes=[FLUX_LORA, FLUX_LORA_PANTS]
     run_images(prompt)
     assert pipe.last_pipe is None
 

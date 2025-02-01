@@ -1,0 +1,24 @@
+{
+  "SR_hw_split_ratio": "0.3;0.7",
+  "SR_prompt": "1979152 ohwx man smiling face, showcasing a coat on a ski slope. BREAK a photo of a man wearing 2018489 coat on a ski slope",
+  "HB_prompt_list": [
+    "1979152 ohwx man",
+    "2018489 ohwx coat"
+  ],
+  "HB_m_offset_list": [
+    0.3,
+    0.2
+  ],
+  "HB_n_offset_list": [
+    0.06,
+    0.315
+  ],
+  "HB_m_scale_list": [
+    0.4,
+    0.6
+  ],
+  "HB_n_scale_list": [
+    0.225,
+    0.5
+  ]
+}

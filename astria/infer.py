@@ -1,4 +1,5 @@
 import argparse
+import copy
 import json
 import os
 import re
@@ -21,6 +22,8 @@ from pulid_pipeline.pipeline import FluxPipelineWithPulID
 from pulid_pipeline.pulid_ext import PuLID
 
 from ragdiffusion import (
+    RAG_FULL_BODY_TEMPLATE,
+    RAG_UPPER_BODY_TEMPLATE,
     RAG_FluxPipeline,
     generate_n_column_layout_regions,
     openai_gpt4o_get_multi_lora_prompts,
@@ -49,7 +52,12 @@ from sig_listener import TerminateException, is_terminated, set_current_infer_tu
 from super_resolution_helper import load_sr, upscale_sr
 from train import train
 from inpaint_face_mixin import InpaintFaceMixin
-from vton_mixin import VtonMixin, VTON_CATEGORIES
+from vton_mixin import (
+    VtonMixin,
+    OTHER_CLOTHING_CATEGORIES,
+    UPPER_BODY_CATEGORIES,
+    VTON_CATEGORIES,
+)
 from watermark_helper import add_watermark
 
 PIL2TENSOR = transforms.Compose([transforms.PILToTensor()])
@@ -491,12 +499,8 @@ class InferPipeline(InpaintFaceMixin, VtonMixin):
     def purge_lora_ids_from_rag_input_for_unified_prompt(prompt, all_people: bool=False) -> str:
         prompt_cleaned = prompt._prompt_with_lora_ids
         for lora in prompt.tunes:
-            prompt_cleaned = prompt_cleaned.replace(f'{lora.id} {lora.train_token} {lora.name}', lora.name)
-            prompt_cleaned = prompt_cleaned.replace(f'{lora.train_token} {lora.name} {lora.id}', lora.name)
-
-            # Worst case: the customer passes in an unusually shaped prompt.
-            # Just leave the name/token alone and replace the ID.
             prompt_cleaned = prompt_cleaned.replace(str(lora.id), '')
+            prompt_cleaned = prompt_cleaned.replace(f'{lora.train_token} {lora.name}', lora.name)
 
         if all_people and len(prompt.tunes) > 1:
             num_people = len(prompt.tunes)
@@ -1035,9 +1039,20 @@ class InferPipeline(InpaintFaceMixin, VtonMixin):
         return images
 
     def get_rag_kwargs(self, prompt):
+        # VTON_CATEGORIES
         all_tunes_are_human_and_more_than_one = (
                 all(tune.name in HUMAN_CLASS_NAMES for tune in prompt.tunes)
                 and len(prompt.tunes) > 1
+        )
+        one_human_and_one_fashion_lora = (
+            (
+                sum(tune.name in OTHER_CLOTHING_CATEGORIES
+                for tune in prompt.tunes) == 1
+                or sum(tune.name in UPPER_BODY_CATEGORIES
+                for tune in prompt.tunes) == 1
+            )
+            and sum(tune.name in HUMAN_CLASS_NAMES
+                for tune in prompt.tunes) == 1
         )
 
         prompt_main = self.purge_lora_ids_from_rag_input_for_unified_prompt(
@@ -1092,7 +1107,28 @@ class InferPipeline(InpaintFaceMixin, VtonMixin):
                 for lora in prompt.tunes)
             regions['HB_prompt_list'] = [f'{lora.train_token} {lora.name}'
                 for lora in prompt.tunes]
+        elif one_human_and_one_fashion_lora:
+            regions = None
+            person_lora = next(tune for tune in prompt.tunes
+                if tune.name in HUMAN_CLASS_NAMES)
+            fashion_lora = None
+            if sum(tune.name in OTHER_CLOTHING_CATEGORIES for tune in prompt.tunes) == 1:
+                regions = copy.deepcopy(RAG_FULL_BODY_TEMPLATE)
+                fashion_lora = next(tune for tune in prompt.tunes
+                    if tune.name in OTHER_CLOTHING_CATEGORIES)
+            if sum(tune.name in UPPER_BODY_CATEGORIES for tune in prompt.tunes) == 1:
+                regions = copy.deepcopy(RAG_UPPER_BODY_TEMPLATE)
+                fashion_lora = next(tune for tune in prompt.tunes
+                    if tune.name in UPPER_BODY_CATEGORIES)
             
+            assert regions is not None, 'template for RAG try on not found'
+            assert fashion_lora is not None, 'fashion lora for RAG try on not found'
+            prompt.tunes = [person_lora, fashion_lora]
+            regions['SR_prompt'] = ' BREAK '.join(
+                f'{lora.id} {lora.train_token} {lora.name}. {prompt_main}'
+                for lora in prompt.tunes)
+            regions['HB_prompt_list'] = [f'{lora.train_token} {lora.name}'
+                for lora in prompt.tunes]
         else:
             regions = openai_gpt4o_get_regions(prompt._prompt_with_lora_ids)
         print(f"T#{prompt.tune_id} P#{prompt.id} regions={regions}")

@@ -104,6 +104,28 @@ FLUX_LORA_DRESS = JsonObj(**{
     ]
 })
 
+FLUX_LORA_COAT = JsonObj(**{
+    "id": 2018489,
+    "name": "coat",
+    "title": "coat",
+    "branch": "flux1",
+    "token": str(2018489),
+    "train_token": "ohwx",
+    "model_type": "lora",
+    "face_swap_images": []
+})
+
+FLUX_LORA_PANTS = JsonObj(**{
+    "id": 2005693,
+    "name": "pants",
+    "title": "pants",
+    "branch": "flux1",
+    "token": str(2005693),
+    "train_token": "ohwx",
+    "model_type": "lora",
+    "face_swap_images": []
+})
+
 FLUX_FACEID = JsonObj(**{
     "id": 1533312,
     "name": "woman",
