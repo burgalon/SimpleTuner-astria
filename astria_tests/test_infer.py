@@ -74,7 +74,7 @@ FLUX_LORA_WOMAN_2 = JsonObj(**{
 FLUX_LORA_SHOE = JsonObj(**{
     "id": 1612840,
     "name": "man",
-    "title": "Marco",
+    "title": "OnCloud brown shoe",
     "branch": "flux1",
     "token": str(1612840),
     "train_token": "ohwx",
@@ -85,6 +85,22 @@ FLUX_LORA_SHOE = JsonObj(**{
         "https://sdbooth2-production.s3.amazonaws.com/0cbp7yk70atdst0zpxbdqmugovo1",
         "https://sdbooth2-production.s3.amazonaws.com/zay337rw46of3zey21nlbpveo6e0",
         "https://sdbooth2-production.s3.amazonaws.com/q5v3xxwe9phexwy4yb5ktqnlbg2r",
+    ]
+})
+
+FLUX_LORA_DRESS = JsonObj(**{
+    "id": 2053283,
+    "name": "dress",
+    "title": "Floral dress",
+    "branch": "flux1",
+    "token": str(2053283),
+    "train_token": "floral white",
+    "model_type": "lora",
+    "face_swap_images": [
+        "https://sdbooth2-production.s3.amazonaws.com/plxxygl17gdl2pzbzct3o0dl2qx2",
+        "https://sdbooth2-production.s3.amazonaws.com/qb6c9jaffrjbiou9hltqqtfubohe",
+        "https://sdbooth2-production.s3.amazonaws.com/6olwfbvsn79362m7loj0kw2sqnyx",
+        "https://sdbooth2-production.s3.amazonaws.com/af23cowcprxdetl9c0vuv3d0npta",
     ]
 })
 
