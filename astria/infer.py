@@ -492,6 +492,11 @@ class InferPipeline(InpaintFaceMixin, VtonMixin):
         prompt_cleaned = prompt._prompt_with_lora_ids
         for lora in prompt.tunes:
             prompt_cleaned = prompt_cleaned.replace(f'{lora.id} {lora.train_token} {lora.name}', lora.name)
+            prompt_cleaned = prompt_cleaned.replace(f'{lora.train_token} {lora.name} {lora.id}', lora.name)
+
+            # Worst case: the customer passes in an unusually shaped prompt.
+            # Just leave the name/token alone and replace the ID.
+            prompt_cleaned = prompt_cleaned.replace(str(lora.id), '')
 
         if all_people and len(prompt.tunes) > 1:
             num_people = len(prompt.tunes)
@@ -966,7 +971,8 @@ class InferPipeline(InpaintFaceMixin, VtonMixin):
         if prompt.outpaint:
             images = self.outpaint(images, prompt, kwargs)
 
-        images = self.vton(images, prompt)
+        if not use_regional:
+            images = self.vton(images, prompt)
         if prompt.super_resolution or os.environ.get('SUPER_RESOLUTION'):
             images = self.upscale(images, prompt)
 

@@ -3,7 +3,7 @@ import json
 import numpy as np
 
 prompt_regions = None
-with open('test_regional_three_lora.json', 'r') as f:
+with open('test_regional_two_lora_person_and_dress.json', 'r') as f:
     prompt_regions = json.load(f)
 
 SR_hw_split_ratio = prompt_regions['SR_hw_split_ratio']

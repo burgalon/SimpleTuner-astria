@@ -1,0 +1,24 @@
+{
+    "SR_hw_split_ratio": "0.3;0.7",
+    "SR_prompt": "1533312 ohwx woman smiling face, showcasing a dress in an indoor environment. BREAK a photo of a woman wearing 2053283 dress in an indoor environment",
+    "HB_prompt_list": [
+      "1533312 ohwx woman",
+      "2053283 ohwx dress"
+    ],
+    "HB_m_offset_list": [
+      0.3,
+      0.2
+    ],
+    "HB_n_offset_list": [
+      0.05,
+      0.325
+    ],
+    "HB_m_scale_list": [
+      0.4,
+      0.6
+    ],
+    "HB_n_scale_list": [
+      0.225,
+      0.65
+    ]
+  }
