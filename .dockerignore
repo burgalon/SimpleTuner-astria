@@ -16,7 +16,6 @@ __pycache__
 *.git*
 *.log
 *.csv
-*.json
 *.md
 *.ini
 *.cfg

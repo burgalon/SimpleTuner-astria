@@ -56,77 +56,6 @@ PIL2TENSOR = transforms.Compose([transforms.PILToTensor()])
 GPU_MEMORY_GB = torch.cuda.get_device_properties(0).total_memory / 1024**3
 print(f"GPU_MEMORY_GB={GPU_MEMORY_GB:.0f}")
 
-def parse_args_rag(parser):
-    parser.add_argument(
-        "--SR_hw_split_ratio",
-        type=str,
-        default=None,
-        # default="0.3,1; 0.5,0.33,0.34,0.33; 0.2,1",
-        help="String representing SR hardware split ratios."
-    )
-
-    parser.add_argument(
-        "--SR_prompt",
-        type=str,
-        default=None,
-        # default="Balloons with colorful 'Happy Birthday' text drift above, filling the air with festive joy. BREAK A vase full of white lilies, their delicate petals softly unfurling, lending a serene touch to the atmosphere. BREAK The Pembroke Welsh Corgi, delightfully nestled between the vases, adds a playful charm to the celebration with its gleeful demeanor and bright eyes. BREAK A vase with luscious roses, their deep hues vibrant and striking against the surrounding festivities, infusing the scene with romantic elegance.",
-        help="Prompt string for SR."
-    )
-
-    # For lists of strings or numeric values, use nargs='+'.
-    # Here, for string lists, we specify type=str; for numeric lists, we specify type=float.
-    parser.add_argument(
-        "--HB_prompt_list",
-        nargs="+",
-        type=str,
-        default=None,
-        # default=[
-        #     "Pembroke Welsh Corgi",
-        #     "Vase with white lilies",
-        #     "Vase with roses",
-        #     "Balloons with 'Happy Birthday' text"
-        # ],
-        help="List of prompts for HB."
-    )
-
-    parser.add_argument(
-        "--HB_m_offset_list",
-        nargs="+",
-        type=float,
-        default=None,
-        # default=[0.34, 0.02, 0.67, 0.2],
-        help="List of M offset values for HB."
-    )
-
-    parser.add_argument(
-        "--HB_n_offset_list",
-        nargs="+",
-        type=float,
-        default=None,
-        # default=[0.3, 0.3, 0.3, 0.05],
-        help="List of N offset values for HB."
-    )
-
-    parser.add_argument(
-        "--HB_m_scale_list",
-        nargs="+",
-        type=float,
-        default=None,
-        # default=[0.32, 0.31, 0.31, 0.6],
-        help="List of M scale values for HB."
-    )
-
-    parser.add_argument(
-        "--HB_n_scale_list",
-        nargs="+",
-        type=float,
-        default=None,
-        # default=[0.5, 0.5, 0.5, 0.25],
-        help="List of N scale values for HB."
-    )
-
-    return parser
-
 def parse_args(prompt: JsonObj):
     parser = argparse.ArgumentParser()
     parser.add_argument("--mask_prompt", type=str, default=None)
@@ -197,7 +126,6 @@ def parse_args(prompt: JsonObj):
 
     # Other inference
     parser.add_argument('--controlnet_txt2img', action='store_true', help="Use controlnet txt2img instead of img2img", default=prompt.controlnet_txt2img or False)
-    parse_args_rag(parser)
 
 
     try:
@@ -267,9 +195,9 @@ class InferPipeline(InpaintFaceMixin, VtonMixin):
         start_time = time.time()
         self.init_pipe(MODELS_DIR + "/1504944-flux1")
         print(f"Initialized pipeline in {time.time() - start_time:.2f}s")
-        start_time = time.time()
-        self.init_inpaint(JsonObj(fill=True))
-        print(f"Initialized inpaint in {time.time() - start_time:.2f}s")
+        # start_time = time.time()
+        # self.init_inpaint(JsonObj(fill=True))
+        # print(f"Initialized inpaint in {time.time() - start_time:.2f}s")
 
     def unload_lora_weights(self, pipe):
         pipe_key = get_pipe_key_for_lora(pipe)
@@ -851,9 +779,21 @@ class InferPipeline(InpaintFaceMixin, VtonMixin):
         input_image_tensor, controlnet_hint, w, h, orig_input_image, input_image, mask_image = None, None, None, None, None, None, None
         use_regional =  getattr(prompt, 'use_regional', False)
 
+
+        all_tunes_are_human_and_more_than_one = (
+                all(tune.name in HUMAN_CLASS_NAMES for tune in prompt.tunes)
+                and len(prompt.tunes) > 1
+        )
+
+        # load_references mutates prompt.text, so this needs to be down here.
+        if use_regional or all_tunes_are_human_and_more_than_one:
+            self.init_rag_diffusion()
+            pipe = self.rag_diffusion_pipe
+            # kwargs are processed later
+
         # Note that the below condition is IMPORTANT and need to be modified cautiously
         # See test_vton_img2img_strength0
-        if any([tune.model_type == 'faceid' and tune.name in HUMAN_CLASS_NAMES for tune in prompt.tunes]):
+        elif any([tune.model_type == 'faceid' and tune.name in HUMAN_CLASS_NAMES for tune in prompt.tunes]):
             if input_image:
                 raise Exception("Cannot have both faceid and input_image")
             if use_regional:
@@ -937,9 +877,6 @@ class InferPipeline(InpaintFaceMixin, VtonMixin):
                         prompt.cfg_scale = 30
                 else:
                     kwargs['strength'] = float(prompt.denoising_strength if prompt.denoising_strength != None else 0.8)
-        elif use_regional:
-            self.init_rag_diffusion()
-            pipe = self.rag_diffusion_pipe
         else:
             pipe = self.pipe
 
@@ -950,114 +887,11 @@ class InferPipeline(InpaintFaceMixin, VtonMixin):
         joint_attention_kwargs = self.load_references(prompt, pipe)
         prompt.text = prompt.text.strip(" ,").strip(" ").strip('"')
 
-        all_tunes_are_human_and_more_than_one = (
-            all(tune.name in HUMAN_CLASS_NAMES for tune in prompt.tunes)
-            and len(prompt.tunes) > 1
-        )
-
-        # load_references mutates prompt.text, so this needs to be down here.
         if use_regional or all_tunes_are_human_and_more_than_one:
-            HB_replace = getattr(prompt, 'regional_hb_replace', 2)
-            SR_delta = getattr(prompt, 'regional_sr_delta', 1.0)
+            kwargs = {**kwargs, **self.get_rag_kwargs(prompt)}
+            prompt.inpaint_faces = False
 
-            if (
-                prompt.SR_prompt
-                and prompt.SR_hw_split_ratio
-                and prompt.HB_prompt_list
-                and prompt.HB_m_offset_list
-                and prompt.HB_n_offset_list
-                and prompt.HB_m_scale_list
-                and prompt.HB_n_scale_list
-            ):
-               regions = {
-                   "SR_hw_split_ratio": prompt.SR_hw_split_ratio,
-                   "SR_prompt": prompt.SR_prompt,
-                   "HB_prompt_list": prompt.HB_prompt_list,
-                   "HB_m_offset_list": prompt.HB_m_offset_list,
-                   "HB_n_offset_list": prompt.HB_n_offset_list,
-                   "HB_m_scale_list": prompt.HB_m_scale_list,
-                   "HB_n_scale_list": prompt.HB_n_scale_list,
-               }
-            elif prompt.regional_json is not None:
-                regions = json.loads(prompt.regional_json)
-                if "SR_hw_split_ratio" not in regions.keys():
-                    raise ValueError('SR_hw_split_ratio required in regional_json')
-                if "SR_prompt" not in regions.keys():
-                    raise ValueError('SR_prompt required in regional_json')
-                if "HB_prompt_list" not in regions.keys():
-                    raise ValueError('HB_prompt_list required in regional_json')
-                if "HB_m_offset_list" not in regions.keys():
-                    raise ValueError('HB_m_offset_list required in regional_json')
-                if "HB_n_offset_list" not in regions.keys():
-                    raise ValueError('HB_n_offset_list required in regional_json')
-                if "HB_m_scale_list" not in regions.keys():
-                    raise ValueError('HB_m_scale_list required in regional_json')
-                if "HB_n_scale_list" not in regions.keys():
-                    raise ValueError('HB_n_scale_list required in regional_json')
-            elif all_tunes_are_human_and_more_than_one:
-                regions = generate_n_column_layout_regions(len(prompt.tunes))
-                regions_oai_resp = openai_gpt4o_get_multi_lora_prompts(
-                    prompt._prompt_with_lora_ids, len(prompt.tunes))
-                regions['SR_prompt'] = regions_oai_resp['SR_prompt']
-                regions['HB_prompt_list'] = regions_oai_resp['HB_prompt_list']
-            else:
-                regions = openai_gpt4o_get_regions(prompt._prompt_with_lora_ids)
-            print(f"T#{prompt.tune_id} P#{prompt.id} regions={regions}")
-
-            # Now that we have the regions, we need to assign LoRAs to each
-            # region, if relevant.
-            HB_prompt_list = regions["HB_prompt_list"]
-            SR_prompt = regions["SR_prompt"]
-            lora_regional_scaling = []
-            sr_prompts = [p.strip() for p in SR_prompt.split("BREAK")]
-            for sr_prompt in sr_prompts:
-                scaling_values = {
-                    lora_id: 0.0
-                    for lora_id in self.current_lora_weights_map['pipe'].get('names', [])
-                }
-                for lora_id, lora_scale in zip(
-                    self.current_lora_weights_map['pipe'].get('names', []),
-                    self.current_lora_weights_map['pipe'].get('scales', []),
-                ):
-                    if lora_id in sr_prompt:
-                        scaling_values[lora_id] = lora_scale
-                lora_regional_scaling.append(scaling_values)
-
-            # Clean the prompts of any LoRA IDs that might have been embedded.
-            HB_prompt_list_cleaned = []
-            for hb_prompt in HB_prompt_list:
-                for lora_id in self.current_lora_weights_map['pipe'].get('names', []):
-                    hb_prompt = hb_prompt.replace(lora_id, "")
-                HB_prompt_list_cleaned.append(hb_prompt)
-
-            for lora_id in self.current_lora_weights_map['pipe'].get('names', []):
-                SR_prompt = SR_prompt.replace(lora_id, "")
-
-            HB_replace = HB_replace
-            HB_m_offset_list = regions["HB_m_offset_list"]
-            HB_n_offset_list = regions["HB_n_offset_list"]
-            HB_m_scale_list = regions["HB_m_scale_list"]
-            HB_n_scale_list = regions["HB_n_scale_list"]
-            SR_delta = SR_delta
-            SR_hw_split_ratio = regions["SR_hw_split_ratio"]
-
-            kwargs = {
-                **kwargs,
-                **dict(
-                    SR_delta=SR_delta,
-                    SR_hw_split_ratio=SR_hw_split_ratio,
-                    SR_prompt=SR_prompt,
-                    HB_prompt_list=HB_prompt_list_cleaned,
-                    HB_m_offset_list=HB_m_offset_list,
-                    HB_n_offset_list=HB_n_offset_list,
-                    HB_m_scale_list=HB_m_scale_list,
-                    HB_n_scale_list=HB_n_scale_list,
-                    HB_replace=HB_replace,
-                    seed=prompt.seed or 42,
-                    lora_regional_scaling=lora_regional_scaling,
-                ),
-            }
-
+        # Encode text embeds
         (
             prompt_embeds,
             pooled_prompt_embeds,
@@ -1154,6 +988,104 @@ class InferPipeline(InpaintFaceMixin, VtonMixin):
             self.reset()
 
         return images
+
+    def get_rag_kwargs(self, prompt):
+        all_tunes_are_human_and_more_than_one = (
+                all(tune.name in HUMAN_CLASS_NAMES for tune in prompt.tunes)
+                and len(prompt.tunes) > 1
+        )
+        HB_replace = getattr(prompt, 'regional_hb_replace', 2)
+        SR_delta = getattr(prompt, 'regional_sr_delta', 1.0)
+        if (
+                prompt.SR_prompt
+                and prompt.SR_hw_split_ratio
+                and prompt.HB_prompt_list
+                and prompt.HB_m_offset_list
+                and prompt.HB_n_offset_list
+                and prompt.HB_m_scale_list
+                and prompt.HB_n_scale_list
+        ):
+            regions = {
+                "SR_hw_split_ratio": prompt.SR_hw_split_ratio,
+                "SR_prompt": prompt.SR_prompt,
+                "HB_prompt_list": prompt.HB_prompt_list,
+                "HB_m_offset_list": prompt.HB_m_offset_list,
+                "HB_n_offset_list": prompt.HB_n_offset_list,
+                "HB_m_scale_list": prompt.HB_m_scale_list,
+                "HB_n_scale_list": prompt.HB_n_scale_list,
+            }
+        elif prompt.regional_json is not None:
+            regions = json.loads(prompt.regional_json)
+            if "SR_hw_split_ratio" not in regions.keys():
+                raise ValueError('SR_hw_split_ratio required in regional_json')
+            if "SR_prompt" not in regions.keys():
+                raise ValueError('SR_prompt required in regional_json')
+            if "HB_prompt_list" not in regions.keys():
+                raise ValueError('HB_prompt_list required in regional_json')
+            if "HB_m_offset_list" not in regions.keys():
+                raise ValueError('HB_m_offset_list required in regional_json')
+            if "HB_n_offset_list" not in regions.keys():
+                raise ValueError('HB_n_offset_list required in regional_json')
+            if "HB_m_scale_list" not in regions.keys():
+                raise ValueError('HB_m_scale_list required in regional_json')
+            if "HB_n_scale_list" not in regions.keys():
+                raise ValueError('HB_n_scale_list required in regional_json')
+        elif all_tunes_are_human_and_more_than_one:
+            regions = generate_n_column_layout_regions(len(prompt.tunes))
+            regions_oai_resp = openai_gpt4o_get_multi_lora_prompts(
+                prompt._prompt_with_lora_ids, len(prompt.tunes))
+            regions['SR_prompt'] = regions_oai_resp['SR_prompt']
+            regions['HB_prompt_list'] = regions_oai_resp['HB_prompt_list']
+        else:
+            regions = openai_gpt4o_get_regions(prompt._prompt_with_lora_ids)
+        print(f"T#{prompt.tune_id} P#{prompt.id} regions={regions}")
+        # Now that we have the regions, we need to assign LoRAs to each
+        # region, if relevant.
+        HB_prompt_list = regions["HB_prompt_list"]
+        SR_prompt = regions["SR_prompt"]
+        lora_regional_scaling = []
+        sr_prompts = [p.strip() for p in SR_prompt.split("BREAK")]
+        for sr_prompt in sr_prompts:
+            scaling_values = {
+                lora_id: 0.0
+                for lora_id in self.current_lora_weights_map['pipe'].get('names', [])
+            }
+            for lora_id, lora_scale in zip(
+                    self.current_lora_weights_map['pipe'].get('names', []),
+                    self.current_lora_weights_map['pipe'].get('scales', []),
+            ):
+                if lora_id in sr_prompt:
+                    scaling_values[lora_id] = lora_scale
+            lora_regional_scaling.append(scaling_values)
+        # Clean the prompts of any LoRA IDs that might have been embedded.
+        HB_prompt_list_cleaned = []
+        for hb_prompt in HB_prompt_list:
+            for lora_id in self.current_lora_weights_map['pipe'].get('names', []):
+                hb_prompt = hb_prompt.replace(lora_id, "")
+            HB_prompt_list_cleaned.append(hb_prompt)
+        for lora_id in self.current_lora_weights_map['pipe'].get('names', []):
+            SR_prompt = SR_prompt.replace(lora_id, "")
+        HB_replace = HB_replace
+        HB_m_offset_list = regions["HB_m_offset_list"]
+        HB_n_offset_list = regions["HB_n_offset_list"]
+        HB_m_scale_list = regions["HB_m_scale_list"]
+        HB_n_scale_list = regions["HB_n_scale_list"]
+        SR_delta = SR_delta
+        SR_hw_split_ratio = regions["SR_hw_split_ratio"]
+        return dict(
+            SR_delta=SR_delta,
+            SR_hw_split_ratio=SR_hw_split_ratio,
+            SR_prompt=SR_prompt,
+            HB_prompt_list=HB_prompt_list_cleaned,
+            HB_m_offset_list=HB_m_offset_list,
+            HB_n_offset_list=HB_n_offset_list,
+            HB_m_scale_list=HB_m_scale_list,
+            HB_n_scale_list=HB_n_scale_list,
+            HB_replace=HB_replace,
+            seed=prompt.seed or 42,
+            lora_regional_scaling=lora_regional_scaling,
+        )
+
 
 def main():
     download_model_from_server(f"1504944-flux1")
