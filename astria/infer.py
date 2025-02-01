@@ -777,16 +777,16 @@ class InferPipeline(InpaintFaceMixin, VtonMixin):
             prompt.mask_image = self.infer_mask(prompt)
 
         input_image_tensor, controlnet_hint, w, h, orig_input_image, input_image, mask_image = None, None, None, None, None, None, None
-        use_regional =  getattr(prompt, 'use_regional', False)
 
 
         all_tunes_are_human_and_more_than_one = (
                 all(tune.name in HUMAN_CLASS_NAMES for tune in prompt.tunes)
                 and len(prompt.tunes) > 1
         )
+        use_regional =  getattr(prompt, 'use_regional', False) or all_tunes_are_human_and_more_than_one
 
         # load_references mutates prompt.text, so this needs to be down here.
-        if use_regional or all_tunes_are_human_and_more_than_one:
+        if use_regional:
             self.init_rag_diffusion()
             pipe = self.rag_diffusion_pipe
             # kwargs are processed later
@@ -887,7 +887,7 @@ class InferPipeline(InpaintFaceMixin, VtonMixin):
         joint_attention_kwargs = self.load_references(prompt, pipe)
         prompt.text = prompt.text.strip(" ,").strip(" ").strip('"')
 
-        if use_regional or all_tunes_are_human_and_more_than_one:
+        if use_regional:
             kwargs = {**kwargs, **self.get_rag_kwargs(prompt)}
             prompt.inpaint_faces = False
 
