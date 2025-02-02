@@ -65,7 +65,7 @@ from watermark_helper import add_watermark
 PIL2TENSOR = transforms.Compose([transforms.PILToTensor()])
 GPU_MEMORY_GB = torch.cuda.get_device_properties(0).total_memory / 1024**3
 print(f"GPU_MEMORY_GB={GPU_MEMORY_GB:.0f}")
-UNIT_NUMBERS = {0: 'zero', 1: 'one', 2: 'two', 3: 'three', 4: 'four', 
+UNIT_NUMBERS = {0: 'zero', 1: 'one', 2: 'two', 3: 'three', 4: 'four',
            5: 'five', 6: 'six', 7: 'seven', 8: 'eight', 9: 'nine'}
 
 
@@ -1252,7 +1252,7 @@ class InferPipeline(InpaintFaceMixin, VtonMixin):
                 regions = copy.deepcopy(RAG_UPPER_BODY_TEMPLATE)
                 fashion_lora = next(tune for tune in prompt.tunes
                     if tune.name in UPPER_BODY_CATEGORIES)
-            
+
             assert regions is not None, 'template for RAG try on not found'
             assert fashion_lora is not None, 'fashion lora for RAG try on not found'
             prompt.tunes = [person_lora, fashion_lora]
