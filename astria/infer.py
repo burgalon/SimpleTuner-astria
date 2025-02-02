@@ -110,9 +110,12 @@ def parse_args(prompt: JsonObj):
     parser.add_argument("--vton_hires", help="VTON Hi resolution", action='store_true', default=False)
     parser.add_argument("--remove_background", help="Remove background", action='store_true', default=False)
     parser.add_argument(
-        "--use_regional", "--multi",
-        help="Uses RAG diffusion with gpt4o prompt enhancement", action='store_true',
-        default=getattr(prompt, 'use_regional', False),  # Will be False or None
+        "--use_regional",
+        "--multi",
+        help="Uses RAG diffusion with gpt4o prompt enhancement. If set to `force_llm`, it will skip using any possible templates and force LLM-guided region bounding.",
+        const=True,
+        nargs='?',
+        default=getattr(prompt, 'use_regional', False),
     )
     parser.add_argument(
         "--regional_hb_replace",
@@ -1054,6 +1057,7 @@ class InferPipeline(InpaintFaceMixin, VtonMixin):
             and sum(tune.name in HUMAN_CLASS_NAMES
                 for tune in prompt.tunes) == 1
         )
+        force_llm = (prompt.multi or prompt.use_regional) == 'force_llm'
 
         prompt_main = self.purge_lora_ids_from_rag_input_for_unified_prompt(
             prompt,
@@ -1070,6 +1074,7 @@ class InferPipeline(InpaintFaceMixin, VtonMixin):
                 and prompt.HB_n_offset_list
                 and prompt.HB_m_scale_list
                 and prompt.HB_n_scale_list
+                and not force_llm
         ):
             regions = {
                 "SR_hw_split_ratio": prompt.SR_hw_split_ratio,
@@ -1080,7 +1085,7 @@ class InferPipeline(InpaintFaceMixin, VtonMixin):
                 "HB_m_scale_list": prompt.HB_m_scale_list,
                 "HB_n_scale_list": prompt.HB_n_scale_list,
             }
-        elif prompt.regional_json is not None:
+        elif prompt.regional_json is not None and not force_llm:
             regions = json.loads(prompt.regional_json)
             if "SR_hw_split_ratio" not in regions.keys():
                 raise ValueError('SR_hw_split_ratio required in regional_json')
@@ -1096,7 +1101,7 @@ class InferPipeline(InpaintFaceMixin, VtonMixin):
                 raise ValueError('HB_m_scale_list required in regional_json')
             if "HB_n_scale_list" not in regions.keys():
                 raise ValueError('HB_n_scale_list required in regional_json')
-        elif all_tunes_are_human_and_more_than_one:
+        elif all_tunes_are_human_and_more_than_one and not force_llm:
             regions = generate_n_column_layout_regions(len(prompt.tunes))
             # regions_oai_resp = openai_gpt4o_get_multi_lora_prompts(
             #     prompt._prompt_with_lora_ids, len(prompt.tunes))
@@ -1107,7 +1112,7 @@ class InferPipeline(InpaintFaceMixin, VtonMixin):
                 for lora in prompt.tunes)
             regions['HB_prompt_list'] = [f'{lora.train_token} {lora.name}'
                 for lora in prompt.tunes]
-        elif one_human_and_one_fashion_lora:
+        elif one_human_and_one_fashion_lora and not force_llm:
             regions = None
             person_lora = next(tune for tune in prompt.tunes
                 if tune.name in HUMAN_CLASS_NAMES)

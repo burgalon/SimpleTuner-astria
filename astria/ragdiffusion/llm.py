@@ -129,7 +129,8 @@ def openai_gpt4o_get_multi_lora_prompts(prompt, n, cache=False):
     while tries < MAX_TRIES and regions is None:
         try:
             payload = json.dumps({
-                "model": "gpt-4o",
+                "model": "chatgpt-4o-latest",
+                "temperature": "0.3",
                 "messages": [
                     {
                         "role": "user",
@@ -202,7 +203,8 @@ def openai_gpt4o_get_regions(prompt, cache=False):
     while tries < MAX_TRIES and regions is None:
         try:
             payload = json.dumps({
-                "model": "gpt-4o",
+                "model": "chatgpt-4o-latest",
+                "temperature": "0.3",
                 "messages": [
                     {
                         "role": "user",

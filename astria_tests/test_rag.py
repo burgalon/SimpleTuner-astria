@@ -117,6 +117,18 @@ def test_regional_two_lora():
     run_images(prompt)
     assert pipe.last_pipe is None
 
+def test_regional_three_lora_complex_violence_force_llm():
+    prompt = JsonObj(
+        **copy.copy(BASE_PROMPT.__dict__),
+        use_regional="force_llm",
+    )
+
+    prompt.text=f"<lora:{FLUX_LORA_MAN.id}:1> {FLUX_LORA_MAN.train_token} man tied to metal interrogation chair, screaming in terror, wearing bloodstained mustard corduroy jacket and loose tie and <lora:{FLUX_LORA.id}:1> {FLUX_LORA.train_token} woman in hotel uniform with white blouse and purple vest pressing against him, head on his shoulder, crying, and <lora:{FLUX_LORA_MAN_MARCO.id}:1> {FLUX_LORA_MAN_MARCO.train_token} man in denim sherpa jacket holding silenced pistol to the other man's head. In stark interrogation room with dramatic spotlight, teal and amber grading"
+    prompt.tunes=[FLUX_LORA_MAN, FLUX_LORA_MAN_MARCO, FLUX_LORA]
+    run_images(prompt)
+    assert pipe.last_pipe is None
+   
+
 def test_regional_two_lora_with_dress():
     regional_json = ''
     json_pth = Path(__file__).resolve().parent.parent / 'astria' / 'ragdiffusion' / 'prompts' / 'test_regional_two_lora_person_and_full_body.json'
