@@ -18,6 +18,7 @@ from diffusers import FluxPipeline, FluxImg2ImgPipeline, FluxControlNetPipeline,
     FluxInpaintPipeline, FluxControlNetImg2ImgPipeline, FluxControlNetInpaintPipeline
 from torchvision import transforms
 
+from ace_plus_fill import ACEPlusDiffuserInference, ACE_NEGATIVE_PORTRAIT_PROMPT, ACE_NEGATIVE_SUBJECT_PROMPT
 from pulid_pipeline.pipeline import FluxPipelineWithPulID
 from pulid_pipeline.pulid_ext import PuLID
 
@@ -50,7 +51,7 @@ from pipeline_flux_differential_img2img import FluxDifferentialImg2ImgPipeline
 from runpod_utils import kill_pod
 from sig_listener import TerminateException, is_terminated, set_current_infer_tune, set_current_train_tune
 from super_resolution_helper import load_sr, upscale_sr
-from train import train
+
 from inpaint_face_mixin import InpaintFaceMixin
 from vton_mixin import (
     VtonMixin,
@@ -65,6 +66,7 @@ GPU_MEMORY_GB = torch.cuda.get_device_properties(0).total_memory / 1024**3
 print(f"GPU_MEMORY_GB={GPU_MEMORY_GB:.0f}")
 UNIT_NUMBERS = {0: 'zero', 1: 'one', 2: 'two', 3: 'three', 4: 'four', 
            5: 'five', 6: 'six', 7: 'seven', 8: 'eight', 9: 'nine'}
+
 
 def parse_args(prompt: JsonObj):
     parser = argparse.ArgumentParser()
@@ -116,6 +118,24 @@ def parse_args(prompt: JsonObj):
         const=True,
         nargs='?',
         default=getattr(prompt, 'use_regional', False),
+    )
+    parser.add_argument(
+        "--ace_plus",
+        help="Use ACE generation/inpainting pipeline",
+        action='store_true',
+        default=getattr(prompt, 'ace_plus', None),
+    )
+    parser.add_argument(
+        "--fill_real_cfg",
+        help="Use real classifier free guidance when using fill",
+        type=float,
+        default=getattr(prompt, 'fill_real_cfg', None),
+    )
+    parser.add_argument(
+        "--fill_slg",
+        help="String of list for layers to skip in skipped layer guidance for fill",
+        type=str,
+        default=getattr(prompt, 'fill_slg', None),
     )
     parser.add_argument(
         "--regional_hb_replace",
@@ -325,6 +345,7 @@ class InferPipeline(InpaintFaceMixin, VtonMixin):
             self.model_path = model_path
             # TODO: Remove once this is merged to diffusers
             self.resolution = (1024, 1024)
+        self._model_path = model_path
 
     def init_pulid(self):
         if not self.pulid_pipe:
@@ -417,8 +438,10 @@ class InferPipeline(InpaintFaceMixin, VtonMixin):
         if prompt.fill:
             if not self.fill:
                 model_path = download_model_from_server(f'{FLUX_INPAINT_MODEL_ID}-flux1')
+                self._model_path_fill = model_path
                 self.fill = FluxFillPipeline(
-                    transformer=FluxTransformer2DModel.from_pretrained(model_path, subfolder="transformer", torch_dtype=torch.bfloat16),
+                    transformer=FluxTransformer2DModel.from_pretrained(
+                        model_path, subfolder="transformer", torch_dtype=torch.bfloat16),
                     scheduler=self.pipe.scheduler,
                     vae=self.pipe.vae,
                     text_encoder=self.pipe.text_encoder,
@@ -812,6 +835,96 @@ class InferPipeline(InpaintFaceMixin, VtonMixin):
 
             images[i_image] = upscale_sr(self.sr_model, image, upscale_factor)
         return images
+    
+    def infer_ace(self, prompt):
+        pass
+
+    def inference_loop(
+        self,
+        pipe, prompt, kwargs, num_images, images, joint_attention_kwargs,
+        ace_location=MODELS_DIR,
+        orig_input_image=None,
+        orig_mask_image=None,
+    ):
+        _pipe = pipe
+
+        ace_lora_unload_fn, ace_post_process_fn, slice_w, out_w, out_h = [None] * 5
+        if prompt.ace_plus:
+            neg_prompt = None
+            ace_model_lora_loaded = False
+            tune_ace = next(iter(tune for tune in prompt.tunes
+                if tune.model_type == 'faceid' and tune.name in HUMAN_CLASS_NAMES), None)
+            if tune_ace is not None: 
+                ace_model_lora_loaded = 'portrait'
+                neg_prompt = ACE_NEGATIVE_PORTRAIT_PROMPT
+            else:
+                tune_ace = next(iter(tune for tune in prompt.tunes
+                    if tune.model_type == 'faceid'), None)
+                ace_model_lora_loaded = 'subject'
+                neg_prompt = ACE_NEGATIVE_SUBJECT_PROMPT
+
+            if orig_input_image is not None and orig_mask_image is not None:
+                ace_model_lora_loaded = 'local_editing'
+
+            if tune_ace is None:
+                raise ValueError('ace_plus requires a reference image')
+
+            reference_image = load_images(tune_ace.face_swap_images[:1])[0]
+
+            ace, ace_post_process_fn, ace_lora_unload_fn = ACEPlusDiffuserInference.init_from_pipe(
+                pipe,
+                self._model_path,
+                device,
+                ace_location,
+                ace_model_lora_loaded,
+            )
+            _pipe = ace.pipe
+            masked_image_latents, h, w, slice_w, out_w, out_h = ace.prepare_inputs(
+                prompt.text,
+                reference_image=reference_image,
+                edit_image=orig_input_image,
+                edit_mask=orig_mask_image,
+                seed=prompt.seed,
+            )
+            prompt.h = h
+            prompt.w = w
+            if kwargs.get('image', False):
+                del kwargs['image']
+            if kwargs.get('mask_image', False):
+                del kwargs['mask_image']
+            kwargs['masked_image_latents'] = masked_image_latents
+            if prompt.fill_real_cfg is not None:
+                prompt.cfg_scale = 20
+                kwargs['guidance_scale_real'] = prompt.fill_real_cfg
+                kwargs['negative_prompt'] = neg_prompt
+            else:
+                prompt.cfg_scale = 50
+
+            if prompt.fill_real_cfg is not None and prompt.fill_slg is not None:
+                kwargs['skip_layer_guidance'] = json.loads(prompt.fill_slg)
+
+        for i_image in range(num_images):
+            if 'image' in kwargs is not None and 'strength' in kwargs and kwargs['strength'] == 0:
+                print(f"T#{prompt.tune_id} P#{prompt.id} Skipping image {i_image} because strength=0. Probably just VTON or outpaint only?")
+                images.append(kwargs['image'])
+                continue
+
+            image = _pipe(
+                guidance_scale=float(prompt.cfg_scale if prompt.cfg_scale is not None else 3.5),
+                height=prompt.h or 1024,
+                width=prompt.w or 1024,
+                num_inference_steps=prompt.steps or 28,
+                generator=torch.Generator(device="cuda").manual_seed((prompt.seed or 42) + i_image),
+                joint_attention_kwargs=joint_attention_kwargs,
+                **kwargs,
+            ).images[0]
+            if is_terminated():
+                raise TerminateException("terminated")
+            if ace_post_process_fn is not None:
+                image = ace_post_process_fn(image, slice_w, out_w, out_h)
+            images.append(image)
+
+        if (ace_lora_unload_fn): ace_lora_unload_fn()
 
     def infer_prompt(self, prompt, tune: JsonObj):
         parse_args(prompt)
@@ -823,13 +936,15 @@ class InferPipeline(InpaintFaceMixin, VtonMixin):
         if prompt.mask_prompt and prompt.input_image and not prompt.mask_image:
             prompt.mask_image = self.infer_mask(prompt)
 
-        input_image_tensor, controlnet_hint, w, h, orig_input_image, input_image, mask_image = None, None, None, None, None, None, None
+        input_image_tensor, controlnet_hint, w, h, orig_input_image, input_image, mask_image, orig_mask_image = None, None, None, None, None, None, None, None
 
         all_tunes_are_human_and_more_than_one = (
                 all(tune.name in HUMAN_CLASS_NAMES for tune in prompt.tunes)
                 and len(prompt.tunes) > 1
         )
         use_regional =  getattr(prompt, 'use_regional', False) or all_tunes_are_human_and_more_than_one
+        if prompt.ace_plus:
+            prompt.fill = True
 
         if use_regional:
             self.init_rag_diffusion()
@@ -838,7 +953,10 @@ class InferPipeline(InpaintFaceMixin, VtonMixin):
 
         # Note that the below condition is IMPORTANT and need to be modified cautiously
         # See test_vton_img2img_strength0
-        elif any([tune.model_type == 'faceid' and tune.name in HUMAN_CLASS_NAMES for tune in prompt.tunes]):
+        elif any(
+            tune.model_type == 'faceid' and tune.name in HUMAN_CLASS_NAMES
+            for tune in prompt.tunes
+        ) and not prompt.ace_plus:
             if input_image:
                 raise Exception("Cannot have both faceid and input_image")
             if use_regional:
@@ -907,21 +1025,23 @@ class InferPipeline(InpaintFaceMixin, VtonMixin):
                         kwargs['image'] = input_image
             else:
                 kwargs['image'] = input_image
-                if mask_image:
+                if mask_image or prompt.ace_plus:
                     pipe = self.init_inpaint(prompt)
+                if mask_image:
                     if isinstance(pipe, FluxDifferentialImg2ImgPipeline):
                         print("Inverting mask for differential diffusion")
                         mask_image = ImageOps.invert(mask_image)
                     kwargs['mask_image'] = mask_image
-                else:
+                elif not prompt.ace_plus:
                     self.init_img2img()
                     pipe = self.img2img
-
                 if isinstance(pipe, FluxFillPipeline):
                     if not prompt.cfg_scale or prompt.cfg_scale < 7:
                         prompt.cfg_scale = 30
                 else:
                     kwargs['strength'] = float(prompt.denoising_strength if prompt.denoising_strength != None else 0.8)
+        elif prompt.ace_plus:
+            pipe = self.init_inpaint(prompt)
         else:
             pipe = self.pipe
 
@@ -957,23 +1077,17 @@ class InferPipeline(InpaintFaceMixin, VtonMixin):
         kwargs['pooled_prompt_embeds'] = pooled_prompt_embeds
 
         print(f"T#{prompt.tune_id} P#{prompt.id} pipe={pipe.__class__.__name__} {prompt.text=} loras={self.current_lora_weights_map[get_pipe_key_for_lora(pipe)]}")
-        for i_image in range(num_images):
-            if 'image' in kwargs is not None and 'strength' in kwargs and kwargs['strength'] == 0:
-                print(f"T#{prompt.tune_id} P#{prompt.id} Skipping image {i_image} because strength=0. Probably just VTON or outpaint only?")
-                images.append(kwargs['image'])
-                continue
-            image = pipe(
-                guidance_scale=float(prompt.cfg_scale if prompt.cfg_scale is not None else 3.5),
-                height=prompt.h or 1024,
-                width=prompt.w or 1024,
-                num_inference_steps=prompt.steps or 28,
-                generator=torch.Generator(device="cuda").manual_seed((prompt.seed or 42) + i_image),
-                joint_attention_kwargs=joint_attention_kwargs,
-                **kwargs,
-            ).images[0]
-            if is_terminated():
-                raise TerminateException("terminated")
-            images.append(image)
+
+        self.inference_loop(
+            pipe,
+            prompt,
+            kwargs,
+            num_images,
+            images,
+            joint_attention_kwargs,
+            orig_input_image=orig_input_image,
+            orig_mask_image=orig_mask_image,
+        )
 
         if prompt.outpaint:
             images = self.outpaint(images, prompt, kwargs)
@@ -1188,6 +1302,8 @@ class InferPipeline(InpaintFaceMixin, VtonMixin):
 
 
 def main():
+    from train import train
+
     download_model_from_server(f"1504944-flux1")
     pipeline = InferPipeline()
 
