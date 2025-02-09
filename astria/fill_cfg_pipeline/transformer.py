@@ -45,7 +45,7 @@ logger = logging.get_logger(__name__)  # pylint: disable=invalid-name
 
 class FluxTransformer2DSLGModel(
     # ModelMixin, ConfigMixin, PeftAdapterMixin, FromOriginalModelMixin, FluxTransformer2DLoadersMixin
-    ModelMixin, PeftAdapterMixin, FluxTransformer2DLoadersMixin
+    ModelMixin, ConfigMixin, PeftAdapterMixin, FromOriginalModelMixin, FluxTransformer2DLoadersMixin
 ):
     """
     The Transformer model introduced in Flux.
@@ -67,90 +67,89 @@ class FluxTransformer2DSLGModel(
     _supports_gradient_checkpointing = True
     _no_split_modules = ["FluxTransformerBlock", "FluxSingleTransformerBlock"]
 
-    # @register_to_config
-    # def __init__(
-    #     self,
-    #     patch_size: int = 1,
-    #     in_channels: int = 64,
-    #     out_channels: Optional[int] = None,
-    #     num_layers: int = 19,
-    #     num_single_layers: int = 38,
-    #     attention_head_dim: int = 128,
-    #     num_attention_heads: int = 24,
-    #     joint_attention_dim: int = 4096,
-    #     pooled_projection_dim: int = 768,
-    #     guidance_embeds: bool = False,
-    #     axes_dims_rope: Tuple[int] = (16, 56, 56),
-    # ):
-    #     super().__init__()
-    #     self.out_channels = out_channels or in_channels
-    #     self.inner_dim = self.config.num_attention_heads * self.config.attention_head_dim
-
-    #     self.pos_embed = FluxPosEmbed(theta=10000, axes_dim=axes_dims_rope)
-
-    #     text_time_guidance_cls = (
-    #         CombinedTimestepGuidanceTextProjEmbeddings if guidance_embeds else CombinedTimestepTextProjEmbeddings
-    #     )
-    #     self.time_text_embed = text_time_guidance_cls(
-    #         embedding_dim=self.inner_dim, pooled_projection_dim=self.config.pooled_projection_dim
-    #     )
-
-    #     self.context_embedder = nn.Linear(self.config.joint_attention_dim, self.inner_dim)
-    #     self.x_embedder = nn.Linear(self.config.in_channels, self.inner_dim)
-
-    #     self.transformer_blocks = nn.ModuleList(
-    #         [
-    #             FluxTransformerBlock(
-    #                 dim=self.inner_dim,
-    #                 num_attention_heads=self.config.num_attention_heads,
-    #                 attention_head_dim=self.config.attention_head_dim,
-    #             )
-    #             for i in range(self.config.num_layers)
-    #         ]
-    #     )
-
-    #     self.single_transformer_blocks = nn.ModuleList(
-    #         [
-    #             FluxSingleTransformerBlock(
-    #                 dim=self.inner_dim,
-    #                 num_attention_heads=self.config.num_attention_heads,
-    #                 attention_head_dim=self.config.attention_head_dim,
-    #             )
-    #             for i in range(self.config.num_single_layers)
-    #         ]
-    #     )
-
-    #     self.norm_out = AdaLayerNormContinuous(self.inner_dim, self.inner_dim, elementwise_affine=False, eps=1e-6)
-    #     self.proj_out = nn.Linear(self.inner_dim, patch_size * patch_size * self.out_channels, bias=True)
-
-    #     self.gradient_checkpointing = False
-
+    @register_to_config
     def __init__(
         self,
-        transformer: FluxTransformer2DModel,
+        patch_size: int = 1,
         in_channels: int = 64,
+        out_channels: Optional[int] = None,
+        num_layers: int = 19,
+        num_single_layers: int = 38,
+        attention_head_dim: int = 128,
+        num_attention_heads: int = 24,
+        joint_attention_dim: int = 4096,
+        pooled_projection_dim: int = 768,
+        guidance_embeds: bool = False,
+        axes_dims_rope: Tuple[int] = (16, 56, 56),
     ):
         super().__init__()
-        self.out_channels = in_channels
+        self.out_channels = out_channels or in_channels
+        self.inner_dim = self.config.num_attention_heads * self.config.attention_head_dim
 
-        self.add_module("pos_embed", transformer.pos_embed)
-        self.add_module("time_text_embed", transformer.time_text_embed)
-        self.add_module("context_embedder", transformer.context_embedder)
-        self.add_module("x_embedder", transformer.x_embedder)
-        self.add_module("transformer_blocks", transformer.transformer_blocks)
-        self.add_module("single_transformer_blocks", transformer.single_transformer_blocks)
-        self.add_module("norm_out", transformer.norm_out)
-        self.add_module("proj_out", transformer.proj_out)
+        self.pos_embed = FluxPosEmbed(theta=10000, axes_dim=axes_dims_rope)
 
-        self.pulid_ca = None
-        self.config = transformer.config
-
-    @classmethod
-    def from_transformer(cls, tf: FluxTransformer2DModel):
-        return cls(
-            tf,
-            # guidance_embeds=tf.config.guidance_embeds,
+        text_time_guidance_cls = (
+            CombinedTimestepGuidanceTextProjEmbeddings if guidance_embeds else CombinedTimestepTextProjEmbeddings
         )
+        self.time_text_embed = text_time_guidance_cls(
+            embedding_dim=self.inner_dim, pooled_projection_dim=self.config.pooled_projection_dim
+        )
+
+        self.context_embedder = nn.Linear(self.config.joint_attention_dim, self.inner_dim)
+        self.x_embedder = nn.Linear(self.config.in_channels, self.inner_dim)
+
+        self.transformer_blocks = nn.ModuleList(
+            [
+                FluxTransformerBlock(
+                    dim=self.inner_dim,
+                    num_attention_heads=self.config.num_attention_heads,
+                    attention_head_dim=self.config.attention_head_dim,
+                )
+                for i in range(self.config.num_layers)
+            ]
+        )
+
+        self.single_transformer_blocks = nn.ModuleList(
+            [
+                FluxSingleTransformerBlock(
+                    dim=self.inner_dim,
+                    num_attention_heads=self.config.num_attention_heads,
+                    attention_head_dim=self.config.attention_head_dim,
+                )
+                for i in range(self.config.num_single_layers)
+            ]
+        )
+
+        self.norm_out = AdaLayerNormContinuous(self.inner_dim, self.inner_dim, elementwise_affine=False, eps=1e-6)
+        self.proj_out = nn.Linear(self.inner_dim, patch_size * patch_size * self.out_channels, bias=True)
+
+        self.gradient_checkpointing = False
+
+    # def __init__(
+    #     self,
+    #     transformer: FluxTransformer2DModel,
+    #     in_channels: int = 64,
+    # ):
+    #     super().__init__()
+    #     self.out_channels = in_channels
+
+    #     self.add_module("pos_embed", transformer.pos_embed)
+    #     self.add_module("time_text_embed", transformer.time_text_embed)
+    #     self.add_module("context_embedder", transformer.context_embedder)
+    #     self.add_module("x_embedder", transformer.x_embedder)
+    #     self.add_module("transformer_blocks", transformer.transformer_blocks)
+    #     self.add_module("single_transformer_blocks", transformer.single_transformer_blocks)
+    #     self.add_module("norm_out", transformer.norm_out)
+    #     self.add_module("proj_out", transformer.proj_out)
+
+    #     self.config = transformer.config
+
+    # @classmethod
+    # def from_transformer(cls, tf: FluxTransformer2DModel):
+    #     return cls(
+    #         tf,
+    #         # guidance_embeds=tf.config.guidance_embeds,
+    #     )
 
     @property
     # Copied from diffusers.models.unets.unet_2d_condition.UNet2DConditionModel.attn_processors

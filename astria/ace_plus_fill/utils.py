@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 # Copyright (c) Alibaba, Inc. and its affiliates.
 import math
+import random
 
 import torch
 import torchvision.transforms as T
@@ -65,6 +66,30 @@ def scale_long_edge_and_pad(img: Image.Image, sz=1024) -> Image.Image:
 
     # Save the final image.
     return new_img
+
+
+def random_crop_pil(image, crop_size):
+    # image: a PIL.Image instance
+    # crop_size: tuple (crop_width, crop_height)
+    image_width, image_height = image.size
+    crop_width, crop_height = crop_size
+
+    if image_width < crop_width or image_height < crop_height:
+        raise ValueError("The image is smaller than the crop size.")
+
+    # Determine the maximum x and y coordinates for the top-left corner
+    max_x = image_width - crop_width
+    max_y = image_height - crop_height
+
+    # Randomly choose the top-left coordinates for the crop
+    x0 = random.randint(0, max_x)
+    y0 = random.randint(0, max_y)
+
+    # Define the box to crop: (left, upper, right, lower)
+    crop_box = (x0, y0, x0 + crop_width, y0 + crop_height)
+    cropped_image = image.crop(crop_box)
+
+    return cropped_image
 
 
 def edit_preprocess(processor, device, edit_image, edit_mask):

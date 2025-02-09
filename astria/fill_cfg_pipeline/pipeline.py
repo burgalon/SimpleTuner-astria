@@ -209,11 +209,11 @@ class FluxFillCFGPipeline(
         tokenizer: CLIPTokenizer,
         text_encoder_2: T5EncoderModel,
         tokenizer_2: T5TokenizerFast,
-        transformer: FluxTransformer2DModel,
+        transformer: FluxTransformer2DSLGModel,
     ):
         super().__init__()
 
-        transformer = FluxTransformer2DSLGModel.from_transformer(transformer)
+        # transformer = FluxTransformer2DSLGModel.from_transformer(transformer)
 
         self.register_modules(
             vae=vae,
@@ -689,6 +689,7 @@ class FluxFillCFGPipeline(
         image: Optional[torch.FloatTensor] = None,
         mask_image: Optional[torch.FloatTensor] = None,
         masked_image_latents: Optional[torch.FloatTensor] = None,
+        masked_image_latents_uncond: Optional[torch.FloatTensor] = None,
         height: Optional[int] = None,
         width: Optional[int] = None,
         num_inference_steps: int = 50,
@@ -904,6 +905,11 @@ class FluxFillCFGPipeline(
             )
             masked_image_latents = torch.cat((masked_image_latents, mask), dim=-1)
 
+        if masked_image_latents_uncond is not None:
+            masked_image_latents_uncond = masked_image_latents_uncond.to(latents.device)
+        else:
+            masked_image_latents = masked_image_latents_uncond
+
         # 6. Prepare timesteps
         sigmas = np.linspace(1.0, 1 / num_inference_steps, num_inference_steps) if sigmas is None else sigmas
         image_seq_len = latents.shape[1]
@@ -962,7 +968,7 @@ class FluxFillCFGPipeline(
                 # TODO optionally use batch prediction to speed this up.
                 if self._guidance_scale_real > 1.0 and i >= no_cfg_until_timestep:
                     noise_pred_uncond = self.transformer(
-                        hidden_states=torch.cat((latents, masked_image_latents), dim=2),
+                        hidden_states=torch.cat((latents, masked_image_latents_uncond), dim=2),
                         # YiYi notes: divide it by 1000 for now because we scale it by 1000 in the transforme rmodel (we should not keep it but I want to keep the inputs same for the model for testing)
                         timestep=timestep / 1000,
                         guidance=guidance,

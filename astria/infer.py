@@ -13,7 +13,7 @@ import cv2
 import numpy as np
 import torch
 from PIL import Image, ImageOps, ImageFilter
-from diffusers import FluxFillPipeline, FluxTransformer2DModel
+from diffusers import FluxTransformer2DModel
 from diffusers import FluxPipeline, FluxImg2ImgPipeline, FluxControlNetPipeline, FluxControlNetModel, \
     FluxInpaintPipeline, FluxControlNetImg2ImgPipeline, FluxControlNetInpaintPipeline
 from torchvision import transforms
@@ -45,6 +45,7 @@ else:
 
 from birefnet.BiRefNet_node import BiRefNet_node
 from controlnet_constants import CONTROLNETS_DICT, CONTROL_MODES
+from fill_cfg_pipeline import FluxFillCFGPipeline as FluxFillPipeline, FluxTransformer2DSLGModel
 from hinter_helper import get_detector
 from image_utils import load_image, load_images
 from pipeline_flux_differential_img2img import FluxDifferentialImg2ImgPipeline
@@ -441,15 +442,19 @@ class InferPipeline(InpaintFaceMixin, VtonMixin):
                 model_path = download_model_from_server(f'{FLUX_INPAINT_MODEL_ID}-flux1')
                 self._model_path_fill = model_path
                 self.fill = FluxFillPipeline(
-                    transformer=FluxTransformer2DModel.from_pretrained(
-                        model_path, subfolder="transformer", torch_dtype=torch.bfloat16),
+                    transformer=FluxTransformer2DSLGModel.from_pretrained(
+                        model_path,
+                        subfolder="transformer",
+                        torch_dtype=torch.bfloat16,
+                    ),
                     scheduler=self.pipe.scheduler,
                     vae=self.pipe.vae,
                     text_encoder=self.pipe.text_encoder,
                     text_encoder_2=self.pipe.text_encoder_2,
                     tokenizer=self.pipe.tokenizer,
                     tokenizer_2=self.pipe.tokenizer_2,
-                ).to("cuda")
+                ).to(device)
+
             return self.fill
         else:
             if not self.inpaint:
@@ -851,6 +856,9 @@ class InferPipeline(InpaintFaceMixin, VtonMixin):
 
         ace_lora_unload_fn, ace_post_process_fn, slice_w, out_w, out_h = [None] * 5
         if prompt.ace_plus:
+            self.pipe.transformer = self.pipe.transformer.to('cpu')
+            torch.cuda.empty_cache()
+
             neg_prompt = None
             ace_model_lora_loaded = False
             tune_ace = next(iter(tune for tune in prompt.tunes
@@ -880,7 +888,7 @@ class InferPipeline(InpaintFaceMixin, VtonMixin):
                 ace_model_lora_loaded,
             )
             _pipe = ace.pipe
-            masked_image_latents, h, w, slice_w, out_w, out_h = ace.prepare_inputs(
+            masked_image_latents, masked_image_latents_uncond, h, w, slice_w, out_w, out_h = ace.prepare_inputs(
                 prompt.text,
                 reference_image=reference_image,
                 edit_image=orig_input_image,
@@ -894,8 +902,9 @@ class InferPipeline(InpaintFaceMixin, VtonMixin):
             if kwargs.get('mask_image', False):
                 del kwargs['mask_image']
             kwargs['masked_image_latents'] = masked_image_latents
+            kwargs['masked_image_latents_uncond'] = masked_image_latents_uncond
             if prompt.fill_real_cfg is not None:
-                prompt.cfg_scale = 20
+                prompt.cfg_scale = 1
                 kwargs['guidance_scale_real'] = prompt.fill_real_cfg
                 kwargs['negative_prompt'] = neg_prompt
             else:
@@ -925,7 +934,10 @@ class InferPipeline(InpaintFaceMixin, VtonMixin):
                 image = ace_post_process_fn(image, slice_w, out_w, out_h)
             images.append(image)
 
-        if (ace_lora_unload_fn): ace_lora_unload_fn()
+        if (ace_lora_unload_fn):
+            self.pipe.transformer = self.pipe.transformer.to('cuda')
+            torch.cuda.empty_cache()
+            ace_lora_unload_fn()
 
     def infer_prompt(self, prompt, tune: JsonObj):
         parse_args(prompt)

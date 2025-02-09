@@ -1,6 +1,7 @@
 import random
 from typing import Optional, Union, List
 from collections import OrderedDict
+from pathlib import Path
 
 import torch, os
 from diffusers import FluxFillPipeline
@@ -9,9 +10,8 @@ from scepter.modules.utils.config import Config
 from scepter.modules.utils.file_system import FS
 # from scepter.modules.utils.logger import get_logger
 from transformers import T5TokenizerFast
-from .utils import ACEPlusImageProcessor, scale_long_edge_and_pad
+from .utils import ACEPlusImageProcessor, scale_long_edge_and_pad, random_crop_pil
 from huggingface_hub import snapshot_download
-from astria.fill_cfg_pipeline import FluxFillCFGPipeline
 from PIL import Image
 
 HF_REPO = "ali-vilab/ACE_Plus"
@@ -22,6 +22,8 @@ LOCAL_EDITING_LORA_NAME = "comfyui_local_lora16.safetensors"
 
 ACE_NEGATIVE_PORTRAIT_PROMPT = "a blurry picture of several sea turtles with hot air balloons in the background, a chicken drumstick in the foreground on a blue, pink, and green plate"
 ACE_NEGATIVE_SUBJECT_PROMPT = "a low quality jpeg image of an old playground, hot air balloons in the background, a chicken drumstick in the foreground on a blue, pink, and green plate"
+
+UNCOND_IMAGE_LOC = Path(__file__).resolve().parent / 'static' / 'uncond_ace.jpg'
 
 
 class ACEPlusDiffuserInference():
@@ -44,9 +46,11 @@ class ACEPlusDiffuserInference():
     @classmethod
     def init_from_pipe(cls, pipe, pipe_location, device, ace_location, ace_model):
         self = cls()
+        self.device = device
+        original_tokenizer_2 = pipe.tokenizer_2
 
         # Lower this to 4096 or 3172 if you start to OOM
-        self.max_seq_len = 8192 # cfg.get("MAX_SEQ_LEN", 4096)
+        self.max_seq_len = 3072 # cfg.get("MAX_SEQ_LEN", 4096)
         self.image_processor = ACEPlusImageProcessor(max_seq_len=self.max_seq_len)
 
         # This does nothing if it already exists
@@ -57,16 +61,9 @@ class ACEPlusDiffuserInference():
         self.pipe_location = pipe_location
         tokenizer_2 = T5TokenizerFast.from_pretrained(os.path.join(pipe_location, "tokenizer_2"),
             additional_special_tokens=["{image}"])
-        self.pipe = FluxFillCFGPipeline(
-            pipe.scheduler,
-            pipe.vae,
-            pipe.text_encoder,
-            pipe.tokenizer,
-            pipe.text_encoder_2,
-            tokenizer_2,
-            pipe.transformer,
-        ).to(device)
-        self.device = device
+        
+        self.pipe = pipe
+        self.pipe.register_modules(tokenizer_2=tokenizer_2)
 
         if ace_model == 'subject':
             self.pipe.load_lora_weights(
@@ -92,6 +89,7 @@ class ACEPlusDiffuserInference():
 
         def unload_function():
             self.pipe.delete_adapters(["ace_lora_adapter"])
+            self.pipe.register_modules(tokenizer_2=original_tokenizer_2)
 
         return self, post_process_fn, unload_function
 
@@ -141,14 +139,26 @@ class ACEPlusDiffuserInference():
             prompt = [prompt_text]
         if all(inp is None for inp in (reference_image, edit_image, edit_mask)):
             raise ValueError('reference_image, edit_image, and/or edit_mask required')
+        reference_image_sz = reference_image.size
+
         seed = seed if seed >= 0 else random.randint(0, 2 ** 32 - 1)
+        uncond_img = Image.open(UNCOND_IMAGE_LOC)
+        uncond_img = random_crop_pil(uncond_img, reference_image_sz)
+        uncond_img, mask, out_h, out_w, slice_w = self.image_processor.preprocess(
+            uncond_img, edit_image, edit_mask, repainting_scale = repainting_scale)
+        h, w = uncond_img.shape[1:]
+        generator = torch.Generator("cpu").manual_seed(seed)
+        masked_image_latents_uncond = self.prepare_input(uncond_img, mask,
+            batch_size=len(prompt), height=h, width=w, generator=generator)
+
         image, mask, out_h, out_w, slice_w = self.image_processor.preprocess(
             reference_image, edit_image, edit_mask, repainting_scale = repainting_scale)
         h, w = image.shape[1:]
-        generator = torch.Generator("cpu").manual_seed(seed)
+        generator = torch.Generator("cpu").manual_seed(seed + 1)
         masked_image_latents = self.prepare_input(image, mask,
-            batch_size=len(prompt) , height=h, width=w, generator=generator)
-        return masked_image_latents, h, w, slice_w, out_w, out_h
+            batch_size=len(prompt), height=h, width=w, generator=generator)
+
+        return masked_image_latents, masked_image_latents_uncond, h, w, slice_w, out_w, out_h
 
     @torch.no_grad()
     def __call__(

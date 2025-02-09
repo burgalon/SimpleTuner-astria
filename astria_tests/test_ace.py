@@ -11,12 +11,12 @@ from pathlib import Path
 
 FLUX_ACE_TUNE_PORTRAIT = JsonObj(**{
     "id": -1,
-    "name": "man",
+    "name": "woman",
     "title": "",
     "branch": "flux1",
     "model_type": "faceid",
     "face_swap_images": [
-        'https://m.media-amazon.com/images/M/MV5BMTQ5NTUzNDE5OV5BMl5BanBnXkFtZTgwMjAwOTE1MDE@._V1_.jpg',
+        'https://sdbooth2-production.s3.amazonaws.com/l7pp1gzy1lthev4u1fiwvdt5l9tg',
     ],
 })
 
@@ -41,19 +41,23 @@ def test_fill_ace_portrait():
         ace_plus=True,
         seed=42,
     )
-    prompt.text=f"Maintain the facial features. A man is wearing a neat police uniform and sporting a badge. he is smiling with a friendly and confident demeanor. The background is blurred, featuring a cartoon logo"
+    prompt.text=f"Maintain the facial features. A woman is wearing a neat police uniform and sporting a badge. She is smiling with a friendly and confident demeanor. The background is blurred, featuring a cartoon logo"
     prompt.tunes = [FLUX_ACE_TUNE_PORTRAIT]
     run_images(prompt)
     assert isinstance(pipe.last_pipe, FluxFillPipeline)
 
 def test_fill_ace_portrait_cfg():
+    # import debugpy
+    # debugpy.listen(('0.0.0.0', 11566))
+    # debugpy.wait_for_client()
+    
     prompt = JsonObj(
         **copy.copy(BASE_PROMPT.__dict__),
         ace_plus=True,
-        fill_real_cfg=3.5,
+        fill_real_cfg=3.0,
         seed=42,
     )
-    prompt.text=f"Maintain the facial features. A man is wearing a neat police uniform and sporting a badge. he is smiling with a friendly and confident demeanor. The background is blurred, featuring a cartoon logo"
+    prompt.text=f"Maintain the facial features. A woman is wearing a neat police uniform and sporting a badge. She is smiling with a friendly and confident demeanor. The background is blurred, featuring a cartoon logo"
     prompt.tunes = [FLUX_ACE_TUNE_PORTRAIT]
     run_images(prompt)
     assert isinstance(pipe.last_pipe, FluxFillPipeline)
@@ -62,11 +66,11 @@ def test_fill_ace_portrait_cfg_slg():
     prompt = JsonObj(
         **copy.copy(BASE_PROMPT.__dict__),
         ace_plus=True,
-        fill_real_cfg=3.5,
+        fill_real_cfg=3.0,
         fill_slg=json.dumps([[8, 12], [4, 7, 12]]),
         seed=42,
     )
-    prompt.text=f"Maintain the facial features. A man is wearing a neat police uniform and sporting a badge. he is smiling with a friendly and confident demeanor. The background is blurred, featuring a cartoon logo"
+    prompt.text=f"Maintain the facial features. A woman is wearing a neat police uniform and sporting a badge. She is smiling with a friendly and confident demeanor. The background is blurred, featuring a cartoon logo"
     prompt.tunes = [FLUX_ACE_TUNE_PORTRAIT]
     run_images(prompt)
     assert isinstance(pipe.last_pipe, FluxFillPipeline)
