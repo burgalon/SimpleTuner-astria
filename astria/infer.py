@@ -79,6 +79,7 @@ def parse_args(prompt: JsonObj):
     parser.add_argument("--mask_invert", action='store_true', default=False)
     parser.add_argument("--disable_restore_mask_area", action='store_true', default=None)
     parser.add_argument("--face_inpaint_denoising", type=float, default=None)
+    parser.add_argument("--face_inpaint_exclude_neck", action='store_true', default=getattr(prompt, 'face_inpaint_exclude_neck', False))
     parser.add_argument("--hires_denoising_strength", type=float, default=None)
     parser.add_argument("--fill", action='store_true', default=False)
     parser.add_argument("--outpaint", choices=['top-left', 'top-right', 'bottom-left', 'bottom-right', 'center', 'top-center', 'bottom-center', 'left-center', 'right-center'], default=None)
