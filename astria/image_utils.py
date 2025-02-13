@@ -77,7 +77,7 @@ def io2img(url, convert = 'RGB') -> Image.Image:
                 # convert transparent to black
                 print("Converting RGBA to L")
                 image = Image.composite(Image.new('RGB', image.size, (255, 255, 255)), Image.new('RGB', image.size, (0, 0, 0)), image)
-        image = image.convert(convert)
+            image = image.convert(convert)
         # clear ICCProfile to avoid PIL warnings
         image.info.pop('icc_profile', None)
     except Exception as e:
