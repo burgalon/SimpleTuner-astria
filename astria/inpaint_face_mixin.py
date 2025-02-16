@@ -1,7 +1,7 @@
 import os
 from dataclasses import dataclass, field
 from enum import IntEnum
-from typing import List, Optional, Generic, TypeVar, Union
+from typing import List, Optional, Generic, TypeVar, Union, Any, Dict
 
 import numpy as np
 import cv2
@@ -385,7 +385,7 @@ class InpaintFaceMixin:
 
     INPAINT_RESOLUTION = 512  # Define the inpaint resolution
 
-    def inpaint_image(self, image: Image.Image, prompt: JsonObj):
+    def inpaint_image(self, image: Image.Image, prompt: JsonObj, kwargs: Optional[Dict[str, Any]]=None):
         pred = ultralytics_predict(
             self.yolo,
             image=image,
@@ -468,8 +468,16 @@ class InpaintFaceMixin:
         # Inpaint the resized cropped region
         inpainted_crop_resized = cropped_image_resized
         for i in range(1):
+            prompt_embeds = None
+            pooled_prompt_embeds = None
+            if kwargs is not None and 'prompt_embeds' in kwargs.keys():
+                prompt_embeds = kwargs['prompt_embeds']
+            if kwargs is not None and 'pooled_prompt_embeds' in kwargs.keys():
+                pooled_prompt_embeds = kwargs['pooled_prompt_embeds']
             inpainted_crop_resized = pipe(
                 prompt=prompt.text,
+                prompt_embeds=prompt_embeds,
+                pooled_prompt_embeds=pooled_prompt_embeds,
                 guidance_scale=float(prompt.cfg_scale or 2.5),
                 height=cropped_image_resized.height,
                 width=cropped_image_resized.width,
@@ -566,7 +574,7 @@ class InpaintFaceMixin:
 
         return image
 
-    def inpaint_faces(self, images: List[Image.Image], prompt: JsonObj):
+    def inpaint_faces(self, images: List[Image.Image], prompt: JsonObj, kwargs: Optional[Dict[str, Any]]=None):
         if not self.yolo:
             self.yolo = YOLO(YOLO_FACE_MODEL)
 
@@ -575,6 +583,7 @@ class InpaintFaceMixin:
             return images
 
         self.init_inpaint(prompt)
+
         # change weight to 1 in case its lower
         # new_weight = [w if name == str(lora.id) else w for name, w in zip(self.current_lora_weights['names'], self.current_lora_weights['scales'])]
         # self.pipe.set_adapters(self.current_lora_weights['names'], adapter_weights=self.current_lora_weights['scales'])
@@ -583,7 +592,7 @@ class InpaintFaceMixin:
             # reuse self.inpaint_image
             if os.environ.get('DEBUG', '') == 'inpaint_faces':
                 image.save(f"{MODELS_DIR}/{prompt.id}-before-inpaint-{i}.jpg")
-            images[i] = self.inpaint_image(image, prompt)
+            images[i] = self.inpaint_image(image, prompt, kwargs)
         return images
 
 if __name__ == "__main__":

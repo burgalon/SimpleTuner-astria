@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import inspect
+import json
 from typing import Any, Callable, Dict, List, Optional, Union
 
 import numpy as np
@@ -34,9 +35,8 @@ from diffusers.utils import (
 from diffusers.utils.torch_utils import randn_tensor
 from diffusers.pipelines.pipeline_utils import DiffusionPipeline
 from diffusers.pipelines.flux.pipeline_output import FluxPipelineOutput
-from diffusers.models.transformers.transformer_flux import FluxTransformer2DModel
 
-from astria.fill_cfg_pipeline.transformer import FluxTransformer2DSLGModel
+from astria.fill_cfg_pipeline.transformer import FluxTransformer2DModel
 
 if is_torch_xla_available():
     import torch_xla.core.xla_model as xm
@@ -44,6 +44,9 @@ if is_torch_xla_available():
     XLA_AVAILABLE = True
 else:
     XLA_AVAILABLE = False
+
+
+SLG_DEFAULT_LAYERS = json.dumps([[8, 12], [4, 7, 12]])
 
 
 logger = logging.get_logger(__name__)  # pylint: disable=invalid-name
@@ -209,11 +212,9 @@ class FluxFillCFGPipeline(
         tokenizer: CLIPTokenizer,
         text_encoder_2: T5EncoderModel,
         tokenizer_2: T5TokenizerFast,
-        transformer: FluxTransformer2DSLGModel,
+        transformer: FluxTransformer2DModel,
     ):
         super().__init__()
-
-        # transformer = FluxTransformer2DSLGModel.from_transformer(transformer)
 
         self.register_modules(
             vae=vae,
@@ -908,7 +909,7 @@ class FluxFillCFGPipeline(
         if masked_image_latents_uncond is not None:
             masked_image_latents_uncond = masked_image_latents_uncond.to(latents.device)
         else:
-            masked_image_latents = masked_image_latents_uncond
+            masked_image_latents_uncond = masked_image_latents
 
         # 6. Prepare timesteps
         sigmas = np.linspace(1.0, 1 / num_inference_steps, num_inference_steps) if sigmas is None else sigmas
@@ -967,6 +968,7 @@ class FluxFillCFGPipeline(
 
                 # TODO optionally use batch prediction to speed this up.
                 if self._guidance_scale_real > 1.0 and i >= no_cfg_until_timestep:
+                    self.disable_lora()
                     noise_pred_uncond = self.transformer(
                         hidden_states=torch.cat((latents, masked_image_latents_uncond), dim=2),
                         # YiYi notes: divide it by 1000 for now because we scale it by 1000 in the transforme rmodel (we should not keep it but I want to keep the inputs same for the model for testing)
@@ -980,6 +982,7 @@ class FluxFillCFGPipeline(
                         skip_layer_guidance=skip_layer_guidance,
                         return_dict=False,
                     )[0]
+                    self.enable_lora()
 
                     noise_pred = noise_pred_uncond + self._guidance_scale_real * (
                         noise_pred - noise_pred_uncond

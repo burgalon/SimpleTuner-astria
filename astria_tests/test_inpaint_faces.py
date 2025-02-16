@@ -1,4 +1,5 @@
 import copy
+import json
 
 from test_infer import pipe, TUNE_FLUX, FLUX_LORA, BASE_PROMPT, run_images, IMG_POSE, MODELS_DIR, name, JsonObj
 from image_utils import load_image

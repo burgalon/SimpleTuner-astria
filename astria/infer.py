@@ -45,7 +45,12 @@ else:
 
 from birefnet.BiRefNet_node import BiRefNet_node
 from controlnet_constants import CONTROLNETS_DICT, CONTROL_MODES
-from fill_cfg_pipeline import FluxFillCFGPipeline as FluxFillPipeline, FluxTransformer2DSLGModel
+from fill_cfg_pipeline import (
+    SLG_DEFAULT_LAYERS,
+    FluxFillCFGPipeline as FluxFillPipeline,
+    FluxTransformer2DModel as FluxTransformer2DSLGModel,
+)
+
 from hinter_helper import get_detector
 from image_utils import load_image, load_images
 from pipeline_flux_differential_img2img import FluxDifferentialImg2ImgPipeline
@@ -246,7 +251,6 @@ class InferPipeline(InpaintFaceMixin, VtonMixin):
         names = []
         scales = []
         lora_fns = []
-        setattr(prompt, '_prompt_raw', prompt.text)
         setattr(prompt, '_prompt_with_lora_ids', prompt.text)
 
         pipe = self.fill if isinstance(pipe, FluxFillPipeline) else self.pipe
@@ -848,7 +852,7 @@ class InferPipeline(InpaintFaceMixin, VtonMixin):
     def inference_loop(
         self,
         pipe, prompt, kwargs, num_images, images, joint_attention_kwargs,
-        ace_location=MODELS_DIR,
+        ace_location=CACHE_DIR,
         orig_input_image=None,
         orig_mask_image=None,
     ):
@@ -859,18 +863,15 @@ class InferPipeline(InpaintFaceMixin, VtonMixin):
             self.pipe.transformer = self.pipe.transformer.to('cpu')
             torch.cuda.empty_cache()
 
-            neg_prompt = None
             ace_model_lora_loaded = False
             tune_ace = next(iter(tune for tune in prompt.tunes
                 if tune.model_type == 'faceid' and tune.name in HUMAN_CLASS_NAMES), None)
             if tune_ace is not None: 
                 ace_model_lora_loaded = 'portrait'
-                neg_prompt = ACE_NEGATIVE_PORTRAIT_PROMPT
             else:
                 tune_ace = next(iter(tune for tune in prompt.tunes
                     if tune.model_type == 'faceid'), None)
                 ace_model_lora_loaded = 'subject'
-                neg_prompt = ACE_NEGATIVE_SUBJECT_PROMPT
 
             if orig_input_image is not None and orig_mask_image is not None:
                 ace_model_lora_loaded = 'local_editing'
@@ -903,15 +904,6 @@ class InferPipeline(InpaintFaceMixin, VtonMixin):
                 del kwargs['mask_image']
             kwargs['masked_image_latents'] = masked_image_latents
             kwargs['masked_image_latents_uncond'] = masked_image_latents_uncond
-            if prompt.fill_real_cfg is not None:
-                prompt.cfg_scale = 1
-                kwargs['guidance_scale_real'] = prompt.fill_real_cfg
-                kwargs['negative_prompt'] = neg_prompt
-            else:
-                prompt.cfg_scale = 50
-
-            if prompt.fill_real_cfg is not None and prompt.fill_slg is not None:
-                kwargs['skip_layer_guidance'] = json.loads(prompt.fill_slg)
 
         for i_image in range(num_images):
             if 'image' in kwargs is not None and 'strength' in kwargs and kwargs['strength'] == 0:
@@ -1089,6 +1081,38 @@ class InferPipeline(InpaintFaceMixin, VtonMixin):
         kwargs['prompt_embeds'] = prompt_embeds
         kwargs['pooled_prompt_embeds'] = pooled_prompt_embeds
 
+        if prompt.fill_real_cfg is not None:
+            # TODO let user enter this optionally.
+            # For the case of LoRAs, the pipeline unloads the LoRA for the CFG
+            # uncond, amplifying the LoRA. In this case, you want the prompt and
+            # uncond prompt text to be the same.
+            neg_prompt = ACE_NEGATIVE_SUBJECT_PROMPT
+            if len(prompt.tunes) > 0:
+                neg_prompt = prompt.text
+            prompt.cfg_scale = 1
+            kwargs['guidance_scale_real'] = prompt.fill_real_cfg
+
+            (
+                negative_prompt_embeds,
+                negative_pooled_prompt_embeds,
+                _,
+            ) = pipe.encode_prompt(
+                neg_prompt,
+                neg_prompt,
+                max_sequence_length=prompt.max_sequence_length or 512,
+                device=device,
+            )
+            kwargs['negative_prompt_embeds'] = negative_prompt_embeds
+            kwargs['negative_pooled_prompt_embeds'] = negative_pooled_prompt_embeds
+        else:
+            prompt.cfg_scale = 50
+
+        if prompt.fill_real_cfg is not None and prompt.fill_slg is not None:
+            fill_slg = prompt.fill_slg
+            if prompt.fill_slg == 'default':
+                fill_slg = SLG_DEFAULT_LAYERS
+            kwargs['skip_layer_guidance'] = json.loads(fill_slg)
+
         print(f"T#{prompt.tune_id} P#{prompt.id} pipe={pipe.__class__.__name__} {prompt.text=} loras={self.current_lora_weights_map[get_pipe_key_for_lora(pipe)]}")
 
         self.inference_loop(
@@ -1117,7 +1141,7 @@ class InferPipeline(InpaintFaceMixin, VtonMixin):
             images = self.apply_hires_fix(images, prompt, kwargs)
 
         if prompt.inpaint_faces or os.environ.get('INPAINT_FACES'):
-            images = self.inpaint_faces(images, prompt, tune)
+            images = self.inpaint_faces(images, prompt, kwargs)
 
         if prompt.color_grading and prompt.color_grading != 'null' and not os.environ.get('DISABLE_COLOR_GRADING'):
             print(f"T#{prompt.tune_id} P#{prompt.id} color_grading={prompt.color_grading}")
