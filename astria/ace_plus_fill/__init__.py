@@ -1,3 +1,4 @@
+import gc
 import random
 from typing import Optional, Union, List
 from collections import OrderedDict
@@ -5,6 +6,7 @@ from pathlib import Path
 
 import torch, os
 from diffusers import FluxFillPipeline
+from optimum.quanto import freeze, quantize, qint8
 from scepter.modules.utils.config import Config
 # from scepter.modules.utils.distribute import we
 from scepter.modules.utils.file_system import FS
@@ -50,7 +52,7 @@ class ACEPlusDiffuserInference():
         original_tokenizer_2 = pipe.tokenizer_2
 
         # Lower this to 4096 or 3172 if you start to OOM
-        self.max_seq_len = 3072 # cfg.get("MAX_SEQ_LEN", 4096)
+        self.max_seq_len = 8192 # cfg.get("MAX_SEQ_LEN", 4096)
         self.image_processor = ACEPlusImageProcessor(max_seq_len=self.max_seq_len)
 
         # This does nothing if it already exists
@@ -65,24 +67,52 @@ class ACEPlusDiffuserInference():
         self.pipe = pipe
         self.pipe.register_modules(tokenizer_2=tokenizer_2)
 
-        if ace_model == 'subject':
-            self.pipe.load_lora_weights(
-                f"{ace_location}/{LOCAL_SUBDIR}/{ace_model}/{SUBJECT_LORA_NAME}",
-                adapter_name="ace_lora_adapter",
-                low_cpu_mem_usage=True,
+        PRECOMPUTED_LOCATION = f'{ace_location}/flux_fill_ace_weights_{ace_model}.pt'
+        if not Path(PRECOMPUTED_LOCATION).exists():
+            if ace_model == 'subject':
+                self.pipe.load_lora_weights(
+                    f"{ace_location}/{LOCAL_SUBDIR}/{ace_model}/{SUBJECT_LORA_NAME}",
+                    adapter_name="ace_lora_adapter",
+                    low_cpu_mem_usage=True,
+                )
+            if ace_model == 'portrait':
+                self.pipe.load_lora_weights(
+                    f"{ace_location}/{LOCAL_SUBDIR}/{ace_model}/{PORTRAIT_LORA_NAME}",
+                    adapter_name="ace_lora_adapter",
+                    low_cpu_mem_usage=True,
+                )
+            if ace_model == 'local_editing':
+                self.pipe.load_lora_weights(
+                    f"{ace_location}/{LOCAL_SUBDIR}/{ace_model}/{LOCAL_EDITING_LORA_NAME}",
+                    adapter_name="ace_lora_adapter",
+                    low_cpu_mem_usage=True,
+                )
+
+            pipe.fuse_lora()
+            pipe.unload_lora_weights()
+            quantize(
+                pipe.transformer,
+                weights=qint8,
+                exclude=[
+                    "*.norm",
+                    "*.norm1",
+                    "*.norm2",
+                    "*.norm2_context",
+                    "proj_out",
+                    "x_embedder",
+                    "norm_out",
+                    "context_embedder",
+                ],
             )
-        if ace_model == 'portrait':
-            self.pipe.load_lora_weights(
-                f"{ace_location}/{LOCAL_SUBDIR}/{ace_model}/{PORTRAIT_LORA_NAME}",
-                adapter_name="ace_lora_adapter",
-                low_cpu_mem_usage=True,
-            )
-        if ace_model == 'local_editing':
-            self.pipe.load_lora_weights(
-                f"{ace_location}/{LOCAL_SUBDIR}/{ace_model}/{LOCAL_EDITING_LORA_NAME}",
-                adapter_name="ace_lora_adapter",
-                low_cpu_mem_usage=True,
-            )
+            freeze(pipe.transformer)
+
+            torch.save(pipe.transformer, PRECOMPUTED_LOCATION)
+        else:
+            del pipe.transformer
+            transformer = torch.load(PRECOMPUTED_LOCATION, weights_only=False)
+            self.pipe.register_modules(transformer=transformer)
+        gc.collect()
+        torch.cuda.empty_cache()
 
         def post_process_fn(img, slice_w, out_w, out_h):
             return self.image_processor.postprocess(img, slice_w, out_w, out_h)
@@ -90,6 +120,7 @@ class ACEPlusDiffuserInference():
         def unload_function():
             self.pipe.delete_adapters(["ace_lora_adapter"])
             self.pipe.register_modules(tokenizer_2=original_tokenizer_2)
+            return
 
         return self, post_process_fn, unload_function
 
@@ -130,6 +161,8 @@ class ACEPlusDiffuserInference():
         reference_image: Optional[Image.Image] = None,
         edit_image: Optional[Image.Image] = None,
         edit_mask: Optional[Image.Image] = None,
+        height: Optional[int] = 1024,
+        width: Optional[int] = 1024,
         seed=42,
     ) -> torch.Tensor:
         # TODO is this needed?
@@ -145,14 +178,16 @@ class ACEPlusDiffuserInference():
         uncond_img = Image.open(UNCOND_IMAGE_LOC)
         uncond_img = random_crop_pil(uncond_img, reference_image_sz)
         uncond_img, mask, out_h, out_w, slice_w = self.image_processor.preprocess(
-            uncond_img, edit_image, edit_mask, repainting_scale = repainting_scale)
+            uncond_img, edit_image, edit_mask, repainting_scale=repainting_scale,
+            height=height, width=width)
         h, w = uncond_img.shape[1:]
         generator = torch.Generator("cpu").manual_seed(seed)
         masked_image_latents_uncond = self.prepare_input(uncond_img, mask,
             batch_size=len(prompt), height=h, width=w, generator=generator)
 
         image, mask, out_h, out_w, slice_w = self.image_processor.preprocess(
-            reference_image, edit_image, edit_mask, repainting_scale = repainting_scale)
+            reference_image, edit_image, edit_mask, repainting_scale = repainting_scale,
+            height=height, width=width)
         h, w = image.shape[1:]
         generator = torch.Generator("cpu").manual_seed(seed + 1)
         masked_image_latents = self.prepare_input(image, mask,

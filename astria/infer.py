@@ -1,5 +1,6 @@
 import argparse
 import copy
+import gc
 import json
 import os
 import re
@@ -13,7 +14,7 @@ import cv2
 import numpy as np
 import torch
 from PIL import Image, ImageOps, ImageFilter
-from diffusers import FluxTransformer2DModel
+from diffusers import BitsAndBytesConfig
 from diffusers import FluxPipeline, FluxImg2ImgPipeline, FluxControlNetPipeline, FluxControlNetModel, \
     FluxInpaintPipeline, FluxControlNetImg2ImgPipeline, FluxControlNetInpaintPipeline
 from torchvision import transforms
@@ -115,6 +116,12 @@ def parse_args(prompt: JsonObj):
     parser.add_argument("--input_faceid", type=float, help="Use input_image for faceid. Defines the scale of the input_image for faceid", default=None, const=1.0, nargs='?')
     parser.add_argument("--faceid_portrait", help="Use faceid portrait", action='store_true', default=False)
     parser.add_argument("--fix_bindi", help="Inpaint dot on the forehead", action='store_true', default=False)
+    parser.add_argument(
+        "--cfg_scale",
+        help="cfg_scale",
+        type=float,
+        default=getattr(prompt, 'cfg_scale', None),
+    )
     parser.add_argument("--vton_cfg_scale", help="VTON cfg_scale", type=float, default=None)
     parser.add_argument("--vton_hires", help="VTON Hi resolution", action='store_true', default=False)
     parser.add_argument("--remove_background", help="Remove background", action='store_true', default=False)
@@ -137,6 +144,12 @@ def parse_args(prompt: JsonObj):
         help="Use real classifier free guidance when using fill",
         type=float,
         default=getattr(prompt, 'fill_real_cfg', None),
+    )
+    parser.add_argument(
+        "--fill_negative_prompt",
+        help="The negative prompt to use with real CFG when using fill CFG pipeline",
+        type=float,
+        default=getattr(prompt, 'fill_negative_prompt', None),
     )
     parser.add_argument(
         "--fill_slg",
@@ -861,6 +874,7 @@ class InferPipeline(InpaintFaceMixin, VtonMixin):
         ace_lora_unload_fn, ace_post_process_fn, slice_w, out_w, out_h = [None] * 5
         if prompt.ace_plus:
             self.pipe.transformer = self.pipe.transformer.to('cpu')
+            gc.collect()
             torch.cuda.empty_cache()
 
             ace_model_lora_loaded = False
@@ -895,15 +909,22 @@ class InferPipeline(InpaintFaceMixin, VtonMixin):
                 edit_image=orig_input_image,
                 edit_mask=orig_mask_image,
                 seed=prompt.seed,
+                height=prompt.h or 1024,
+                width=prompt.w or 1024,
+
             )
-            prompt.h = h
-            prompt.w = w
+            # prompt.h = h
+            # prompt.w = w
             if kwargs.get('image', False):
                 del kwargs['image']
             if kwargs.get('mask_image', False):
                 del kwargs['mask_image']
             kwargs['masked_image_latents'] = masked_image_latents
             kwargs['masked_image_latents_uncond'] = masked_image_latents_uncond
+
+            # Make the latent sequence size match up.
+            prompt.h = h
+            prompt.w = w
 
         for i_image in range(num_images):
             if 'image' in kwargs is not None and 'strength' in kwargs and kwargs['strength'] == 0:
@@ -926,10 +947,11 @@ class InferPipeline(InpaintFaceMixin, VtonMixin):
                 image = ace_post_process_fn(image, slice_w, out_w, out_h)
             images.append(image)
 
-        if (ace_lora_unload_fn):
-            self.pipe.transformer = self.pipe.transformer.to('cuda')
+        if ace_lora_unload_fn:
+            self.fill = None
+            gc.collect()
             torch.cuda.empty_cache()
-            ace_lora_unload_fn()
+            # ace_lora_unload_fn()
 
     def infer_prompt(self, prompt, tune: JsonObj):
         parse_args(prompt)
@@ -1082,14 +1104,9 @@ class InferPipeline(InpaintFaceMixin, VtonMixin):
         kwargs['pooled_prompt_embeds'] = pooled_prompt_embeds
 
         if prompt.fill_real_cfg is not None:
-            # TODO let user enter this optionally.
-            # For the case of LoRAs, the pipeline unloads the LoRA for the CFG
-            # uncond, amplifying the LoRA. In this case, you want the prompt and
-            # uncond prompt text to be the same.
             neg_prompt = ACE_NEGATIVE_SUBJECT_PROMPT
-            if len(prompt.tunes) > 0:
-                neg_prompt = prompt.text
-            prompt.cfg_scale = 1
+            if prompt.fill_negative_prompt is not None:
+                neg_prompt = prompt.fill_negative_prompt
             kwargs['guidance_scale_real'] = prompt.fill_real_cfg
 
             (

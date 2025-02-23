@@ -712,7 +712,8 @@ class FluxFillCFGPipeline(
         negative_prompt_2: Union[str, List[str]] = "",
         negative_prompt_embeds: Optional[torch.FloatTensor] = None,
         negative_pooled_prompt_embeds: Optional[torch.FloatTensor] = None,
-        no_cfg_until_timestep: int = 2,
+        no_cfg_until_timestep: int = 0,
+        no_cfg_after_timestep: int = 4,
         skip_layer_guidance: Optional[tuple[list[int], list[int]]] = None,
     ):
         r"""
@@ -938,6 +939,8 @@ class FluxFillCFGPipeline(
                 guidance_scale_local = 1.0
                 guidance = torch.full([1], guidance_scale_local, device=device, dtype=torch.float32)
                 guidance = guidance.expand(latents.shape[0])
+
+                # TODO Setting this can sometimes burn the resulting image...
                 guidance[0] = guidance_scale
             else:
                 guidance = torch.full([1], guidance_scale_local, device=device, dtype=torch.float32)
@@ -967,7 +970,10 @@ class FluxFillCFGPipeline(
                 )[0]
 
                 # TODO optionally use batch prediction to speed this up.
-                if self._guidance_scale_real > 1.0 and i >= no_cfg_until_timestep:
+                if self._guidance_scale_real > 1.0 and (
+                    i >= no_cfg_until_timestep
+                    or i <= num_inference_steps - no_cfg_after_timestep
+                ):
                     self.disable_lora()
                     noise_pred_uncond = self.transformer(
                         hidden_states=torch.cat((latents, masked_image_latents_uncond), dim=2),
