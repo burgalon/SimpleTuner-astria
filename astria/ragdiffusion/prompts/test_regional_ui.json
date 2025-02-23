@@ -1,0 +1,33 @@
+{
+  "SR_hw_split_ratio": "0.25, 0.2,0.6,0.2; 0.5, 0.2,0.6,0.2; 0.25, 0.2,0.6,0.2",
+  "SR_prompt": "test BREAK test2 BREAK test3 BREAK test4 BREAK test5 BREAK test6 BREAK test7 BREAK test8 BREAK test9 BREAK",
+  "HB_prompt_list": [
+    "TopLeft Box",
+    "TopCenter Box",
+    "MidCenter Box",
+    "BottomLeft Box",
+    "BottomRight Box",
+
+    "TopRight Box",
+    "MidLeft Box",
+    "MidRight Box",
+    "BottomCenter Box"
+  ],
+
+  "HB_m_offset_list": [
+    0.01, 0.21, 0.21, 0.01, 0.81,
+    0.81, 0.01, 0.81, 0.21
+  ],
+  "HB_n_offset_list": [
+    0.01, 0.01, 0.26, 0.76, 0.76,
+    0.01, 0.26, 0.26, 0.76
+  ],
+  "HB_m_scale_list": [
+    0.18, 0.58, 0.58, 0.18, 0.18,
+    0.18, 0.18, 0.18, 0.58
+  ],
+  "HB_n_scale_list": [
+    0.23, 0.23, 0.48, 0.23, 0.23,
+    0.23, 0.48, 0.48, 0.23
+  ]
+}
