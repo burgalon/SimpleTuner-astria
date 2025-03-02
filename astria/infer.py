@@ -903,10 +903,9 @@ class InferPipeline(InpaintFaceMixin, VtonMixin):
             reference_image=reference_image,
             edit_image=orig_input_image,
             edit_mask=orig_mask_image,
-            seed=prompt.seed,
+            seed=prompt.seed or 42,
             height=prompt.h or 1024,
             width=prompt.w or 1024,
-
         )
         # prompt.h = h
         # prompt.w = w

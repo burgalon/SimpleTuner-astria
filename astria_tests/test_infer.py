@@ -174,8 +174,18 @@ FLUX_LORA_2 = JsonObj(**{
 
 FLUX_EXTERNAL_LORA = JsonObj(**{
     "id": "wow_details",
-    "name": "man",
+    "name": "style",
     "title": "Wow details comfyui compatible LoRA",
+    "branch": "flux1",
+    "token": "wow_details",
+    "train_token": "ohwx",
+    "model_type": "lora",
+})
+
+FLUX_EXTERNAL_LORA_2 = JsonObj(**{
+    "id": "flux_realism_lora",
+    "name": "style",
+    "title": "flux_realism_lora",
     "branch": "flux1",
     "token": "wow_details",
     "train_token": "ohwx",
@@ -238,6 +248,14 @@ def test_txt2img_civitai_lora():
     )
     prompt.text=f"<lora:{FLUX_EXTERNAL_LORA.id}:1> {FLUX_EXTERNAL_LORA.train_token} woman holding flowers"
     prompt.tunes=[FLUX_EXTERNAL_LORA]
+    run_images(prompt)
+    assert isinstance(pipe.last_pipe, FluxPipeline)
+
+    prompt = JsonObj(
+        **copy.copy(BASE_PROMPT.__dict__),
+    )
+    prompt.text=f"<lora:{FLUX_EXTERNAL_LORA_2.id}:1> {FLUX_EXTERNAL_LORA_2.train_token} woman holding flowers"
+    prompt.tunes=[FLUX_EXTERNAL_LORA_2]
     run_images(prompt)
     assert isinstance(pipe.last_pipe, FluxPipeline)
 
