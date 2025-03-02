@@ -1,7 +1,14 @@
 import copy
+import os
 import sys
+
+from pathlib import Path
+
 # one level app + /astria
 sys.path.append("astria")
+
+import imagehash
+from PIL import Image
 
 from infer import *
 from astria_utils import JsonObj, MODELS_DIR
@@ -165,6 +172,16 @@ FLUX_LORA_2 = JsonObj(**{
     "model_type": "lora",
 })
 
+FLUX_EXTERNAL_LORA = JsonObj(**{
+    "id": "wow_details",
+    "name": "man",
+    "title": "Wow details comfyui compatible LoRA",
+    "branch": "flux1",
+    "token": "wow_details",
+    "train_token": "ohwx",
+    "model_type": "lora",
+})
+
 BASE_PROMPT = JsonObj(**{
     "id": "test-prompt-id",
     "text": "woman holding flowers",
@@ -178,12 +195,27 @@ IMG_POSE = "https://sdbooth2-production.s3.amazonaws.com/hrzevyfi6cjj2o64c7xogyv
 def name():
     return os.environ.get('PYTEST_CURRENT_TEST').split(':')[-1].split(' ')[0]
 
+test_name_invocation_count = {}
+
 def run_images(prompt, override_name=None):
     prompt.id = name() if override_name is None else override_name
+    if test_name_invocation_count.get(prompt.id, None) is None:
+        test_name_invocation_count[prompt.id] = 0
+    else:
+        test_name_invocation_count[prompt.id] += 1
+    count = test_name_invocation_count[prompt.id]
+    
     tune = JsonObj(**TUNE_FLUX.__dict__, prompts=[prompt])
     images = pipe.infer(tune)
     for i, image in enumerate(images):
-        image.save(MODELS_DIR + f"/{prompt.id}-{i}.jpg")
+        img_fn = f"{prompt.id}-{count}-{i}.jpg"
+        pth = MODELS_DIR + f"/{img_fn}"
+        image.save(pth)
+        if (Path(__file__).parent / 'results' / img_fn).exists():
+            hash_ref =  imagehash.phash(Image.open(
+                (Path(__file__).parent / 'results' / img_fn).absolute()))
+            hash_out =  imagehash.phash(Image.open(pth))
+            assert hash_ref == hash_out
     return images
 
 # Test that loras do not leak across test by having a test of before/after lora

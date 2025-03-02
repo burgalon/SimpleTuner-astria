@@ -276,8 +276,8 @@ class InferPipeline(InpaintFaceMixin, VtonMixin):
 
         all_match_groups = re.findall(self.reference_pattern_re, prompt.text)
         for match_groups in all_match_groups:
-            type, token, scale = match_groups
-            if type == "lora":
+            _type, token, scale = match_groups
+            if _type == "lora":
                 tune = next(iter([tune for tune in prompt.tunes if tune.token == token or str(tune.id) == token]), None)
                 if not tune:
                     raise Exception(f"Token {token} not found in prompt {prompt.id} tokens={prompt.tunes}")
@@ -859,12 +859,7 @@ class InferPipeline(InpaintFaceMixin, VtonMixin):
             images[i_image] = upscale_sr(self.sr_model, image, upscale_factor)
         return images
     
-    def infer_ace(self, prompt):
-        pass
-
-    def inference_loop(
-        self,
-        pipe, prompt, kwargs, num_images, images, joint_attention_kwargs,
+    def infer_ace_overrides(self, pipe, prompt, kwargs,
         ace_location=CACHE_DIR,
         orig_input_image=None,
         orig_mask_image=None,
@@ -872,87 +867,71 @@ class InferPipeline(InpaintFaceMixin, VtonMixin):
         _pipe = pipe
 
         ace_lora_unload_fn, ace_post_process_fn, slice_w, out_w, out_h = [None] * 5
-        if prompt.ace_plus:
-            self.pipe.transformer = self.pipe.transformer.to('cpu')
-            gc.collect()
-            torch.cuda.empty_cache()
 
-            ace_model_lora_loaded = False
+        self.pipe.transformer = self.pipe.transformer.to('cpu')
+        gc.collect()
+        torch.cuda.empty_cache()
+
+        ace_model_lora_loaded = False
+        tune_ace = next(iter(tune for tune in prompt.tunes
+            if tune.model_type == 'faceid' and tune.name in HUMAN_CLASS_NAMES), None)
+        if tune_ace is not None: 
+            ace_model_lora_loaded = 'portrait'
+        else:
             tune_ace = next(iter(tune for tune in prompt.tunes
-                if tune.model_type == 'faceid' and tune.name in HUMAN_CLASS_NAMES), None)
-            if tune_ace is not None: 
-                ace_model_lora_loaded = 'portrait'
-            else:
-                tune_ace = next(iter(tune for tune in prompt.tunes
-                    if tune.model_type == 'faceid'), None)
-                ace_model_lora_loaded = 'subject'
+                if tune.model_type == 'faceid'), None)
+            ace_model_lora_loaded = 'subject'
 
-            if orig_input_image is not None and orig_mask_image is not None:
-                ace_model_lora_loaded = 'local_editing'
+        if orig_input_image is not None and orig_mask_image is not None:
+            ace_model_lora_loaded = 'local_editing'
 
-            if tune_ace is None:
-                raise ValueError('ace_plus requires a reference image')
+        if tune_ace is None:
+            raise ValueError('ace_plus requires a reference image')
 
-            reference_image = load_images(tune_ace.face_swap_images[:1])[0]
+        reference_image = load_images(tune_ace.face_swap_images[:1])[0]
 
-            ace, ace_post_process_fn, ace_lora_unload_fn = ACEPlusDiffuserInference.init_from_pipe(
-                pipe,
-                self._model_path,
-                device,
-                ace_location,
-                ace_model_lora_loaded,
-            )
-            _pipe = ace.pipe
-            masked_image_latents, masked_image_latents_uncond, h, w, slice_w, out_w, out_h = ace.prepare_inputs(
-                prompt.text,
-                reference_image=reference_image,
-                edit_image=orig_input_image,
-                edit_mask=orig_mask_image,
-                seed=prompt.seed,
-                height=prompt.h or 1024,
-                width=prompt.w or 1024,
+        ace, ace_post_process_fn, ace_lora_unload_fn = ACEPlusDiffuserInference.init_from_pipe(
+            pipe,
+            self._model_path,
+            device,
+            ace_location,
+            ace_model_lora_loaded,
+        )
+        _pipe = ace.pipe
+        masked_image_latents, masked_image_latents_uncond, h, w, slice_w, out_w, out_h = ace.prepare_inputs(
+            prompt.text,
+            reference_image=reference_image,
+            edit_image=orig_input_image,
+            edit_mask=orig_mask_image,
+            seed=prompt.seed,
+            height=prompt.h or 1024,
+            width=prompt.w or 1024,
 
-            )
-            # prompt.h = h
-            # prompt.w = w
-            if kwargs.get('image', False):
-                del kwargs['image']
-            if kwargs.get('mask_image', False):
-                del kwargs['mask_image']
-            kwargs['masked_image_latents'] = masked_image_latents
-            kwargs['masked_image_latents_uncond'] = masked_image_latents_uncond
+        )
+        # prompt.h = h
+        # prompt.w = w
+        if kwargs.get('image', False):
+            del kwargs['image']
+        if kwargs.get('mask_image', False):
+            del kwargs['mask_image']
+        kwargs['masked_image_latents'] = masked_image_latents
+        kwargs['masked_image_latents_uncond'] = masked_image_latents_uncond
 
-            # Make the latent sequence size match up.
-            prompt.h = h
-            prompt.w = w
+        # Make the latent sequence size match up.
+        prompt.h = h
+        prompt.w = w
 
-        for i_image in range(num_images):
-            if 'image' in kwargs is not None and 'strength' in kwargs and kwargs['strength'] == 0:
-                print(f"T#{prompt.tune_id} P#{prompt.id} Skipping image {i_image} because strength=0. Probably just VTON or outpaint only?")
-                images.append(kwargs['image'])
-                continue
-
-            image = _pipe(
-                guidance_scale=float(prompt.cfg_scale if prompt.cfg_scale is not None else 3.5),
-                height=prompt.h or 1024,
-                width=prompt.w or 1024,
-                num_inference_steps=prompt.steps or 28,
-                generator=torch.Generator(device="cuda").manual_seed((prompt.seed or 42) + i_image),
-                joint_attention_kwargs=joint_attention_kwargs,
-                **kwargs,
-            ).images[0]
-            if is_terminated():
-                raise TerminateException("terminated")
-            if ace_post_process_fn is not None:
-                image = ace_post_process_fn(image, slice_w, out_w, out_h)
-            images.append(image)
-
-        if ace_lora_unload_fn:
-            self.pipe.transformer = self.pipe.transformer.to('cuda')
-            self.fill = None
+        del ace, pipe
+        def _ace_lora_unload_fn(ace_lora_unload_fn=ace_lora_unload_fn):
             gc.collect()
             torch.cuda.empty_cache()
-            # ace_lora_unload_fn()
+            self.pipe.transformer = self.pipe.transformer.to('cuda')
+            ace_lora_unload_fn()
+
+        def _ace_post_process_fn(_image, ace_post_process_fn=ace_post_process_fn):
+            return ace_post_process_fn(_image, slice_w, out_w, out_h)
+
+        return _pipe, _ace_post_process_fn, _ace_lora_unload_fn
 
     def infer_prompt(self, prompt, tune: JsonObj):
         parse_args(prompt)
@@ -990,8 +969,8 @@ class InferPipeline(InpaintFaceMixin, VtonMixin):
             if use_regional:
                 raise Exception("Can not use face ID with --use_regional")
             for match_groups in re.findall(self.reference_pattern_re, prompt.text):
-                type, token, scale = match_groups
-                if type == "faceid":
+                _type, token, scale = match_groups
+                if _type == "faceid":
                     tune = next(iter([tune for tune in prompt.tunes if tune.token == token or str(tune.id) == token]), None)
                     if not tune:
                         raise Exception(f"Token {token} not found in prompt {prompt.id} tokens={prompt.tunes}")
@@ -1000,7 +979,7 @@ class InferPipeline(InpaintFaceMixin, VtonMixin):
 
                     # Clean the match from the prompt
                     # also needs to be cleaned for VTON
-                    prompt.text = prompt.text.replace(f"<{type}:{token}:{scale}>", "")
+                    prompt.text = prompt.text.replace(f"<{_type}:{token}:{scale}>", "")
 
                     if tune.name in VTON_CATEGORIES:
                         pipe = self.pipe
@@ -1074,8 +1053,10 @@ class InferPipeline(InpaintFaceMixin, VtonMixin):
             pipe = self.pipe
 
         # For tests
-        self.last_pipe = pipe
-        images = []
+        if not prompt.ace_plus:
+            self.last_pipe = pipe
+        else:
+            self.last_pipe = 'ACE_plus'
         num_images = int(os.environ.get('NUM_IMAGES', prompt.num_images))
 
         if use_regional:
@@ -1133,16 +1114,45 @@ class InferPipeline(InpaintFaceMixin, VtonMixin):
 
         print(f"T#{prompt.tune_id} P#{prompt.id} pipe={pipe.__class__.__name__} {prompt.text=} loras={self.current_lora_weights_map[get_pipe_key_for_lora(pipe)]}")
 
-        self.inference_loop(
-            pipe,
-            prompt,
-            kwargs,
-            num_images,
-            images,
-            joint_attention_kwargs,
-            orig_input_image=orig_input_image,
-            orig_mask_image=orig_mask_image,
-        )
+        ace_post_process_fn, ace_lora_unload_fn = (None, None)
+        if prompt.ace_plus:
+            pipe, ace_post_process_fn, ace_lora_unload_fn = self.infer_ace_overrides(
+                pipe, prompt, kwargs,
+                ace_location=CACHE_DIR,
+                orig_input_image=orig_input_image,
+                orig_mask_image=orig_mask_image,
+            )
+
+        images = []
+
+        for i_image in range(num_images):
+            if 'image' in kwargs is not None and 'strength' in kwargs and kwargs['strength'] == 0:
+                print(f"T#{prompt.tune_id} P#{prompt.id} Skipping image {i_image} because strength=0. Probably just VTON or outpaint only?")
+                images.append(kwargs['image'])
+                continue
+
+            image = pipe(
+                guidance_scale=float(prompt.cfg_scale if prompt.cfg_scale is not None else 3.5),
+                height=prompt.h or 1024,
+                width=prompt.w or 1024,
+                num_inference_steps=prompt.steps or 28,
+                generator=torch.Generator(device="cuda").manual_seed((prompt.seed or 42) + i_image),
+                joint_attention_kwargs=joint_attention_kwargs,
+                **kwargs,
+            ).images[0]
+            if is_terminated():
+                raise TerminateException("terminated")
+            if ace_post_process_fn is not None:
+                image = ace_post_process_fn(image)
+            images.append(image)
+
+        if ace_lora_unload_fn is not None:
+            del ace_post_process_fn
+            pipe = None
+            self.fill = None
+
+            ace_lora_unload_fn()
+            del ace_lora_unload_fn
 
         if prompt.outpaint:
             images = self.outpaint(images, prompt, kwargs)

@@ -43,119 +43,125 @@ FLUX_ACE_TUNE_BIKE = JsonObj(**{
 })
 
 def test_fill_ace_portrait():
-    prompt = JsonObj(
-        **copy.copy(BASE_PROMPT.__dict__),
-        ace_plus=True,
-        seed=42,
-    )
-    prompt.text=f"Maintain the facial features. A woman is wearing a neat police uniform and sporting a badge. She is smiling with a friendly and confident demeanor. The background is blurred, featuring a cartoon logo"
+    prompt = JsonObj(**copy.copy(BASE_PROMPT.__dict__))
+    prompt.ace_plus = True
+    prompt.seed = 42
+    prompt.text = ("Maintain the facial features. A woman is wearing a neat police uniform and "
+                   "sporting a badge. She is smiling with a friendly and confident demeanor. "
+                   "The background is blurred, featuring a cartoon logo")
     prompt.tunes = [FLUX_ACE_TUNE_PORTRAIT]
     run_images(prompt)
-    assert isinstance(pipe.last_pipe, FluxFillPipeline)
+    assert pipe.last_pipe == "ACE_plus"
 
-def test_fill_ace_portrait_cfg():  
-    prompt = JsonObj(
-        **copy.copy(BASE_PROMPT.__dict__),
-        ace_plus=True,
-        fill_real_cfg=2.5,
-        seed=42,
-    )
-    prompt.text=f"Maintain the facial features. A woman is wearing a neat police uniform and sporting a badge. She is smiling with a friendly and confident demeanor. The background is blurred, featuring a cartoon logo"
+    run_images(BASE_PROMPT)
+    assert isinstance(pipe.last_pipe, FluxPipeline)
+
+def test_fill_ace_portrait_cfg():
+    prompt = JsonObj(**copy.copy(BASE_PROMPT.__dict__))
+    prompt.ace_plus = True
+    prompt.fill_real_cfg = 2.5
+    prompt.seed = 42
+    prompt.text = ("Maintain the facial features. A woman is wearing a neat police uniform and "
+                   "sporting a badge. She is smiling with a friendly and confident demeanor. "
+                   "The background is blurred, featuring a cartoon logo")
     prompt.tunes = [FLUX_ACE_TUNE_PORTRAIT]
     run_images(prompt)
-    assert isinstance(pipe.last_pipe, FluxFillPipeline)
+    assert pipe.last_pipe == "ACE_plus"
 
 def test_fill_ace_portrait_cfg_slg():
-    prompt = JsonObj(
-        **copy.copy(BASE_PROMPT.__dict__),
-        ace_plus=True,
-        cfg_scale=25,
-        fill_real_cfg=2.2,
-        fill_slg=json.dumps([[8, 12], [4, 7, 12]]),
-        seed=42,
-    )
-    prompt.text=f"Maintain the facial features. A woman is wearing a neat police uniform and sporting a badge. She is smiling with a friendly and confident demeanor. The background is blurred, featuring a cartoon logo"
+    prompt = JsonObj(**copy.copy(BASE_PROMPT.__dict__))
+    prompt.ace_plus = True
+    prompt.cfg_scale = 25
+    prompt.fill_real_cfg = 2.2
+    prompt.fill_slg = json.dumps([[8, 12], [4, 7, 12]])
+    prompt.seed = 42
+    prompt.text = ("Maintain the facial features. A woman is wearing a neat police uniform and "
+                   "sporting a badge. She is smiling with a friendly and confident demeanor. "
+                   "The background is blurred, featuring a cartoon logo")
     prompt.tunes = [FLUX_ACE_TUNE_PORTRAIT]
     run_images(prompt)
-    assert isinstance(pipe.last_pipe, FluxFillPipeline)
+    assert pipe.last_pipe == "ACE_plus"
 
 def test_fill_ace_subject():
-    prompt = JsonObj(
-        **copy.copy(BASE_PROMPT.__dict__),
-        ace_plus=True,
-        seed=42,
-    )
-    prompt.text=f"Display the logo in a minimalist style printed in white on a matte black ceramic coffee mug, alongside a steaming cup of coffee on a cozy cafe table."
+    prompt = JsonObj(**copy.copy(BASE_PROMPT.__dict__))
+    prompt.ace_plus = True
+    prompt.seed = 42
+    prompt.text = ("Display the logo in a minimalist style printed in white on a matte black ceramic "
+                   "coffee mug, alongside a steaming cup of coffee on a cozy cafe table.")
     prompt.tunes = [FLUX_ACE_TUNE_LOGO]
     run_images(prompt)
-    assert isinstance(pipe.last_pipe, FluxFillPipeline)
+    assert pipe.last_pipe == "ACE_plus"
 
 def test_fill_ace_subject_cfg():
-    prompt = JsonObj(
-        **copy.copy(BASE_PROMPT.__dict__),
-        ace_plus=True,
-        cfg_scale=10,
-        fill_real_cfg=2.2,
-        seed=42,
-    )
-    prompt.text=f"Display the logo in a minimalist style printed in white on a matte black ceramic coffee mug, alongside a steaming cup of coffee on a cozy cafe table."
+    prompt = JsonObj(**copy.copy(BASE_PROMPT.__dict__))
+    prompt.ace_plus = True
+    prompt.cfg_scale = 10
+    prompt.fill_real_cfg = 2.2
+    prompt.seed = 42
+    prompt.text = ("Display the logo in a minimalist style printed in white on a matte black ceramic "
+                   "coffee mug, alongside a steaming cup of coffee on a cozy cafe table.")
     prompt.tunes = [FLUX_ACE_TUNE_LOGO]
     run_images(prompt)
-    assert isinstance(pipe.last_pipe, FluxFillPipeline)
+    assert pipe.last_pipe == "ACE_plus"
 
 def test_fill_ace_subject_cfg_slg():
-    prompt = JsonObj(
-        **copy.copy(BASE_PROMPT.__dict__),
-        ace_plus=True,
-        cfg_scale=10,
-        fill_real_cfg=2.2,
-        fill_slg=json.dumps([[8, 12], [4, 7, 12]]),
-        seed=42,
-    )
-    prompt.text=f"Display the logo in a minimalist style printed in white on a matte black ceramic coffee mug, alongside a steaming cup of coffee on a cozy cafe table."
+    prompt = JsonObj(**copy.copy(BASE_PROMPT.__dict__))
+    prompt.ace_plus = True
+    prompt.cfg_scale = 10
+    prompt.fill_real_cfg = 2.2
+    prompt.fill_slg = json.dumps([[8, 12], [4, 7, 12]])
+    prompt.seed = 42
+    prompt.text = ("Display the logo in a minimalist style printed in white on a matte black ceramic "
+                   "coffee mug, alongside a steaming cup of coffee on a cozy cafe table.")
     prompt.tunes = [FLUX_ACE_TUNE_LOGO]
     run_images(prompt)
-    assert isinstance(pipe.last_pipe, FluxFillPipeline)
+    assert pipe.last_pipe == "ACE_plus"
 
 def test_fill_ace_subject_bike():
-    prompt = JsonObj(
-        **copy.copy(BASE_PROMPT.__dict__),
-        ace_plus=True,
-        seed=42,
-        h=1024,
-        w=1536,
-    )
-    prompt.text=f"A dramatic monochromatic studio portrait of a Triumph motorcycle, harsh rim lighting creating sharp metallic highlights, deep shadows emphasizing mechanical curves and textures, minimalist black backdrop, smoke elements adding atmosphere, shot with Phase One medium format camera, precise lighting ratios, ultra-sharp details, high contrast processing"
+    prompt = JsonObj(**copy.copy(BASE_PROMPT.__dict__))
+    prompt.ace_plus = True
+    prompt.seed = 42
+    prompt.h = 1024
+    prompt.w = 1536
+    prompt.text = ("A dramatic monochromatic studio portrait of a Triumph motorcycle, harsh rim lighting "
+                   "creating sharp metallic highlights, deep shadows emphasizing mechanical curves and "
+                   "textures, minimalist black backdrop, smoke elements adding atmosphere, shot with "
+                   "Phase One medium format camera, precise lighting ratios, ultra-sharp details, high "
+                   "contrast processing")
     prompt.tunes = [FLUX_ACE_TUNE_BIKE]
     run_images(prompt)
-    assert isinstance(pipe.last_pipe, FluxFillPipeline)
+    assert pipe.last_pipe == "ACE_plus"
 
 def test_fill_ace_subject_cfg_bike():
-    prompt = JsonObj(
-        **copy.copy(BASE_PROMPT.__dict__),
-        ace_plus=True,
-        fill_real_cfg=2.2,
-        seed=42,
-        h=1024,
-        w=1536,
-    )
-    prompt.text=f"A dramatic monochromatic studio portrait of a Triumph motorcycle, harsh rim lighting creating sharp metallic highlights, deep shadows emphasizing mechanical curves and textures, minimalist black backdrop, smoke elements adding atmosphere, shot with Phase One medium format camera, precise lighting ratios, ultra-sharp details, high contrast processing"
+    prompt = JsonObj(**copy.copy(BASE_PROMPT.__dict__))
+    prompt.ace_plus = True
+    prompt.fill_real_cfg = 2.2
+    prompt.seed = 42
+    prompt.h = 1024
+    prompt.w = 1536
+    prompt.text = ("A dramatic monochromatic studio portrait of a Triumph motorcycle, harsh rim lighting "
+                   "creating sharp metallic highlights, deep shadows emphasizing mechanical curves and "
+                   "textures, minimalist black backdrop, smoke elements adding atmosphere, shot with "
+                   "Phase One medium format camera, precise lighting ratios, ultra-sharp details, high "
+                   "contrast processing")
     prompt.tunes = [FLUX_ACE_TUNE_BIKE]
     run_images(prompt)
-    assert isinstance(pipe.last_pipe, FluxFillPipeline)
+    assert pipe.last_pipe == "ACE_plus"
 
 def test_fill_ace_subject_cfg_slg_bike():
-    prompt = JsonObj(
-        **copy.copy(BASE_PROMPT.__dict__),
-        ace_plus=True,
-        cfg_scale=1.0,
-        fill_real_cfg=2.2,
-        fill_slg=json.dumps([[8, 12], [4, 7, 12]]),
-        seed=42,
-        h=1024,
-        w=1536,
-    )
-    prompt.text=f"A dramatic monochromatic studio portrait of a Triumph motorcycle, harsh rim lighting creating sharp metallic highlights, deep shadows emphasizing mechanical curves and textures, minimalist black backdrop, smoke elements adding atmosphere, shot with Phase One medium format camera, precise lighting ratios, ultra-sharp details, high contrast processing"
+    prompt = JsonObj(**copy.copy(BASE_PROMPT.__dict__))
+    prompt.ace_plus = True
+    prompt.cfg_scale = 1.0
+    prompt.fill_real_cfg = 2.2
+    prompt.fill_slg = json.dumps([[8, 12], [4, 7, 12]])
+    prompt.seed = 42
+    prompt.h = 1024
+    prompt.w = 1536
+    prompt.text = ("A dramatic monochromatic studio portrait of a Triumph motorcycle, harsh rim lighting "
+                   "creating sharp metallic highlights, deep shadows emphasizing mechanical curves and "
+                   "textures, minimalist black backdrop, smoke elements adding atmosphere, shot with "
+                   "Phase One medium format camera, precise lighting ratios, ultra-sharp details, high "
+                   "contrast processing")
     prompt.tunes = [FLUX_ACE_TUNE_BIKE]
     run_images(prompt)
-    assert isinstance(pipe.last_pipe, FluxFillPipeline)
+    assert pipe.last_pipe == "ACE_plus"

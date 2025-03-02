@@ -118,8 +118,9 @@ class ACEPlusDiffuserInference():
             return self.image_processor.postprocess(img, slice_w, out_w, out_h)
 
         def unload_function():
-            self.pipe.delete_adapters(["ace_lora_adapter"])
-            self.pipe.register_modules(tokenizer_2=original_tokenizer_2)
+            # TODO: Restore this.
+            # self.pipe.delete_adapters(["ace_lora_adapter"])
+            # self.pipe.register_modules(tokenizer_2=original_tokenizer_2)
             return
 
         return self, post_process_fn, unload_function
