@@ -59,7 +59,8 @@ def test_fill_ace_portrait():
 def test_fill_ace_portrait_cfg():
     prompt = JsonObj(**copy.copy(BASE_PROMPT.__dict__))
     prompt.ace_plus = True
-    prompt.fill_real_cfg = 2.5
+    prompt.cfg_scale = 30
+    prompt.fill_real_cfg = 2.1
     prompt.seed = 42
     prompt.text = ("Maintain the facial features. A woman is wearing a neat police uniform and "
                    "sporting a badge. She is smiling with a friendly and confident demeanor. "
@@ -71,8 +72,8 @@ def test_fill_ace_portrait_cfg():
 def test_fill_ace_portrait_cfg_slg():
     prompt = JsonObj(**copy.copy(BASE_PROMPT.__dict__))
     prompt.ace_plus = True
-    prompt.cfg_scale = 25
-    prompt.fill_real_cfg = 2.2
+    prompt.cfg_scale = 30
+    prompt.fill_real_cfg = 2.1
     prompt.fill_slg = json.dumps([[8, 12], [4, 7, 12]])
     prompt.seed = 42
     prompt.text = ("Maintain the facial features. A woman is wearing a neat police uniform and "
@@ -95,8 +96,8 @@ def test_fill_ace_subject():
 def test_fill_ace_subject_cfg():
     prompt = JsonObj(**copy.copy(BASE_PROMPT.__dict__))
     prompt.ace_plus = True
-    prompt.cfg_scale = 10
-    prompt.fill_real_cfg = 2.2
+    prompt.cfg_scale = 30
+    prompt.fill_real_cfg = 2.1
     prompt.seed = 42
     prompt.text = ("Display the logo in a minimalist style printed in white on a matte black ceramic "
                    "coffee mug, alongside a steaming cup of coffee on a cozy cafe table.")
@@ -107,8 +108,8 @@ def test_fill_ace_subject_cfg():
 def test_fill_ace_subject_cfg_slg():
     prompt = JsonObj(**copy.copy(BASE_PROMPT.__dict__))
     prompt.ace_plus = True
-    prompt.cfg_scale = 10
-    prompt.fill_real_cfg = 2.2
+    prompt.cfg_scale = 30
+    prompt.fill_real_cfg = 2.1
     prompt.fill_slg = json.dumps([[8, 12], [4, 7, 12]])
     prompt.seed = 42
     prompt.text = ("Display the logo in a minimalist style printed in white on a matte black ceramic "
@@ -135,7 +136,8 @@ def test_fill_ace_subject_bike():
 def test_fill_ace_subject_cfg_bike():
     prompt = JsonObj(**copy.copy(BASE_PROMPT.__dict__))
     prompt.ace_plus = True
-    prompt.fill_real_cfg = 2.2
+    prompt.cfg_scale = 30
+    prompt.fill_real_cfg = 2.1
     prompt.seed = 42
     prompt.h = 1024
     prompt.w = 1536
@@ -151,8 +153,8 @@ def test_fill_ace_subject_cfg_bike():
 def test_fill_ace_subject_cfg_slg_bike():
     prompt = JsonObj(**copy.copy(BASE_PROMPT.__dict__))
     prompt.ace_plus = True
-    prompt.cfg_scale = 1.0
-    prompt.fill_real_cfg = 2.2
+    prompt.cfg_scale = 30
+    prompt.fill_real_cfg = 2.1
     prompt.fill_slg = json.dumps([[8, 12], [4, 7, 12]])
     prompt.seed = 42
     prompt.h = 1024
