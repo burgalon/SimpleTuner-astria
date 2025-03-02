@@ -52,10 +52,11 @@ def test_outpaint():
 def test_fill_background_normal_slg():
     prompt = JsonObj(
         **copy.copy(BASE_PROMPT.__dict__),
-        input_image=IMG_POSE,
-        fill_real_cfg=6.0,
-        fill_slg='default',
     )
+    prompt.input_image = IMG_POSE
+    prompt.cfg_scale = 20
+    prompt.fill_real_cfg = 2.5
+    prompt.fill_slg = 'default'
     prompt.text=f"lush forest --mask_prompt foreground --mask_invert --mask_dilate 0.5% --fill"
     run_images(prompt)
     assert isinstance(pipe.last_pipe, FluxFillPipeline)
@@ -68,12 +69,13 @@ def test_fill_background_product_slg():
         # earings
         # input_image='https://sdbooth2-production.s3.amazonaws.com/u77j61zzd4gbqdsvkhmd9p1cz0d1',
         # dogs
-        input_image='https://sdbooth2-production.s3.amazonaws.com/a93ocfwgzocdrmq1q4wizwajnhvm',
-        fill_real_cfg=6.0,
-        fill_slg='default',
     )
     # prompt.num_images = 8
     prompt.w = prompt.h = None
+    prompt.input_image = 'https://sdbooth2-production.s3.amazonaws.com/a93ocfwgzocdrmq1q4wizwajnhvm'
+    prompt.cfg_scale = 20
+    prompt.fill_real_cfg = 2.5
+    prompt.fill_slg = 'default'
     prompt.text=f"studio shot, on a rock, surrounded by tropical vegetation, visible moisture in the air, water drops, over a blurry background, drama, high contrast image, teal and orange photo filter --mask_prompt background --mask_dilate 0 --mask_blur 0 --mask_inc_brightness 10 --fill"
     run_images(prompt)
     assert isinstance(pipe.last_pipe, FluxFillPipeline)
@@ -81,10 +83,11 @@ def test_fill_background_product_slg():
 def test_fill_foreground_slg():
     prompt = JsonObj(
         **copy.copy(BASE_PROMPT.__dict__),
-        input_image=IMG_POSE,
-        fill_real_cfg=6.0,
-        fill_slg='default',
     )
+    prompt.input_image = IMG_POSE
+    prompt.cfg_scale = 20
+    prompt.fill_real_cfg = 2.5
+    prompt.fill_slg = 'default'
     prompt.text=f"<lora:{FLUX_LORA.id}:1> {FLUX_LORA.train_token} woman with black blouse --mask_prompt foreground --mask_dilate 1% --fill"
     prompt.tunes=[FLUX_LORA]
     run_images(prompt)
