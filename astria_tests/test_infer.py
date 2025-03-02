@@ -232,6 +232,15 @@ def test_txt2img_lora():
     run_images(prompt)
     assert isinstance(pipe.last_pipe, FluxPipeline)
 
+def test_txt2img_civitai_lora():
+    prompt = JsonObj(
+        **copy.copy(BASE_PROMPT.__dict__),
+    )
+    prompt.text=f"<lora:{FLUX_EXTERNAL_LORA.id}:1> {FLUX_EXTERNAL_LORA.train_token} woman holding flowers"
+    prompt.tunes=[FLUX_EXTERNAL_LORA]
+    run_images(prompt)
+    assert isinstance(pipe.last_pipe, FluxPipeline)
+
 def test_txt2img_after():
     run_images(BASE_PROMPT)
     assert isinstance(pipe.last_pipe, FluxPipeline)
