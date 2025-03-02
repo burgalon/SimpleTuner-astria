@@ -167,7 +167,7 @@ class ACEPlusDiffuserInference():
         seed=42,
     ) -> torch.Tensor:
         # TODO is this needed?
-        reference_image = scale_long_edge_and_pad(reference_image)
+        reference_image = scale_long_edge_and_pad(reference_image, seed=seed)
 
         if isinstance(prompt_text, str):
             prompt = [prompt_text]

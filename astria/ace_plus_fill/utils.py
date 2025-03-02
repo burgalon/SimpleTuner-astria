@@ -15,32 +15,19 @@ from PIL import Image
 from collections import Counter
 
 
-def get_most_common_color(image):
-    """
-    Returns the most common color in the given image.
-    If the image has many colors, it will downsample to speed up the process.
-    """
-    # Ensure image is in RGB mode
-    image = image.convert("RGB")
-    
-    # You can try to get all colors; if the image is very large,
-    # you might want to resize it for performance.
-    # Here, we try the full image:
-    max_colors = image.width * image.height
-    colors = image.getcolors(max_colors)
-    
-    # If too many colors, downsample
-    if colors is None:
-        small_image = image.resize((image.width // 10, image.height // 10))
-        colors = small_image.getcolors(small_image.width * small_image.height)
-    
-    # Get the most common color (the one with the highest count)
-    most_common_color = max(colors, key=lambda x: x[0])[1]
-    return most_common_color
+def get_most_common_color(img: Image.Image) -> tuple:
+    # Get all colors along with their counts.
+    colors = img.getcolors(img.size[0] * img.size[1])
+    # Sort first by frequency (descending) then by color value (ascending) to break ties consistently.
+    colors.sort(key=lambda x: (-x[0], x[1]))
+    return colors[0][1]
 
 
-def scale_long_edge_and_pad(img: Image.Image, sz=1024) -> Image.Image:
-    # Open the image
+def scale_long_edge_and_pad(img: Image.Image, sz=1024, seed=None) -> Image.Image:
+    if seed is not None:
+        random.seed(seed)
+        np.random.seed(seed)
+
     original_width, original_height = img.size
 
     # Compute scale factor: scale long edge to sz pixels.
@@ -64,7 +51,6 @@ def scale_long_edge_and_pad(img: Image.Image, sz=1024) -> Image.Image:
     # Paste the resized image onto the new background.
     new_img.paste(resized_img, (left, top))
 
-    # Save the final image.
     return new_img
 
 
