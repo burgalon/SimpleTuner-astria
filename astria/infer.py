@@ -948,6 +948,7 @@ class InferPipeline(InpaintFaceMixin, VtonMixin):
             images.append(image)
 
         if ace_lora_unload_fn:
+            self.pipe.transformer = self.pipe.transformer.to('cuda')
             self.fill = None
             gc.collect()
             torch.cuda.empty_cache()
