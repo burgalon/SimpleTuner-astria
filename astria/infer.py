@@ -1121,7 +1121,7 @@ class InferPipeline(InpaintFaceMixin, VtonMixin):
             )
             kwargs['negative_prompt_embeds'] = negative_prompt_embeds
             kwargs['negative_pooled_prompt_embeds'] = negative_pooled_prompt_embeds
-        else:
+        elif isinstance(pipe, FluxFillPipeline) and (not prompt.cfg_scale or prompt.cfg_scale < 7):
             prompt.cfg_scale = 50
 
         if prompt.fill_real_cfg is not None and prompt.fill_slg is not None:
