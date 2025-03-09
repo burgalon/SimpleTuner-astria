@@ -178,7 +178,7 @@ class ACEPlusDiffuserInference():
         seed = seed if seed >= 0 else random.randint(0, 2 ** 32 - 1)
         uncond_img = Image.open(UNCOND_IMAGE_LOC)
         uncond_img = random_crop_pil(uncond_img, reference_image_sz)
-        uncond_img, mask, out_h, out_w, slice_w = self.image_processor.preprocess(
+        uncond_img, mask, _, _, out_h, out_w, slice_w = self.image_processor.preprocess(
             uncond_img, edit_image, edit_mask, repainting_scale=repainting_scale,
             height=height, width=width)
         h, w = uncond_img.shape[1:]
@@ -186,7 +186,7 @@ class ACEPlusDiffuserInference():
         masked_image_latents_uncond = self.prepare_input(uncond_img, mask,
             batch_size=len(prompt), height=h, width=w, generator=generator)
 
-        image, mask, out_h, out_w, slice_w = self.image_processor.preprocess(
+        image, mask, _, _, out_h, out_w, slice_w = self.image_processor.preprocess(
             reference_image, edit_image, edit_mask, repainting_scale = repainting_scale,
             height=height, width=width)
         h, w = image.shape[1:]

@@ -906,6 +906,7 @@ class InferPipeline(InpaintFaceMixin, VtonMixin):
             seed=prompt.seed or 42,
             height=prompt.h or 1024,
             width=prompt.w or 1024,
+            repainting_scale=1.0 if ace_model_lora_loaded == 'local_editing' else 0,
         )
         # prompt.h = h
         # prompt.w = w

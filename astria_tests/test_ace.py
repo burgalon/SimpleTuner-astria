@@ -8,6 +8,7 @@ from infer import *
 from test_infer import pipe, BASE_PROMPT, run_images, IMG_POSE, FLUX_LORA, JsonObj, FluxFillPipeline, FLUX_LORA_SHOE, \
     FLUX_LORA_MAN_MARCO, FLUX_LORA_MAN, FLUX_CARTOON, FLUX_LORA_WOMAN_2, FLUX_LORA_DRESS, FLUX_LORA_COAT, FLUX_LORA_PANTS
 from pathlib import Path
+from PIL import Image
 
 FLUX_ACE_TUNE_PORTRAIT = JsonObj(**{
     "id": -1,
@@ -17,6 +18,33 @@ FLUX_ACE_TUNE_PORTRAIT = JsonObj(**{
     "model_type": "faceid",
     "face_swap_images": [
         'https://sdbooth2-production.s3.amazonaws.com/l7pp1gzy1lthev4u1fiwvdt5l9tg',
+    ],
+})
+
+
+FLUX_ACE_TUNE_PORTRAIT2 = JsonObj(**{
+    "id": -1,
+    "name": "woman",
+    "title": "",
+    "branch": "flux1",
+    "model_type": "faceid",
+    "face_swap_images": [
+        str(
+            (Path(__file__).resolve().parent.parent / 'astria_tests' / 'fixtures' / '19477436-before-inpaint-0.jpg').absolute()
+        ),
+    ],
+})
+
+FLUX_ACE_TUNE_FURNITURE = JsonObj(**{
+    "id": -1,
+    "name": "logo",
+    "title": "",
+    "branch": "flux1",
+    "model_type": "faceid",
+    "face_swap_images": [
+        str(
+            (Path(__file__).resolve().parent.parent / 'astria_tests' / 'fixtures' / 'furniture_reference.png').absolute()
+        ),
     ],
 })
 
@@ -42,6 +70,7 @@ FLUX_ACE_TUNE_BIKE = JsonObj(**{
     ],
 })
 
+
 def test_fill_ace_portrait():
     prompt = JsonObj(**copy.copy(BASE_PROMPT.__dict__))
     prompt.ace_plus = True
@@ -55,6 +84,74 @@ def test_fill_ace_portrait():
 
     run_images(BASE_PROMPT)
     assert isinstance(pipe.last_pipe, FluxPipeline)
+
+def test_fill_ace_inpaint_portrait():
+    prompt = JsonObj(**copy.copy(BASE_PROMPT.__dict__))
+    prompt.ace_plus = True
+    prompt.seed = 42
+    prompt.cfg_scale = 50
+    prompt.text = ("The woman faces the camera in a yoga pose")
+    prompt.tunes = [FLUX_ACE_TUNE_PORTRAIT2]
+    prompt.input_image = Image.open(
+        Path(__file__).resolve().parent.parent / 'astria_tests' / 'fixtures' / 'yoga.jpg'
+    )
+    prompt.mask_image = Image.open(
+        Path(__file__).resolve().parent.parent / 'astria_tests' / 'fixtures' / 'yoga_mask.png',
+    ).convert("L")
+    run_images(prompt)
+    assert pipe.last_pipe == "ACE_plus"
+
+def test_fill_ace_inpaint_portrait_cfg_slg():
+    prompt = JsonObj(**copy.copy(BASE_PROMPT.__dict__))
+    prompt.ace_plus = True
+    prompt.seed = 42
+    prompt.cfg_scale = 30
+    prompt.fill_real_cfg = 2.1
+    prompt.fill_slg = json.dumps([[8, 12], [4, 7, 12]])
+    prompt.text = ("The woman faces the camera in a yoga pose")
+    prompt.tunes = [FLUX_ACE_TUNE_PORTRAIT2]
+    prompt.input_image = Image.open(
+        Path(__file__).resolve().parent.parent / 'astria_tests' / 'fixtures' / 'yoga.jpg'
+    )
+    prompt.mask_image = Image.open(
+        Path(__file__).resolve().parent.parent / 'astria_tests' / 'fixtures' / 'yoga_mask.png',
+    ).convert("L")
+    run_images(prompt)
+    assert pipe.last_pipe == "ACE_plus"
+
+def test_fill_ace_inpaint_furniture():
+    prompt = JsonObj(**copy.copy(BASE_PROMPT.__dict__))
+    prompt.ace_plus = True
+    prompt.seed = 42
+    prompt.cfg_scale = 50
+    prompt.text = ("The furniture has a TV on it in the living room")
+    prompt.tunes = [FLUX_ACE_TUNE_FURNITURE]
+    prompt.input_image = Image.open(
+        Path(__file__).resolve().parent.parent / 'astria_tests' / 'fixtures' / 'furniture_inpaint_image.jpg'
+    )
+    prompt.mask_image = Image.open(
+        Path(__file__).resolve().parent.parent / 'astria_tests' / 'fixtures' / 'furniture_mask.png',
+    ).convert("L")
+    run_images(prompt)
+    assert pipe.last_pipe == "ACE_plus"
+
+def test_fill_ace_inpaint_furniture_cfg_slg():
+    prompt = JsonObj(**copy.copy(BASE_PROMPT.__dict__))
+    prompt.ace_plus = True
+    prompt.seed = 42
+    prompt.cfg_scale = 20
+    prompt.fill_real_cfg = 2.8
+    prompt.fill_slg = json.dumps([[8, 12], [4, 7, 12]])
+    prompt.text = ("The furniture has a TV on it in the living room")
+    prompt.tunes = [FLUX_ACE_TUNE_FURNITURE]
+    prompt.input_image = Image.open(
+        Path(__file__).resolve().parent.parent / 'astria_tests' / 'fixtures' / 'furniture_inpaint_image.jpg'
+    )
+    prompt.mask_image = Image.open(
+        Path(__file__).resolve().parent.parent / 'astria_tests' / 'fixtures' / 'furniture_mask.png',
+    ).convert("L")
+    run_images(prompt)
+    assert pipe.last_pipe == "ACE_plus"
 
 def test_fill_ace_portrait_cfg():
     prompt = JsonObj(**copy.copy(BASE_PROMPT.__dict__))

@@ -117,7 +117,10 @@ class ACEPlusImageProcessor():
                    edit_mask=None,
                    height=1024,
                    width=1024,
-                   repainting_scale = 1.0):
+                   repainting_scale = 1.0,
+                   keep_pixels = False,
+                   keep_pixels_rate = 0.8,
+                   use_change = False):
         reference_image = self.image_check(reference_image)
         edit_image = self.image_check(edit_image)
         # for reference generation
@@ -125,26 +128,45 @@ class ACEPlusImageProcessor():
             edit_image = torch.zeros([3, height, width])
             edit_mask = torch.ones([1, height, width])
         else:
-            edit_mask = np.asarray(edit_mask)
-            edit_mask = np.where(edit_mask > 128, 1, 0)
-            edit_mask = edit_mask.astype(
-                np.float32) if np.any(edit_mask) else np.ones_like(edit_mask).astype(
-                np.float32)
-            edit_mask = torch.tensor(edit_mask).unsqueeze(0)
+            if edit_mask is None:
+                _, eH, eW = edit_image.shape
+                edit_mask = np.ones((eH, eW))
+            else:
+                edit_mask = np.asarray(edit_mask)
+                edit_mask = np.where(edit_mask > 128, 1, 0)
+                edit_mask = edit_mask.astype(
+                    np.float32) if np.any(edit_mask) else np.ones_like(edit_mask).astype(
+                    np.float32)
+                edit_mask = torch.tensor(edit_mask).unsqueeze(0)
+            # edit_mask = edit_mask.squeeze(0).permute(2, 0, 1)
 
         edit_image = edit_image * (1 - edit_mask * repainting_scale)
-
 
         out_h, out_w = edit_image.shape[-2:]
 
         assert edit_mask is not None
         if reference_image is not None:
-        # align height with edit_image
             _, H, W = reference_image.shape
             _, eH, eW = edit_image.shape
-            scale = eH / H
-            tH, tW = eH, int(W * scale)
-            reference_image = T.Resize((tH, tW), interpolation=T.InterpolationMode.BILINEAR, antialias=True)(reference_image)
+            if not keep_pixels:
+                # align height with edit_image
+                scale = eH / H
+                tH, tW = eH, int(W * scale)
+                reference_image = T.Resize((tH, tW), interpolation=T.InterpolationMode.BILINEAR, antialias=True)(
+                    reference_image)
+            else:
+                # padding
+                if H >= keep_pixels_rate * eH:
+                    tH = int(eH * keep_pixels_rate)
+                    scale = tH/H
+                    tW = int(W * scale)
+                    reference_image = T.Resize((tH, tW), interpolation=T.InterpolationMode.BILINEAR, antialias=True)(
+                        reference_image)
+                rH, rW = reference_image.shape[-2:]
+                delta_w = 0
+                delta_h = eH - rH
+                padding = (delta_w // 2, delta_h // 2, delta_w - (delta_w // 2), delta_h - (delta_h // 2))
+                reference_image = T.Pad(padding, fill=0, padding_mode="constant")(reference_image)
             edit_image = torch.cat([reference_image, edit_image], dim=-1)
             edit_mask = torch.cat([torch.zeros([1, reference_image.shape[1], reference_image.shape[2]]), edit_mask], dim=-1)
             slice_w = reference_image.shape[-1]
@@ -160,7 +182,14 @@ class ACEPlusImageProcessor():
         edit_image = T.Resize((rH, rW), interpolation=T.InterpolationMode.BILINEAR, antialias=True)(edit_image)
         edit_mask = T.Resize((rH, rW), interpolation=T.InterpolationMode.NEAREST_EXACT, antialias=True)(edit_mask)
 
-        return edit_image, edit_mask, out_h, out_w, slice_w
+        change_image = None
+        content_image = edit_image
+        if use_change:
+            change_image = edit_image * edit_mask
+            edit_image = edit_image * (1 - edit_mask)
+        else:
+            change_image = None
+        return edit_image, edit_mask, change_image, content_image, out_h, out_w, slice_w
 
 
     def postprocess(self, image, slice_w, out_w, out_h):
