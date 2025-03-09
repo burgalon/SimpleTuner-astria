@@ -35,6 +35,17 @@ FLUX_ACE_TUNE_PORTRAIT2 = JsonObj(**{
     ],
 })
 
+FLUX_ACE_TUNE_PORTRAIT_ELON = JsonObj(**{
+    "id": -1,
+    "name": "man",
+    "title": "",
+    "branch": "flux1",
+    "model_type": "faceid",
+    "face_swap_images": [
+        "https://sdbooth2-production.s3.amazonaws.com/mj4x6ilylxma17ghadyu46emnuci",
+    ],
+})
+
 FLUX_ACE_TUNE_FURNITURE = JsonObj(**{
     "id": -1,
     "name": "logo",
@@ -90,13 +101,13 @@ def test_fill_ace_inpaint_portrait():
     prompt.ace_plus = True
     prompt.seed = 42
     prompt.cfg_scale = 50
-    prompt.text = ("The woman faces the camera in a yoga pose")
-    prompt.tunes = [FLUX_ACE_TUNE_PORTRAIT2]
+    prompt.text = ("The man is facing the camera and is serious")
+    prompt.tunes = [FLUX_ACE_TUNE_PORTRAIT_ELON]
     prompt.input_image = Image.open(
-        Path(__file__).resolve().parent.parent / 'astria_tests' / 'fixtures' / 'yoga.jpg'
+        Path(__file__).resolve().parent.parent / 'astria_tests' / 'fixtures' / 'portrait_inpaint_image.jpg'
     )
     prompt.mask_image = Image.open(
-        Path(__file__).resolve().parent.parent / 'astria_tests' / 'fixtures' / 'yoga_mask.png',
+        Path(__file__).resolve().parent.parent / 'astria_tests' / 'fixtures' / 'portrait_inpaint_mask.png',
     ).convert("L")
     run_images(prompt)
     assert pipe.last_pipe == "ACE_plus"
@@ -108,13 +119,13 @@ def test_fill_ace_inpaint_portrait_cfg_slg():
     prompt.cfg_scale = 30
     prompt.fill_real_cfg = 2.1
     prompt.fill_slg = json.dumps([[8, 12], [4, 7, 12]])
-    prompt.text = ("The woman faces the camera in a yoga pose")
+    prompt.text = ("The man is facing the camera and is serious")
     prompt.tunes = [FLUX_ACE_TUNE_PORTRAIT2]
     prompt.input_image = Image.open(
-        Path(__file__).resolve().parent.parent / 'astria_tests' / 'fixtures' / 'yoga.jpg'
+        Path(__file__).resolve().parent.parent / 'astria_tests' / 'fixtures' / 'portrait_inpaint_image.jpg'
     )
     prompt.mask_image = Image.open(
-        Path(__file__).resolve().parent.parent / 'astria_tests' / 'fixtures' / 'yoga_mask.png',
+        Path(__file__).resolve().parent.parent / 'astria_tests' / 'fixtures' / 'portrait_inpaint_mask.png',
     ).convert("L")
     run_images(prompt)
     assert pipe.last_pipe == "ACE_plus"

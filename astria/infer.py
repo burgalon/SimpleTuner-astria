@@ -875,6 +875,7 @@ class InferPipeline(InpaintFaceMixin, VtonMixin):
         ace_model_lora_loaded = False
         tune_ace = next(iter(tune for tune in prompt.tunes
             if tune.model_type == 'faceid' and tune.name in HUMAN_CLASS_NAMES), None)
+        is_person = bool(tune_ace)
         if tune_ace is not None: 
             ace_model_lora_loaded = 'portrait'
         else:
@@ -882,7 +883,7 @@ class InferPipeline(InpaintFaceMixin, VtonMixin):
                 if tune.model_type == 'faceid'), None)
             ace_model_lora_loaded = 'subject'
 
-        if orig_input_image is not None and orig_mask_image is not None:
+        if not is_person and orig_input_image is not None and orig_mask_image is not None:
             ace_model_lora_loaded = 'local_editing'
 
         if tune_ace is None:

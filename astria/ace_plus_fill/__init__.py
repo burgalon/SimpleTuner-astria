@@ -151,7 +151,6 @@ class ACEPlusDiffuserInference():
             torch.cuda.current_device(), # we.device_id,
             generator,
         )
-        # import pdb;pdb.set_trace()
         masked_image_latents = torch.cat((masked_image_latents, mask), dim=-1)
         return masked_image_latents
 
