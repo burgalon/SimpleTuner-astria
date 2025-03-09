@@ -140,6 +140,12 @@ def parse_args(prompt: JsonObj):
         default=getattr(prompt, 'ace_plus', None),
     )
     parser.add_argument(
+        "--ace_plus_instruction_edit",
+        help="Use ACE generation/inpainting instruction editing pipeline",
+        action='store_true',
+        default=getattr(prompt, 'ace_plus_instruction_edit', None),
+    )
+    parser.add_argument(
         "--fill_real_cfg",
         help="Use real classifier free guidance when using fill",
         type=float,
@@ -882,9 +888,12 @@ class InferPipeline(InpaintFaceMixin, VtonMixin):
                 if tune.model_type == 'faceid'), None)
             ace_model_lora_loaded = 'subject'
 
-        if not bool(tune_ace) and orig_input_image is not None and orig_mask_image is not None:
+        if (
+            prompt.ace_plus_instruction_edit or
+            (not bool(tune_ace) and orig_input_image is not None and orig_mask_image is not None)
+        ):
             ace_model_lora_loaded = 'local_editing'
-        print('using ace model', ace_model_lora_loaded)
+        print('Using ace model:', ace_model_lora_loaded)
 
         if tune_ace is None and orig_input_image is None and orig_mask_image is None:
             raise ValueError('ace_plus requires a reference image')
@@ -910,6 +919,7 @@ class InferPipeline(InpaintFaceMixin, VtonMixin):
             repainting_scale=1.0
                 if orig_input_image is not None and orig_mask_image is not None
                 else 0,
+            uses_cfg=prompt.fill_real_cfg is not None,
         )
         # prompt.h = h
         # prompt.w = w
@@ -918,7 +928,8 @@ class InferPipeline(InpaintFaceMixin, VtonMixin):
         if kwargs.get('mask_image', False):
             del kwargs['mask_image']
         kwargs['masked_image_latents'] = masked_image_latents
-        kwargs['masked_image_latents_uncond'] = masked_image_latents_uncond
+        if masked_image_latents_uncond is not None:
+            kwargs['masked_image_latents_uncond'] = masked_image_latents_uncond
 
         # Make the latent sequence size match up.
         prompt.h = h
@@ -1079,7 +1090,11 @@ class InferPipeline(InpaintFaceMixin, VtonMixin):
             prompt.ace_plus and next(iter(tune for tune in prompt.tunes
             if tune.model_type == 'faceid'), None) is not None
         ):
-            prompt.text = "{image} " + prompt.text
+            if next(iter(tune for tune in prompt.tunes
+            if tune.model_type == 'faceid' and tune.name in HUMAN_CLASS_NAMES), None) is not None:
+                prompt.text = "{image} Maintain the facial features." + prompt.text
+            else:
+                prompt.text = "{image} " + prompt.text
         (
             prompt_embeds,
             pooled_prompt_embeds,

@@ -163,7 +163,8 @@ class ACEPlusDiffuserInference():
         edit_mask: Optional[Image.Image] = None,
         height: Optional[int] = 1024,
         width: Optional[int] = 1024,
-        seed=42,
+        seed: Optional[int]=42,
+        uses_cfg: bool=False,
     ) -> torch.Tensor:
         # TODO is this needed?
         reference_image = scale_long_edge_and_pad(reference_image, seed=seed)
@@ -175,15 +176,17 @@ class ACEPlusDiffuserInference():
         reference_image_sz = reference_image.size
 
         seed = seed if seed >= 0 else random.randint(0, 2 ** 32 - 1)
-        uncond_img = Image.open(UNCOND_IMAGE_LOC)
-        uncond_img = random_crop_pil(uncond_img, reference_image_sz)
-        uncond_img, mask, _, _, out_h, out_w, slice_w = self.image_processor.preprocess(
-            uncond_img, edit_image, edit_mask, repainting_scale=repainting_scale,
-            height=height, width=width)
-        h, w = uncond_img.shape[1:]
-        generator = torch.Generator("cpu").manual_seed(seed)
-        masked_image_latents_uncond = self.prepare_input(uncond_img, mask,
-            batch_size=len(prompt), height=h, width=w, generator=generator)
+        masked_image_latents_uncond = None
+        if uses_cfg:
+            uncond_img = Image.open(UNCOND_IMAGE_LOC)
+            uncond_img = random_crop_pil(uncond_img, reference_image_sz)
+            uncond_img, mask, _, _, out_h, out_w, slice_w = self.image_processor.preprocess(
+                uncond_img, edit_image, edit_mask, repainting_scale=repainting_scale,
+                height=height, width=width)
+            h, w = uncond_img.shape[1:]
+            generator = torch.Generator("cpu").manual_seed(seed)
+            masked_image_latents_uncond = self.prepare_input(uncond_img, mask,
+                batch_size=len(prompt), height=h, width=w, generator=generator)
 
         image, mask, _, _, out_h, out_w, slice_w = self.image_processor.preprocess(
             reference_image, edit_image, edit_mask, repainting_scale = repainting_scale,

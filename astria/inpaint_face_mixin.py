@@ -474,6 +474,8 @@ class InpaintFaceMixin:
                 prompt_embeds = kwargs['prompt_embeds']
             if kwargs is not None and 'pooled_prompt_embeds' in kwargs.keys():
                 pooled_prompt_embeds = kwargs['pooled_prompt_embeds']
+            if prompt_embeds is not None and pooled_prompt_embeds is not None:
+                prompt.text = None
             inpainted_crop_resized = pipe(
                 prompt=prompt.text,
                 prompt_embeds=prompt_embeds,

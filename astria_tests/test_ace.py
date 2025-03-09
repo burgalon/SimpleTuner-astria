@@ -113,13 +113,13 @@ def test_fill_ace_inpaint_portrait():
     prompt.ace_plus = True
     prompt.seed = 42
     prompt.cfg_scale = 50
-    prompt.text = ("The man is facing the camera and is serious")
-    prompt.tunes = [FLUX_ACE_TUNE_PORTRAIT_ELON]
+    prompt.text = ("The woman is smiling at the camera")
+    prompt.tunes = [FLUX_ACE_TUNE_PORTRAIT2]
     prompt.input_image = Image.open(
-        Path(__file__).resolve().parent.parent / 'astria_tests' / 'fixtures' / 'portrait_inpaint_image.jpg'
+        Path(__file__).resolve().parent.parent / 'astria_tests' / 'fixtures' / 'yoga.jpg'
     )
     prompt.mask_image = Image.open(
-        Path(__file__).resolve().parent.parent / 'astria_tests' / 'fixtures' / 'portrait_inpaint_mask.png',
+        Path(__file__).resolve().parent.parent / 'astria_tests' / 'fixtures' / 'yoga_mask.png',
     ).convert("L")
     run_images(prompt)
     assert pipe.last_pipe == "ACE_plus"
@@ -131,13 +131,13 @@ def test_fill_ace_inpaint_portrait_cfg_slg():
     prompt.cfg_scale = 10
     prompt.fill_real_cfg = 2.8
     prompt.fill_slg = json.dumps([[8, 12], [4, 7, 12]])
-    prompt.text = ("The man is facing the camera and is serious")
+    prompt.text = ("The woman is smiling at the camera")
     prompt.tunes = [FLUX_ACE_TUNE_PORTRAIT2]
     prompt.input_image = Image.open(
-        Path(__file__).resolve().parent.parent / 'astria_tests' / 'fixtures' / 'portrait_inpaint_image.jpg'
+        Path(__file__).resolve().parent.parent / 'astria_tests' / 'fixtures' / 'yoga.jpg'
     )
     prompt.mask_image = Image.open(
-        Path(__file__).resolve().parent.parent / 'astria_tests' / 'fixtures' / 'portrait_inpaint_mask.png',
+        Path(__file__).resolve().parent.parent / 'astria_tests' / 'fixtures' / 'yoga_mask.png',
     ).convert("L")
     run_images(prompt)
     assert pipe.last_pipe == "ACE_plus"
@@ -159,7 +159,7 @@ def test_fill_ace_inpaint_furniture():
     prompt.ace_plus = True
     prompt.seed = 42
     prompt.cfg_scale = 50
-    prompt.text = ("The furniture has a TV on it in the living room")
+    prompt.text = ("The piece of furniture in the image is a modern sideboard or credenza. It features a sleek, minimalist design with a rectangular wooden body and a natural wood grain finish. The sideboard has a combination of cabinets and drawers, providing ample storage space. The cabinet doors and drawers have discreet black handles that blend seamlessly into the design. It stands on slim black metal legs, which give it a slightly elevated appearance and a contemporary aesthetic. The overall look is clean and sophisticated, making it suitable for modern or mid-century-inspired interiors.")
     prompt.tunes = [FLUX_ACE_TUNE_FURNITURE]
     prompt.input_image = Image.open(
         Path(__file__).resolve().parent.parent / 'astria_tests' / 'fixtures' / 'furniture_inpaint_image.jpg'
@@ -174,8 +174,8 @@ def test_fill_ace_inpaint_furniture_cfg_slg():
     prompt = JsonObj(**copy.copy(BASE_PROMPT.__dict__))
     prompt.ace_plus = True
     prompt.seed = 42
-    prompt.cfg_scale = 20
-    prompt.fill_real_cfg = 2.8
+    prompt.cfg_scale = 1
+    prompt.fill_real_cfg = 2.0
     prompt.fill_slg = json.dumps([[8, 12], [4, 7, 12]])
     prompt.text = ("The furniture has a TV on it in the living room")
     prompt.tunes = [FLUX_ACE_TUNE_FURNITURE]
