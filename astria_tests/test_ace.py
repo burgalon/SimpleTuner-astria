@@ -46,6 +46,18 @@ FLUX_ACE_TUNE_PORTRAIT_ELON = JsonObj(**{
     ],
 })
 
+FLUX_ACE_TUNE_PORTRAIT_JACKIE = JsonObj(**{
+    "id": -1,
+    "name": "man",
+    "title": "",
+    "branch": "flux1",
+    "model_type": "faceid",
+    "face_swap_images": [
+        "https://sdbooth2-production.s3.amazonaws.com/ftnjx8pc1ktq5t5w3gek5ts8vo5e",
+    ],
+})
+
+
 FLUX_ACE_TUNE_FURNITURE = JsonObj(**{
     "id": -1,
     "name": "logo",
@@ -116,8 +128,8 @@ def test_fill_ace_inpaint_portrait_cfg_slg():
     prompt = JsonObj(**copy.copy(BASE_PROMPT.__dict__))
     prompt.ace_plus = True
     prompt.seed = 42
-    prompt.cfg_scale = 30
-    prompt.fill_real_cfg = 2.1
+    prompt.cfg_scale = 10
+    prompt.fill_real_cfg = 2.8
     prompt.fill_slg = json.dumps([[8, 12], [4, 7, 12]])
     prompt.text = ("The man is facing the camera and is serious")
     prompt.tunes = [FLUX_ACE_TUNE_PORTRAIT2]
@@ -127,6 +139,18 @@ def test_fill_ace_inpaint_portrait_cfg_slg():
     prompt.mask_image = Image.open(
         Path(__file__).resolve().parent.parent / 'astria_tests' / 'fixtures' / 'portrait_inpaint_mask.png',
     ).convert("L")
+    run_images(prompt)
+    assert pipe.last_pipe == "ACE_plus"
+
+def test_fill_ace_inpaint_portrait_jackie():
+    prompt = JsonObj(**copy.copy(BASE_PROMPT.__dict__))
+    prompt.ace_plus = True
+    prompt.cfg_scale = 50
+    prompt.seed = 42
+    prompt.text = ("The man is facing the camera and is serious")
+    prompt.tunes = [FLUX_ACE_TUNE_PORTRAIT_JACKIE]
+    prompt.input_image = "https://sdbooth2-production.s3.amazonaws.com/qjazubuqoljmxuavi3eodeh9wzap"
+    prompt.mask_image = "https://sdbooth2-production.s3.amazonaws.com/pislvpvjej0x476bwoktfwm35w9u"
     run_images(prompt)
     assert pipe.last_pipe == "ACE_plus"
 

@@ -875,7 +875,6 @@ class InferPipeline(InpaintFaceMixin, VtonMixin):
         ace_model_lora_loaded = False
         tune_ace = next(iter(tune for tune in prompt.tunes
             if tune.model_type == 'faceid' and tune.name in HUMAN_CLASS_NAMES), None)
-        is_person = bool(tune_ace)
         if tune_ace is not None: 
             ace_model_lora_loaded = 'portrait'
         else:
@@ -883,10 +882,11 @@ class InferPipeline(InpaintFaceMixin, VtonMixin):
                 if tune.model_type == 'faceid'), None)
             ace_model_lora_loaded = 'subject'
 
-        if not is_person and orig_input_image is not None and orig_mask_image is not None:
+        if not bool(tune_ace) and orig_input_image is not None and orig_mask_image is not None:
             ace_model_lora_loaded = 'local_editing'
+        print('using ace model', ace_model_lora_loaded)
 
-        if tune_ace is None:
+        if tune_ace is None and orig_input_image is None and orig_mask_image is None:
             raise ValueError('ace_plus requires a reference image')
 
         reference_image = load_images(tune_ace.face_swap_images[:1])[0]
@@ -907,7 +907,9 @@ class InferPipeline(InpaintFaceMixin, VtonMixin):
             seed=prompt.seed or 42,
             height=prompt.h or 1024,
             width=prompt.w or 1024,
-            repainting_scale=1.0 if ace_model_lora_loaded == 'local_editing' else 0,
+            repainting_scale=1.0
+                if orig_input_image is not None and orig_mask_image is not None
+                else 0,
         )
         # prompt.h = h
         # prompt.w = w
@@ -1073,6 +1075,11 @@ class InferPipeline(InpaintFaceMixin, VtonMixin):
             del kwargs['prompt_main']
 
         # Encode text embeds
+        if (
+            prompt.ace_plus and next(iter(tune for tune in prompt.tunes
+            if tune.model_type == 'faceid'), None) is not None
+        ):
+            prompt.text = "{image} " + prompt.text
         (
             prompt_embeds,
             pooled_prompt_embeds,
