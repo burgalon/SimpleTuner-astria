@@ -217,20 +217,22 @@ def run_images(prompt, override_name=None):
 
     tune = JsonObj(**TUNE_FLUX.__dict__, prompts=[prompt])
     images = pipe.infer(tune)
-    for i, image in enumerate(images):
-        # check if has alpha
-        if image.mode == 'RGBA':
-            image.save(MODELS_DIR + f"/{prompt.id}-{i}.png")
-        else:
-            image.save(MODELS_DIR + f"/{prompt.id}-{i}.jpg")
-        img_fn = f"{prompt.id}-{count}-{i}.jpg"
-        pth = MODELS_DIR + f"/{img_fn}"
-        image.save(pth)
-        if (Path(__file__).parent / 'results' / img_fn).exists():
-            hash_ref =  imagehash.phash(Image.open(
-                (Path(__file__).parent / 'results' / img_fn).absolute()))
-            hash_out =  imagehash.phash(Image.open(pth))
-            assert hash_ref == hash_out
+
+    if getattr(prompt, 'task', '') != 'video':
+        for i, image in enumerate(images):
+            # check if has alpha
+            if image.mode == 'RGBA':
+                image.save(MODELS_DIR + f"/{prompt.id}-{i}.png")
+            else:
+                image.save(MODELS_DIR + f"/{prompt.id}-{i}.jpg")
+            img_fn = f"{prompt.id}-{count}-{i}.jpg"
+            pth = MODELS_DIR + f"/{img_fn}"
+            image.save(pth)
+            if (Path(__file__).parent / 'results' / img_fn).exists():
+                hash_ref =  imagehash.phash(Image.open(
+                    (Path(__file__).parent / 'results' / img_fn).absolute()))
+                hash_out =  imagehash.phash(Image.open(pth))
+                assert hash_ref == hash_out
     return images
 
 # Test that loras do not leak across test by having a test of before/after lora

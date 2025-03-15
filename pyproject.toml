@@ -12,7 +12,7 @@ python = ">=3.10,<3.12"
 torch = {version = "^2.5.1+cu124", source = "pytorch"}
 torchvision = {version = "^0.20.1+cu124", source = "pytorch"}
 diffusers = {git = "https://github.com/huggingface/diffusers.git", rev = "cb342b745aa57798b759c0ba5b80c045a5dafbad"}
-transformers = "4.48.2"
+transformers = "4.46.2"
 datasets = "^3.0.1"
 bitsandbytes = "^0.44.1"
 wandb = "^0.18.2"
@@ -53,7 +53,7 @@ pillow-avif-plugin = "^1.4.6"
 kornia = "^0.7.3"
 realesrgan = "^0.3.0"
 einops = "^0.8.0"
-controlnet-aux = "^0.0.9"
+controlnet-aux = "^0.0.7"
 ultralytics = "^8.3.27"
 insightface = "^0.7.3"
 onnxruntime-gpu = "^1.20.1"
@@ -61,6 +61,8 @@ xformers = "^0.0.28.post3"
 huggingface-hub = {extras = ["hf-transfer"], version = "^0.27.1"}
 tensorizer = "^2.9.1"
 imagehash = "^4.3.2"
+diffsynth = {git = "https://github.com/modelscope/DiffSynth-Studio.git"}
+sageattention = {path = "libs/SageAttention/dist/sageattention-2.1.1-cp311-cp311-linux_x86_64.whl"}
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^8.3.3"

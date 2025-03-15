@@ -1,0 +1,7 @@
+[submodule "libs/SageAttention"]
+	path = libs/SageAttention
+	url = https://github.com/thu-ml/SageAttention.git
+[submodule "libs/DiffSynth-Studio"]
+	path = libs/DiffSynth-Studio
+	url = https://github.com/sugoi-inu/DiffSynth-Studio.git
+

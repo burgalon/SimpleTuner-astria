@@ -1,12 +1,17 @@
 import argparse
 import copy
+import gc
+import io
 import json
 import os
 import re
 import shlex
 import sys
+import tempfile
 import time
 import traceback
+
+from pathlib import Path
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
@@ -60,12 +65,18 @@ from vton_mixin import (
     VTON_CATEGORIES,
 )
 from watermark_helper import add_watermark
+from diffsynth import ModelManager, WanVideoPipeline, save_video, VideoData
+from huggingface_hub import snapshot_download
+
 
 PIL2TENSOR = transforms.Compose([transforms.PILToTensor()])
 GPU_MEMORY_GB = torch.cuda.get_device_properties(0).total_memory / 1024**3
 print(f"GPU_MEMORY_GB={GPU_MEMORY_GB:.0f}")
 UNIT_NUMBERS = {0: 'zero', 1: 'one', 2: 'two', 3: 'three', 4: 'four',
            5: 'five', 6: 'six', 7: 'seven', 8: 'eight', 9: 'nine'}
+WAN_I2V_LOCAL_LOCATION = f"{CACHE_DIR}/models/Wan-AI/Wan2.1-I2V-14B-720P"
+WAN_I2V_NEGATIVE_PROMPT = "色调艳丽，过曝，静态，细节模糊不清，字幕，风格，作品，画作，画面，静止，整体发灰，最差质量，低质量，JPEG压缩残留，丑陋的，残缺的，多余的手指，画得不好的手部，画得不好的脸部，畸形的，毁容的，形态畸形的肢体，手指融合，静止不动的画面，杂乱的背景，三条腿，背景人很多，倒着走"
+
 
 def parse_args(prompt: JsonObj):
     parser = argparse.ArgumentParser()
@@ -81,6 +92,8 @@ def parse_args(prompt: JsonObj):
     parser.add_argument("--face_inpaint_exclude_neck")
     parser.add_argument("--hires_denoising_strength", type=float, default=None)
     parser.add_argument("--fill", action='store_true', default=False)
+    parser.add_argument("--negative_prompt", type=str, default=prompt.negative_prompt
+        if getattr(prompt, 'negative_prompt', None) is not None else None)
     parser.add_argument("--outpaint", choices=['top-left', 'top-right', 'bottom-left', 'bottom-right', 'center', 'top-center', 'bottom-center', 'left-center', 'right-center'], default=None)
     parser.add_argument("--outpaint_height", type=int, default=None)
     parser.add_argument("--outpaint_width", type=int, default=None)
@@ -180,7 +193,7 @@ class InferPipeline(InpaintFaceMixin, VtonMixin):
         InpaintFaceMixin.__init__(self)
         self.reset()
 
-    def reset(self):
+    def reset(self, gc_collect=False, remove_wan=True):
         self.last_pipe = None
         self.model_path = None
         self.pipe = None
@@ -189,9 +202,17 @@ class InferPipeline(InpaintFaceMixin, VtonMixin):
         self.current_lora_weights_map = {}
         self.resolution = None
 
+        if remove_wan:
+            self.wan_i2v_pipe = None
+            self.diffsynth_model_manager = None
+
         self.reset_controlnet()
 
-    def reset_controlnet(self):
+        if gc_collect:
+            gc.collect()
+            torch.cuda.empty_cache()
+
+    def reset_controlnet(self, gc_collect=False):
         self.sr_model = None
         self.control = None
         self.control_type = None
@@ -204,7 +225,19 @@ class InferPipeline(InpaintFaceMixin, VtonMixin):
         self.pulid_model = None
         self.pulid_pipe = None
         self.rag_diffusion_pipe = None
-        torch.cuda.empty_cache()
+
+        if gc_collect:
+            gc.collect()
+            torch.cuda.empty_cache()
+
+    def reset_wan_i2v(self, gc_collect=False):
+        if self.wan_i2v_pipe is not None:
+            self.wan_i2v_pipe = None
+            self.diffsynth_model_manager = None
+
+            if gc_collect:
+                gc.collect()
+                torch.cuda.empty_cache()
 
     def warmup(self):
         start_time = time.time()
@@ -327,6 +360,44 @@ class InferPipeline(InpaintFaceMixin, VtonMixin):
             self.model_path = model_path
             # TODO: Remove once this is merged to diffusers
             self.resolution = (1024, 1024)
+
+    def init_wan_i2v_pipe(self):
+        """Initialize both FluxPipeline and FluxImg2ImgPipeline."""
+        if not self.wan_i2v_pipe:
+            # Ensure
+            if not Path(WAN_I2V_LOCAL_LOCATION).exists():
+                snapshot_download(
+                    "Wan-AI/Wan2.1-I2V-14B-720P",
+                    local_dir=WAN_I2V_LOCAL_LOCATION,
+                )
+            model_manager = ModelManager(device="cpu")
+            model_manager.load_models(
+                [f"{WAN_I2V_LOCAL_LOCATION}/models_clip_open-clip-xlm-roberta-large-vit-huge-14.pth"],
+                torch_dtype=torch.float32, # Image Encoder is loaded with float32
+            )
+            model_manager.load_models(
+                [
+                    [
+                        f"{WAN_I2V_LOCAL_LOCATION}/diffusion_pytorch_model-00001-of-00007.safetensors",
+                        f"{WAN_I2V_LOCAL_LOCATION}/diffusion_pytorch_model-00002-of-00007.safetensors",
+                        f"{WAN_I2V_LOCAL_LOCATION}/diffusion_pytorch_model-00003-of-00007.safetensors",
+                        f"{WAN_I2V_LOCAL_LOCATION}/diffusion_pytorch_model-00004-of-00007.safetensors",
+                        f"{WAN_I2V_LOCAL_LOCATION}/diffusion_pytorch_model-00005-of-00007.safetensors",
+                        f"{WAN_I2V_LOCAL_LOCATION}/diffusion_pytorch_model-00006-of-00007.safetensors",
+                        f"{WAN_I2V_LOCAL_LOCATION}/diffusion_pytorch_model-00007-of-00007.safetensors",
+                    ],
+                    f"{WAN_I2V_LOCAL_LOCATION}/models_t5_umt5-xxl-enc-bf16.pth",
+                    f"{WAN_I2V_LOCAL_LOCATION}/Wan2.1_VAE.pth",
+                ],
+                torch_dtype=torch.bfloat16, # Keep this in bfloat16... storing the weights as quant currently degrades the model
+            )
+            self.wan_i2v_pipe = WanVideoPipeline.from_model_manager(
+                model_manager,
+                torch_dtype=torch.bfloat16,
+                device="cuda",
+            )
+            self.wan_i2v_pipe.enable_vram_management(num_persistent_param_in_dit=None)
+            self.diffsynth_model_manager = model_manager
 
     def init_pulid(self):
         if not self.pulid_pipe:
@@ -744,13 +815,26 @@ class InferPipeline(InpaintFaceMixin, VtonMixin):
         model_path = download_model_from_server(f"{tune.id}-{tune.branch}")
         self.init_pipe(model_path)
 
-        images = None
+        result = None
         for i_prompt, prompt in enumerate(tune.prompts):
-            start_time = time.time()
-            images = self.infer_prompt(prompt, tune)
-            print(f"T={tune.id} {i_prompt}/{len(tune.prompts)} P={prompt.id} U={prompt.user_id} https://www.astria.ai/admin/prompts/{prompt.id} {(time.time() - start_time):.2f} seconds")
+            task = 'image'
+            if getattr(prompt, 'task'):
+                task = prompt.task
+
+            if task != "video":
+                # Pull wan model if it exists.
+                self.reset_wan_i2v(gc_collect=True)
+                start_time = time.time()
+                result = self.infer_prompt(prompt, tune)
+            else:
+                # Pull all non-wan models if it exists.
+                self.reset(gc_collect=True, remove_wan=False)
+                start_time = time.time()
+                result = self.infer_wan_i2v(prompt, tune)
+            print(f"T={tune.id} {i_prompt}/{len(tune.prompts)} P={prompt.id} U={prompt.user_id} T={task} https://www.astria.ai/admin/prompts/{prompt.id} {(time.time() - start_time):.2f} seconds")
+
         set_current_infer_tune(None)
-        return images
+        return result
 
     def remove_background(self, images):
         birefnet = BiRefNet_node()
@@ -1047,9 +1131,70 @@ class InferPipeline(InpaintFaceMixin, VtonMixin):
             #         self.current_lora_weights_map['pipe'].get('scales', []),
             #     )
             # })
-            self.reset()
+            self.reset(gc_collect=True)
 
         return images
+
+    def infer_wan_i2v(self, prompt, tune: JsonObj):
+        input_image = None
+        assert prompt.input_image is not None
+        try:
+            input_image = load_image(prompt.input_image)
+        except Image.DecompressionBombError:
+            print(f"T#{prompt.tune_id} P#{prompt.id} DecompressionBombError - skipping")
+            return None
+        width, height = input_image.size
+        
+        assert input_image is not None
+        self.init_wan_i2v_pipe()
+
+        negative_prompt = (
+            prompt.negative_prompt
+            if prompt.negative_prompt is not None
+            else WAN_I2V_NEGATIVE_PROMPT
+        )
+        num_images = int(os.environ.get('NUM_IMAGES', prompt.num_images or 1))
+
+        video_bytes_list = []
+        for i in range(num_images):
+            video = self.wan_i2v_pipe(
+                prompt=prompt.text,
+                negative_prompt=negative_prompt,
+                input_image=input_image,
+                num_inference_steps=prompt.steps or 30,
+                seed=(prompt.seed or 42) + i,
+                tiled=False,
+                tea_cache_l1_thresh=0.15,
+                tea_cache_model_id="Wan2.1-I2V-14B-720P",
+                num_frames=81, # 5s default max length
+                width=width,
+                height=height,
+                slg_layers=[9],
+            )
+
+            # Create a temporary file in /dev/shm, keeping the video in RAM.
+            video_bytes = None
+            with tempfile.NamedTemporaryFile(dir="/dev/shm", suffix=".mp4", delete=True) as tmp:
+                temp_path = tmp.name
+
+                # Save your video to the temporary file.
+                save_video(video, temp_path, fps=15)
+
+                # Read the contents into memory.
+                with open(temp_path, "rb") as f:
+                    video_bytes = f.read()
+
+            video_bytes_list.append(video_bytes)
+
+        if os.environ.get('DEBUG'):
+            for i_video, video_b in enumerate(video_bytes_list):
+                with open(f"{MODELS_DIR}/{prompt.id}-{i_video}.mp4", "wb") as f:
+                    f.write(video_b)
+        else:
+            content_types = ["video/mp4"] * len(video_bytes_list)
+            send_to_server(video_bytes_list, prompt.id, content_types)
+
+        return video_bytes
 
     def get_rag_kwargs(self, prompt):
         is_dynamic = prompt.use_regional == 'dynamic'
@@ -1222,7 +1367,7 @@ def main():
                     if GPU_MEMORY_GB < 50 or (tune.args and 'preprocessing' in tune.args):
                         pipeline.reset()
                     else:
-                        pipeline.reset_controlnet()
+                        pipeline.reset_controlnet(gc_collect=True)
                     print(f"Training tune {tune.id}")
                     set_current_train_tune(tune)
                     train(tune)
