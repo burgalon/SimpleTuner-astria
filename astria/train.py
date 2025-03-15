@@ -21,6 +21,7 @@ from cleanup_directory import cleanup_directory
 from sig_listener import is_terminated
 from download_training_v1 import create_data_config_v1
 from download_training_v2 import create_data_config_v2
+from download_training_v3 import create_data_config_v3
 
 
 def poll_train() -> int:
@@ -33,7 +34,8 @@ def poll_train() -> int:
 def create_prompt_library(tune: JsonObj, output_dir: str):
     if tune.name == 'man':
         data = {
-            "token_name": f"A detailed, high-quality photo of 25-year old black-haired Indian {tune.token} {tune.name} wearing glasses with short hair, wearing a beige-color blazer. The ohwx man has a muscular figure, is making eye-contact with the camera and striking a natural pose. The photo is taken from the chest up, in a bright and modern office building, using a shallow depth of field and bright, natural lighting to focus attention on the subject",
+            "park": f"A detailed, high-quality photo of an {tune.token} {tune.name} wearing a v-neck sweater, making eye-contact with the camera and striking a natural pose. The photo is shot with an 85mm lens at f/1.8 with a Canon 5D camera and ZEISS lens, taken in a beautiful outdoor park setting. Use a shallow depth of field and bright, natural lighting to focus attention on the subject",
+            "city": f"A detailed, high-quality photo of an {tune.token} {tune.name} wearing a quarter-zip sweater, making eye-contact with the camera and striking a natural pose. The photo is shot with an 85mm lens at f/1.8 with a Canon 5D camera and ZEISS lens, taken in a vibrant urban city setting. Use a shallow depth of field and bright, natural lighting to focus attention on the subject",
             # "flowers": f"{tune.name} holding flowers, red sweater, studio photography, plain white background",
             # "ohwx_rembrandt": f"a portrait of {tune.token} {tune.name} in the style of Rembrandt",
             # "rembrandt": f"a portrait of {tune.name} in the style of Rembrandt",
@@ -42,9 +44,12 @@ def create_prompt_library(tune: JsonObj, output_dir: str):
         data = {
             "token_name": f"A photo of {tune.token} {tune.name}",
             "mushroom": f"boring bad quality snapchat photo circa 2015 of {tune.token} {tune.name} tinkerbell , green big dress,   translucent wings, golden dust around the air, sitting on top of massive 10feet mushroom  in forest, with a focus face slightly blurred, with digital noise, slightly pale yellow colour tone, looks like 2010 photo quality",
+            "lavender": f"{tune.token} {tune.name} in a lavender dress, in the middle of a field full of purple flowers, with sunset light, , looking at the camera, portrait photography in the style of professional photograph, soft lighting, pastel colors, a dreamy atmosphere, an elegant pose, high resolution",
         }
     elif tune.name == 'woman':
         data = {
+            "body1": f"a {tune.token} {tune.name} in a black short-sleeve t-shirt paired with high-waisted white wide-leg trousers gazes intently at the camera, her expression thoughtful and warm smile, her body language conveying a sense of focus and determination. set against a softly blurred background of a modern planty office environment",
+            "body2": f"{tune.token} {tune.name} medium-large figure  wearing a fitted camel-colored turtleneck sweater with short sleeves, tucked into high-waisted cream trousers with sharp pleats for a tailored look. The trousers are accentuated with a brown leather belt featuring a textured design and a bold circular buckle, sitting on the floor in a relaxed pose, leaning on a small white stool with soft natural lighting highlighting her smile and creating a cozy, approachable atmosphere",
             "token_name": f"{tune.token} {tune.name}",
             "photo_token_name": f"A photo of {tune.token} {tune.name}",
             "flowers": f"{tune.token} {tune.name} holding flowers, white dress, black background",
@@ -127,6 +132,17 @@ def parse_args(tune: JsonObj):
         for arg in tune.args.strip().split(" "):
             key, value = arg.split("=", 1)
             setattr(tune, key, value)
+            print(f"Setting {key}={value}")
+
+def parse_env_args(tune: JsonObj):
+    if tune.args is None:
+        tune.args = ""
+    for k, v in os.environ.items():
+        if k.startswith('TR_'):
+            setattr(tune, k[3:].lower(), v)
+            print(f"Setting {k[3:].lower()}={v}")
+            tune.args += f" {k[3:].lower()}={v}"
+    return tune
 
 def download_dev2pro():
     model_path = f"{MODELS_DIR}/dev2pro"
@@ -158,10 +174,7 @@ def train_no_catch(tune: JsonObj):
     if tune.user_id == 2:
         tune.report_to = "wandb"
 
-    for k, v in os.environ.items():
-        if k.startswith('TR_'):
-            setattr(tune, k[3:].lower(), v)
-            print(f"Setting {k[3:].lower()}={v}")
+    parse_env_args(tune)
     if os.environ.get('TR_DISABLE_FACE_CROP'):
         tune.face_crop = False
 
@@ -174,6 +187,16 @@ def train_no_catch(tune: JsonObj):
 
     print(f"output_dir={output_dir} steps={steps}")
 
+    if tune.preprocessing=='3':
+        print("Using preprocessing v3")
+        data_backend_config, resolution = create_data_config_v3(tune, output_dir)
+    elif tune.preprocessing=='2':
+        print("Using preprocessing v2")
+        data_backend_config, resolution = create_data_config_v2(tune, output_dir)
+    else:
+        print("Using preprocessing v1")
+        data_backend_config, resolution = create_data_config_v1(tune, output_dir)
+
     num_gpus = 1 # torch.cuda.device_count()
     # accelerate will accumulate across processes/gpus and so we need to divide by num_gpus
     # len(tune.orig_images) - max train_batch should not be bigger than amount of images
@@ -184,12 +207,6 @@ def train_no_catch(tune: JsonObj):
     else:
         train_batch = max(1, (min(min(4, len(tune.orig_images)), 4))) // num_gpus
 
-    if tune.preprocessing=='2':
-        print("Using preprocessing v2")
-        data_backend_config, resolution = create_data_config_v2(tune, output_dir)
-    else:
-        print("Using preprocessing v1")
-        data_backend_config, resolution = create_data_config_v1(tune, output_dir)
     caption_strategy = tune.caption_strategy or "instanceprompt"
 
     torch.cuda.empty_cache()
@@ -197,7 +214,8 @@ def train_no_catch(tune: JsonObj):
     os.environ['SIMPLETUNER_LOG_LEVEL'] = 'DEBUG'
     os.environ['CUDA_VISIBLE_DEVICES'] = CUDA_VISIBLE_DEVICES
     os.environ['DEBUG_LOG_FILENAME'] = f"{output_dir}/debug.log"
-    if tune.preprocessing=='2':
+    os.environ['WANDB_DIR'] = output_dir
+    if tune.preprocessing=='2' or tune.preprocessing=='3':
         tail_lines = run_with_output([
             'accelerate',
             'launch',
@@ -254,7 +272,7 @@ def train_no_catch(tune: JsonObj):
             *([f'--flux_lora_target={tune.flux_lora_target}'] if tune.flux_lora_target else []),
             f'--lora_rank={tune.lora_rank or 64}',
             f'--lora_alpha={tune.lora_alpha or 64}',
-            '--user_prompt_library', create_prompt_library(tune, output_dir),
+            *(['--user_prompt_library', create_prompt_library(tune, output_dir)] if tune.report_to else []),
             '--model_family=flux',
             f'--train_batch={train_batch}',
             # '--max_workers=1',
@@ -279,7 +297,7 @@ def train_no_catch(tune: JsonObj):
             '--checkpoints_total_limit=10',
             '--validation_steps', str(tune.validation_steps) if tune.validation_steps else '5000',
             f'--tracker_run_name={tune.id}-{tune.branch}-{os.environ.get("TRACKER_NAME", timestamp)} {tune.title} {tune.args}',
-            *(['--evaluation_type=face'] if tune.report_to else []),
+            *(['--evaluation_type=face'] if tune.report_to and tune.face_crop else []),
             '--tracker_project_name=flux-lora',
             '--validation_guidance=3.5',
             '--validation_guidance_rescale=0.0',
@@ -299,11 +317,8 @@ def train_no_catch(tune: JsonObj):
             f'--num_processes={num_gpus}',
             '--num_machines=1',
             '--dynamo_backend=no',
-            # 'simpletuner_v0/train.py',
-            'train.py',
-            f'--optimizer={tune.optimizer or "adamw"}',
-            '--model_family=flux',
-            '--base_model_default_dtype=bf16',
+            'simpletuner_v0/train.py',
+            '--base_model_default_dtype=fp32',
             '--model_type=lora',
             '--pretrained_model_name_or_path', model_path,
             '--enable_xformers_memory_efficient_attention',
@@ -319,7 +334,7 @@ def train_no_catch(tune: JsonObj):
             # https://wandb.ai/astria/lora-training/runs/b94a195701ed0a7d7b53e6c9771c4388?nw=nwuserburgalonastria
             *([f'--max_grad_norm={tune.max_grad_norm}'] if tune.max_grad_norm else []),
             # default to adamw
-            # *(['--use_prodigy_optimizer'] if tune.optimizer=='prodigy' else []),
+            *(['--use_prodigy_optimizer'] if tune.optimizer=='prodigy' else []),
             # ["mmdit", "context", "all"]
             *([f'--flux_lora_target={tune.flux_lora_target}'] if tune.flux_lora_target else []),
             f'--learning_rate={tune.learning_rate or 1e-4}',
@@ -340,8 +355,8 @@ def train_no_catch(tune: JsonObj):
             '--keep_vae_loaded',
             f'--lora_rank={tune.lora_rank or 64}',
             f'--lora_alpha={tune.lora_alpha or 64}',
-            '--user_prompt_library', create_prompt_library(tune, output_dir),
-            # '--flux',
+            *(['--user_prompt_library', create_prompt_library(tune, output_dir)] if tune.validation_steps else []),
+            '--flux',
             f'--train_batch={train_batch}',
             '--max_workers=1',
             '--read_batch_size=1',
@@ -377,11 +392,12 @@ def train_no_catch(tune: JsonObj):
         f"{output_dir}/pytorch_lora_weights.safetensors",
         f"{MODELS_DIR}/{tune.id}.safetensors",
     )
-    run([
-        "aws", "s3", "cp",
-        f'{output_dir}/pytorch_lora_weights.safetensors',
-        f"s3://sdbooth2-production/models/{tune.id}.safetensors",
-    ])
+    if not os.environ.get('MOCK_SERVER'):
+        run([
+            "aws", "s3", "cp",
+            f'{output_dir}/pytorch_lora_weights.safetensors',
+            f"s3://sdbooth2-production/models/{tune.id}.safetensors",
+        ])
     server_tune_done(tune)
 
     # Cleanup ephemeral dir to avoid POD getting killed on exceeding disk space
@@ -423,5 +439,7 @@ if __name__ == "__main__":
 
 
         tune = request_tune_job_from_server(id)
+        # overriding report_to=wandb - for debugging purposes
+        tune.report_to = 'wandb'
         print(f"Starting training for tune {tune.id}")
         train(tune)

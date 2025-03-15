@@ -3,7 +3,7 @@ import json
 import numpy as np
 
 prompt_regions = None
-with open('test_regional_ui.json', 'r') as f:
+with open('test_regional_two_lora_person_and_lower_body.json', 'r') as f:
     prompt_regions = json.load(f)
 
 SR_hw_split_ratio = prompt_regions['SR_hw_split_ratio']
@@ -18,7 +18,7 @@ if ';' not in SR_hw_split_ratio:
     SR_hw_split_ratio = f"1.0,{SR_hw_split_ratio}"
 
 # --- Create a blank image ---
-height, width = 1024, 1536
+height, width = 1024, 1024
 image = np.ones((height, width, 3), dtype=np.uint8) * 255
 
 # ------------------------------------------------------------------------------
@@ -147,7 +147,7 @@ for row_idx in range(len(row_heights)):
         # (placing text near the top-left corner of that cell)
         cv2.putText(
             image,
-            f"SB: {sb_prompts[sb_index][:48]}",
+            f"SB: {sb_prompts[sb_index]}",
             (left_pix + 5, top_pix + 20),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.3,

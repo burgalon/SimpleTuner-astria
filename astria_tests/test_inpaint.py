@@ -1,4 +1,7 @@
-from test_infer import *
+import copy
+
+from test_infer import pipe, BASE_PROMPT, run_images, IMG_POSE, FLUX_LORA, JsonObj, FluxControlNetInpaintPipeline, FluxDifferentialImg2ImgPipeline
+
 
 def test_inpainting_background_normal():
     prompt = JsonObj(

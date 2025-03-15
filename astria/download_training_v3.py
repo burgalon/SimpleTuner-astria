@@ -42,6 +42,9 @@ def get_mask(image: Image.Image, birefnet: BiRefNet_node, mask_dir: str, image_n
     # mask_path = os.path.join(mask_dir, f"{os.path.splitext(image_name)[0]}.png")
     # mask_image.save(mask_path)
 
+
+CONST_BASE_TRAIN_RESOLUTION = 512
+# This unforunately gets overriden inside the function in order to be used by get_face_bbox without passing argument
 BASE_TRAIN_RESOLUTION = 512
 
 # define Bbox
@@ -87,6 +90,13 @@ def crop_mask_to_square(image: Image.Image, mask: Image.Image) -> [Image.Image, 
     bbox[1] = max(0, bbox[1] - (bbox[3] - bbox[1])*.1)
     width = bbox[2] - bbox[0]
     height = bbox[3] - bbox[1]
+    # extend bbox so that the mask is padded a bit
+    print(f"bbox before extend={bbox}")
+    bbox = (max(0, bbox[0] - width//10), max(0, bbox[1] - height//10), min(image.width, bbox[2] + width//10), min(image.height, bbox[3] + height//10))
+    print(f"bbox after extend={bbox}")
+    width = bbox[2] - bbox[0]
+    height = bbox[3] - bbox[1]
+
     # extend bbox while trying to get to square aspect ratio
     if width > height:
         diff = width - height
@@ -105,8 +115,7 @@ def crop_mask_to_square(image: Image.Image, mask: Image.Image) -> [Image.Image, 
 
 @dataclass
 class DownloadTrainingOutput():
-    training_dir: str
-    face_dir: str
+    dirs: list[str]
     mask_dir: str
     resolution: int
     has_caption: bool
@@ -146,31 +155,24 @@ def is_slr(image: Image.Image) -> bool:
         # Avoid TIFF SyntaxError
         return False
 
-def download_training(tune: JsonObj, one_dir=False):
+def download_training(tune: JsonObj):
     global BASE_TRAIN_RESOLUTION
-    resolution = int(tune.resolution) if tune.resolution else BASE_TRAIN_RESOLUTION
+    resolution = int(tune.resolution) if tune.resolution else CONST_BASE_TRAIN_RESOLUTION
     has_captions = False
     all_captioned = False
     BASE_TRAIN_RESOLUTION = resolution
-    if one_dir:
-        training_dir = f"{EPHEMERAL_MODELS_DIR}/{tune.id}-training"
-        mask_dir = f"{EPHEMERAL_MODELS_DIR}/{tune.id}-training"
-        face_dir = f"{EPHEMERAL_MODELS_DIR}/{tune.id}-training"
-    else:
-        training_dir = f"{EPHEMERAL_MODELS_DIR}/{tune.id}-training"
-        mask_dir = f"{EPHEMERAL_MODELS_DIR}/{tune.id}-masks"
-        face_dir = f"{EPHEMERAL_MODELS_DIR}/{tune.id}-faces"
+    training_dir = f"{EPHEMERAL_MODELS_DIR}/{tune.id}-training"
+    mask_dir = f"{EPHEMERAL_MODELS_DIR}/{tune.id}-masks"
+    face_dir = f"{EPHEMERAL_MODELS_DIR}/{tune.id}-faces"
+    body_mask_dir = f"{EPHEMERAL_MODELS_DIR}/{tune.id}-masks-body"
 
     if os.environ.get('SKIP_DOWNLOAD'):
         print("Skipping download as SKIP_DOWNLOAD is set")
-        return DownloadTrainingOutput(training_dir, face_dir, mask_dir, resolution, has_captions, all_captioned)
+        return DownloadTrainingOutput([training_dir, face_dir], mask_dir, resolution, has_captions, all_captioned)
 
-    shutil.rmtree(training_dir, ignore_errors=True)
-    os.makedirs(training_dir, exist_ok=True)
-    shutil.rmtree(mask_dir, ignore_errors=True)
-    os.makedirs(mask_dir, exist_ok=True)
-    shutil.rmtree(face_dir, ignore_errors=True)
-    os.makedirs(face_dir, exist_ok=True)
+    for dir in [training_dir, mask_dir, face_dir, body_mask_dir]:
+        shutil.rmtree(dir, ignore_errors=True)
+        os.makedirs(dir, exist_ok=True)
 
     ## Create a hash for mapping captions to images
     txt_hash = {} # text files
@@ -314,6 +316,11 @@ def download_training(tune: JsonObj, one_dir=False):
                 )
                 # checking for HUMAN_CLASS_NAMES can be important to avoid cropping one face for class_name=couple
                 if face_crop and bbox and tune.only_face and tune.name in HUMAN_CLASS_NAMES:
+                    if tune.augment_body:
+                        save_img(
+                            ImageOps.fit(mask, (resolution, resolution)),
+                            f"{body_mask_dir}/{os.path.splitext(fn)[0]}-padded-body.png"
+                        )
                     # Train only on the face
                     new_mask = Image.new('L', mask.size)
                     new_mask.paste(mask.crop(orig_bbox), (int(orig_bbox[0]), int(orig_bbox[1])))
@@ -359,10 +366,8 @@ def download_training(tune: JsonObj, one_dir=False):
         tune.orig_images = new_images
 
 
-    if one_dir:
-        return training_dir
     all_captioned = len(images_hash) == 0
-    return DownloadTrainingOutput(training_dir, face_dir, mask_dir, resolution, has_captions, all_captioned)
+    return DownloadTrainingOutput([training_dir, face_dir], mask_dir, resolution, has_captions, all_captioned)
 
 def get_instance_prompt(tune, add_prefix=True):
     if os.environ.get('INSTANCE_PROMPT'):
@@ -419,7 +424,7 @@ def write_metadata(training_dir , resolution, cache_file_suffix):
             }
         }, f)
 
-def create_data_config_v2(tune: JsonObj, output_dir: str, should_write_metadata=True) -> (str, int):
+def create_data_config_v3(tune: JsonObj, output_dir: str) -> (str, int):
     ret = download_training(tune)
     resolution = ret.resolution
     tune.resolution = resolution
@@ -436,50 +441,6 @@ def create_data_config_v2(tune: JsonObj, output_dir: str, should_write_metadata=
 
     data = [
         {
-            "id": "dreambooth-data",
-            "type": "local",
-            "dataset_type": "image",
-            "crop": True,
-            "crop_aspect": "square",
-            "crop_style": "center",
-            "resolution": resolution,
-            "minimum_image_size": 64,
-            "maximum_image_size": resolution,
-            "target_downsample_size": resolution,
-            "resolution_type": "pixel",
-            "cache_dir_vae": f"{output_dir}/cache-vae-flux",
-            "instance_data_dir": ret.training_dir,
-            "disabled": False,
-            "skip_file_discovery": "",
-            "caption_strategy": caption_strategy,
-            "instance_prompt": instance_prompt,
-            "only_instance_prompt": caption_strategy == 'instanceprompt',
-            "metadata_backend": "json",
-            "cache_file_suffix": "square",
-        },
-        {
-            "id": "dreambooth-data-face",
-            "type": "local",
-            "dataset_type": "image",
-            "crop": True,
-            "crop_aspect": "square",
-            "crop_style": "center",
-            "resolution": resolution,
-            "minimum_image_size": 64,
-            "maximum_image_size": resolution,
-            "target_downsample_size": resolution,
-            "resolution_type": "pixel",
-            "cache_dir_vae": f"{output_dir}/cache-vae-flux-face",
-            "instance_data_dir": ret.face_dir,
-            "disabled": False,
-            "skip_file_discovery": "",
-            "caption_strategy": caption_strategy,
-            "instance_prompt": "closeup " + instance_prompt,
-            "only_instance_prompt": caption_strategy == 'instanceprompt',
-            "metadata_backend": "json",
-            "cache_file_suffix": "square",
-        },
-        {
             "id": "text-embeds",
             "type": "local",
             "dataset_type": "text_embeds",
@@ -489,22 +450,38 @@ def create_data_config_v2(tune: JsonObj, output_dir: str, should_write_metadata=
             # "write_batch_size": 128
         }
     ]
+    for dir in ret.dirs:
+        dir_data = {
+            "id": f"dreambooth-data-{os.path.basename(dir)}",
+            "type": "local",
+            "dataset_type": "image",
+            "instance_data_dir": dir,
+            "resolution": resolution,
+            "minimum_image_size": 64,
+            "maximum_image_size": resolution,
+            "target_downsample_size": resolution,
+            "crop": True,
+            "crop_aspect": "square",
+            "crop_style": "center",
+            "resolution_type": "pixel",
+            "cache_dir_vae": f"{output_dir}/cache-vae-flux-{os.path.basename(dir)}",
+            "disabled": False,
+            "skip_file_discovery": "",
+            "caption_strategy": caption_strategy,
+            "instance_prompt": "closeup " + instance_prompt if 'face' in dir else instance_prompt,
+            "only_instance_prompt": caption_strategy == "instanceprompt",
+            "metadata_backend": "json",
+            "cache_file_suffix": "square",
+            "conditioning_data": "dreambooth-conditioning" if tune.segmentation else None,
+        }
+        data.append(dir_data)
+        write_metadata(dir, resolution, 'square')
 
-    if should_write_metadata:
-        write_metadata(ret.training_dir, resolution, 'square')
-        write_metadata(ret.face_dir, resolution, 'square')
 
     if tune.segmentation:
-
         # https://github.com/bghira/SimpleTuner/blob/main/documentation/DREAMBOOTH.md#masked-loss
         # duplicate first two data entries and add conditioning_data
-        for i in range(2):
-            data_copy = data[i]
-            data_copy["id"] = data_copy["id"]+"-conditioned"
-            data_copy["cache_dir_vae"] = data_copy["cache_dir_vae"] + "-conditioning"
-            data_copy["conditioning_data"] = "dreambooth-conditioning"
-
-        data.append({
+        data_mask = {
             "id": "dreambooth-conditioning",
             "type": "local",
             "dataset_type": "conditioning",
@@ -522,58 +499,76 @@ def create_data_config_v2(tune: JsonObj, output_dir: str, should_write_metadata=
             "instance_prompt": instance_prompt,
             "only_instance_prompt": caption_strategy == "instanceprompt",
             "cache_file_suffix": "square-mask",
-        })
+        }
+        data.append(data_mask)
+        if tune.augment_body and tune.face_crop:
+            for d in data:
+                if 'resolution' in d:
+                    d['repeats'] = int(tune.augment_body)
 
-        if write_metadata:
-            with open(f'{ret.mask_dir}/aspect_ratio_bucket_indices_square-mask.json', "w") as f:
-                json.dump({
-                    "config": {
-                        "crop": True,
-                        "crop_aspect": "square",
-                        "crop_aspect_buckets": None,
-                        "crop_style": "center",
-                        "disable_validation": False,
-                        "resolution": resolution,
-                        "resolution_type": "pixel",
-                        "caption_strategy": "instanceprompt",
-                        "instance_data_dir": ret.mask_dir,
-                        "maximum_image_size": resolution,
-                        "target_downsample_size": resolution,
-                        "config_version": 2,
-                        "hash_filenames": True
-                    },
-                    "aspect_ratio_bucket_indices": {}
-                }, f)
+            training_dir = ret.dirs[0]
+            assert 'training' in training_dir
 
-    # When using textfile augment the dataset with another copy so that
-    # 50% is only instanceprompt and 50% is instanceprompt + textfile
-    if caption_strategy == "textfile" or ret.has_caption:
-        data_textfile = data[0].copy()
-        data_textfile["id"] = "dreambooth-textfile"
-        data_textfile["caption_strategy"] = "textfile"
-        data_textfile["only_instance_prompt"] = False
-        data_textfile["instance_prompt"] = ""
-        data_textfile["cache_dir_vae"] = f"{output_dir}/cache-vae-flux-textfile"
-        data.append(data_textfile)
+            # copy training_dir - add 'body' of the dir and name of each file
+            body_training_dir = training_dir + "-body"
+            shutil.rmtree(body_training_dir, ignore_errors=True)
+            os.makedirs(body_training_dir, exist_ok=True)
+            for fn in os.listdir(training_dir):
+                if not fn.endswith('.png'):
+                    continue
+                shutil.copy(f"{training_dir}/{fn}", f"{body_training_dir}/{os.path.splitext(fn)[0]}-body.png")
+                print(f"Copying {fn} to {body_training_dir}/{os.path.splitext(fn)[0]}-body.png")
+
+
+            # Add mask data to JSON
+            body_mask_dir = f"{EPHEMERAL_MODELS_DIR}/{tune.id}-masks-body"
+            body_mask_data = data_mask.copy()
+            body_mask_data["id"] += "-body"
+            body_mask_data["instance_data_dir"] = body_mask_dir
+            body_mask_data["repeats"] = 1
+            body_mask_data["cache_file_suffix"] = "square-body-mask"
+            # Add training data to JSON but conditioned on the body mask and lower repeats
+            training_data = next(d for d in data if 'instance_data_dir' in d and d['instance_data_dir']==training_dir)
+            assert 'training' in training_data['instance_data_dir']
+            body_training_data = training_data.copy()
+            body_training_data["id"] += "-body-mask"
+            body_training_data["conditioning_data"] = body_mask_data["id"]
+            body_training_data["instance_data_dir"] = body_training_dir
+            body_training_data["repeats"] = 1
+            body_training_data["cache_file_suffix"] = "square-body"
+            body_training_data["cache_dir_vae"] = body_training_data["cache_dir_vae"] + "-body"
+            data.append(body_mask_data)
+            data.append(body_training_data)
+            write_metadata(body_training_dir, resolution, 'square-body')
+
+
+
+
+        write_metadata(ret.mask_dir, resolution, 'square-mask')
+
 
     if tune.multiresolution or os.environ.get('MULTIRESOLUTION'):
         # ordered is reversed so that repeats is higher for lower resolutions
         all_resolutions = [768, 512]
         resolutions = [r for r in all_resolutions if r < resolution]
+        to_append = []
         for res_i, res in enumerate(resolutions):
-            for i in range(2):
-                data_copy = data[i].copy()
-                data_copy["id"] = data_copy["id"] + f"-{res}"
-                data_copy["cache_dir_vae"] = data_copy["cache_dir_vae"] + f"-{res}"
+            for data_i in data:
+                if data_i['dataset_type']  != 'image':
+                    continue
+                print(f"Adding resolution {res} for {data_i['id']}")
+                data_copy = data_i.copy()
+                data_copy["id"] = data_i["id"] + f"-{res}"
+                data_copy["cache_dir_vae"] = data_i["cache_dir_vae"] + f"-{res}"
                 data_copy["resolution"] = res
                 data_copy["repeats"] = 5^(res_i+1)
                 # data_copy["minimum_image_size"] = 64
                 # data_copy["maximum_image_size"] = res
                 data_copy["target_downsample_size"] = res
                 data_copy["cache_file_suffix"] = f"square-{res}"
-                data.append(data_copy)
-                write_metadata(ret.training_dir, res, f'square-{res}')
-                write_metadata(ret.face_dir, res, f'square-{res}')
+                write_metadata(data_copy['instance_data_dir'], res, f'square-{res}')
+                to_append.append(data_copy)
+        data.extend(to_append)
 
     # requires tune.lora_type=lycoris
     if tune.regularization:
@@ -659,7 +654,8 @@ def create_data_config_v2(tune: JsonObj, output_dir: str, should_write_metadata=
 
 if __name__ == "__main__":
     import sys
-    from train import parse_args
+    from train import parse_args, parse_env_args
+
     if os.environ.get('MOCK_SERVER'):
         from astria_mock_server import request_tune_job_from_server
     else:
@@ -667,8 +663,12 @@ if __name__ == "__main__":
     for id in sys.argv[1:]:
         tune = request_tune_job_from_server(id)
         parse_args(tune)
+        parse_env_args(tune)
+        print('DEBUGGING WITH ONE IMAGE!!')
+        tune.orig_images = tune.orig_images[:1] # for testing
         output_dir = f"{EPHEMERAL_MODELS_DIR}/{tune.id}-{tune.branch}"
+        print(f"augment_body={tune.augment_body}")
         shutil.rmtree(output_dir, ignore_errors=True)
         os.makedirs(output_dir, exist_ok=True)
-        create_data_config_v2(tune, output_dir)
+        create_data_config_v3(tune, output_dir)
         print(f"Downloaded training data for {tune.id}")

@@ -385,7 +385,7 @@ class InpaintFaceMixin:
 
     INPAINT_RESOLUTION = 512  # Define the inpaint resolution
 
-    def inpaint_image(self, image: Image.Image, prompt: JsonObj, kwargs: Optional[Dict[str, Any]]=None):
+    def inpaint_image(self, image: Image.Image, prompt: JsonObj, kwargs: Dict) -> Image.Image:
         pred = ultralytics_predict(
             self.yolo,
             image=image,
@@ -468,18 +468,9 @@ class InpaintFaceMixin:
         # Inpaint the resized cropped region
         inpainted_crop_resized = cropped_image_resized
         for i in range(1):
-            prompt_embeds = None
-            pooled_prompt_embeds = None
-            if kwargs is not None and 'prompt_embeds' in kwargs.keys():
-                prompt_embeds = kwargs['prompt_embeds']
-            if kwargs is not None and 'pooled_prompt_embeds' in kwargs.keys():
-                pooled_prompt_embeds = kwargs['pooled_prompt_embeds']
-            if prompt_embeds is not None and pooled_prompt_embeds is not None:
-                prompt.text = None
             inpainted_crop_resized = pipe(
-                prompt=prompt.text,
-                prompt_embeds=prompt_embeds,
-                pooled_prompt_embeds=pooled_prompt_embeds,
+                prompt_embeds=kwargs.get('prompt_embeds'),
+                pooled_prompt_embeds=kwargs.get('pooled_prompt_embeds'),
                 guidance_scale=float(prompt.cfg_scale or 2.5),
                 height=cropped_image_resized.height,
                 width=cropped_image_resized.width,
@@ -576,7 +567,7 @@ class InpaintFaceMixin:
 
         return image
 
-    def inpaint_faces(self, images: List[Image.Image], prompt: JsonObj, kwargs: Optional[Dict[str, Any]]=None):
+    def inpaint_faces(self, images: List[Image.Image], prompt: JsonObj, kwargs: Dict):
         if not self.yolo:
             self.yolo = YOLO(YOLO_FACE_MODEL)
 

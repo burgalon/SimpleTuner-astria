@@ -3,6 +3,8 @@ import time
 from typing import List
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
+import requests
+import rollbar
 from PIL import Image
 from astria_utils import JsonObj, MODELS_DIR
 if os.environ.get('MOCK_SERVER'):
@@ -22,7 +24,7 @@ OTHER_CLOTHING_CATEGORIES = [
 ]
 VTON_CATEGORIES = LOWER_BODY_CATEGORIES + UPPER_BODY_CATEGORIES + OTHER_CLOTHING_CATEGORIES
 
-HEADERS = {"Authorization": f"Bearer {FASHN_API_KEY}"}
+HEADERS = {"Authorization": f"Key {FASHN_API_KEY}", "Content-Type": "application/json"}
 FASHN_BASE_URL_V1 = 'https://api.fashn.ai/v1'
 FASHN_BASE_URL_NIGHTLY = 'https://api.fashn.ai/nightly'
 
@@ -42,9 +44,9 @@ class VtonMixin:
             for future in as_completed(futures):
                 results.append(future.result())
 
-        if os.environ.get('DEBUG'):
-            for i, image in enumerate(results):
-                image.save(MODELS_DIR + f"/{prompt.id}-{i}-after-vton.jpg")
+        # if os.environ.get('DEBUG'):
+        #     for i, image in enumerate(results):
+        #         image.save(MODELS_DIR + f"/{prompt.id}-{i}-after-vton.jpg")
 
         return results
 
@@ -59,50 +61,60 @@ class VtonMixin:
                 else 'bottoms' if tune.name in LOWER_BODY_CATEGORIES
                 else 'one-pieces'
             )
-            flat_lay = 'flat lay' in tune.title.lower()
             cfg_scale = prompt.vton_cfg_scale or 2
 
-            print(f"Running vton for {tune.name=} {category=} {flat_lay=} {cfg_scale=}")
+            garment_photo_type = 'model' if 'model' in tune.title else 'flat-lay' if 'flat-lay' in tune.title else 'auto'
+            print(f"Running vton for {tune.name=} {category=} {cfg_scale=} {garment_photo_type=}")
 
             # Step 1: Run the model
-            base_url = FASHN_BASE_URL_NIGHTLY if prompt.vton_hires else FASHN_BASE_URL_V1
-            response = session.post(f'{base_url}/run', json={
+            base_url = 'https://queue.fal.run/fashn/tryon'
+            response = session.post(base_url, json={
                 'model_image': "data:image/png;base64, " + pil2base64(image),
                 'garment_image': tune.face_swap_images[0],
                 'category': category,
                 'guidance_scale': cfg_scale,
-                'flat_lay': flat_lay,
+                'garment_photo_type': garment_photo_type,
                 'nsfw_filter': False,
                 'restore_clothes': category != 'one-pieces',
             }, headers=HEADERS)
 
             response_data = response.json()
-            if 'id' not in response_data:
-                print(f"Failed to start VTON process: {response_data.get('error', 'Unknown error')}")
+            if 'status' not in response_data:
+                print(f"P={prompt.id} Failed to start VTON process: {response_data.get('error', 'Unknown error')}")
                 return image
 
-            process_id = response_data['id']
-
             # Step 2: Poll for the status
-            status_url = f'{base_url}/status/{process_id}'
+            status_url = response_data['status_url']
+            # for quick testing
+            # status_url = "https://queue.fal.run/fashn/tryon/requests/8510818b-d43e-4c4a-a6ab-38d5bbc80052/status"
             start_time = time.time()
             for _ in range(120):
                 status_response = session.get(status_url, headers=HEADERS)
                 status_data = status_response.json()
 
+                # https://docs.fal.ai/model-endpoints/queue/
                 if 'status' not in status_data:
                     print(f"VTON status response missing status: {status_data}")
                     continue
-                if status_data['status'] in ['completed', 'failed', 'canceled']:
+                if status_data['status'] in ['COMPLETED']:
                     break
                 time.sleep(0.5)
 
-            if status_data.get('status') != 'completed' or 'output' not in status_data:
-                print(f"Failed to get response from VTON: {status_data.get('error', 'Unknown error')}")
+            if status_data['status'] != 'COMPLETED':
+                uuid=rollbar.report_message(f"P={prompt.id} Failed to get response from VTON: {status_data.get('DETAIL', 'Unknown error')}", "error")
+                print(f"P={prompt.id} Failed to get response from VTON: {status_data.get('error', 'Unknown error')} {uuid=}")
+                return image
+
+            result_data = requests.get(status_data['response_url'], headers=HEADERS).json()
+            if 'images' not in result_data:
+                if result_data['detail'] and result_data['detail']['message']:
+                    result_data = result_data['detail']['message']
+                uuid=rollbar.report_message(f"P={prompt.id} Failed to get response from VTON: {result_data}", "error")
+                print(f"P={prompt.id} Failed to get images from VTON: {result_data} {uuid=}")
                 return image
 
             # Step 3: Fetch the output
-            image_url = status_data['output'][0]
+            image_url = result_data['images'][0]['url']
             print(f"Successfully completed VTON. Fetching image from {image_url}. Time={time.time() - start_time:.2f}s")
             image = load_image(image_url)
 

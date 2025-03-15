@@ -1,6 +1,5 @@
 import argparse
 import copy
-import gc
 import json
 import os
 import re
@@ -9,17 +8,18 @@ import sys
 import time
 import traceback
 
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+
 from filelock import FileLock
 import cv2
 import numpy as np
 import torch
 from PIL import Image, ImageOps, ImageFilter
-from diffusers import BitsAndBytesConfig
+from diffusers import FluxFillPipeline, FluxTransformer2DModel
 from diffusers import FluxPipeline, FluxImg2ImgPipeline, FluxControlNetPipeline, FluxControlNetModel, \
     FluxInpaintPipeline, FluxControlNetImg2ImgPipeline, FluxControlNetInpaintPipeline
 from torchvision import transforms
 
-from ace_plus_fill import ACEPlusDiffuserInference, ACE_NEGATIVE_PORTRAIT_PROMPT, ACE_NEGATIVE_SUBJECT_PROMPT
 from pulid_pipeline.pipeline import FluxPipelineWithPulID
 from pulid_pipeline.pulid_ext import PuLID
 
@@ -46,19 +46,12 @@ else:
 
 from birefnet.BiRefNet_node import BiRefNet_node
 from controlnet_constants import CONTROLNETS_DICT, CONTROL_MODES
-from fill_cfg_pipeline import (
-    SLG_DEFAULT_LAYERS,
-    FluxFillCFGPipeline as FluxFillPipeline,
-    FluxTransformer2DModel as FluxTransformer2DSLGModel,
-)
-
 from hinter_helper import get_detector
 from image_utils import load_image, load_images
 from pipeline_flux_differential_img2img import FluxDifferentialImg2ImgPipeline
 from runpod_utils import kill_pod
 from sig_listener import TerminateException, is_terminated, set_current_infer_tune, set_current_train_tune
 from super_resolution_helper import load_sr, upscale_sr
-
 from inpaint_face_mixin import InpaintFaceMixin
 from vton_mixin import (
     VtonMixin,
@@ -74,7 +67,6 @@ print(f"GPU_MEMORY_GB={GPU_MEMORY_GB:.0f}")
 UNIT_NUMBERS = {0: 'zero', 1: 'one', 2: 'two', 3: 'three', 4: 'four',
            5: 'five', 6: 'six', 7: 'seven', 8: 'eight', 9: 'nine'}
 
-
 def parse_args(prompt: JsonObj):
     parser = argparse.ArgumentParser()
     parser.add_argument("--mask_prompt", type=str, default=None)
@@ -86,7 +78,7 @@ def parse_args(prompt: JsonObj):
     parser.add_argument("--mask_invert", action='store_true', default=False)
     parser.add_argument("--disable_restore_mask_area", action='store_true', default=None)
     parser.add_argument("--face_inpaint_denoising", type=float, default=None)
-    parser.add_argument("--face_inpaint_exclude_neck", action='store_true', default=getattr(prompt, 'face_inpaint_exclude_neck', False))
+    parser.add_argument("--face_inpaint_exclude_neck")
     parser.add_argument("--hires_denoising_strength", type=float, default=None)
     parser.add_argument("--fill", action='store_true', default=False)
     parser.add_argument("--outpaint", choices=['top-left', 'top-right', 'bottom-left', 'bottom-right', 'center', 'top-center', 'bottom-center', 'left-center', 'right-center'], default=None)
@@ -116,52 +108,16 @@ def parse_args(prompt: JsonObj):
     parser.add_argument("--input_faceid", type=float, help="Use input_image for faceid. Defines the scale of the input_image for faceid", default=None, const=1.0, nargs='?')
     parser.add_argument("--faceid_portrait", help="Use faceid portrait", action='store_true', default=False)
     parser.add_argument("--fix_bindi", help="Inpaint dot on the forehead", action='store_true', default=False)
-    parser.add_argument(
-        "--cfg_scale",
-        help="cfg_scale",
-        type=float,
-        default=getattr(prompt, 'cfg_scale', None),
-    )
     parser.add_argument("--vton_cfg_scale", help="VTON cfg_scale", type=float, default=None)
     parser.add_argument("--vton_hires", help="VTON Hi resolution", action='store_true', default=False)
     parser.add_argument("--remove_background", help="Remove background", action='store_true', default=False)
     parser.add_argument(
         "--use_regional",
         "--multi",
-        help="Uses RAG diffusion with gpt4o prompt enhancement. If set to `force_llm`, it will skip using any possible templates and force LLM-guided region bounding.",
+        help="Uses RAG diffusion with gpt4o prompt enhancement. If set to `dynamic`, it will skip using any possible templates and force LLM-guided region bounding.",
         const=True,
         nargs='?',
-        default=getattr(prompt, 'use_regional', False),
-    )
-    parser.add_argument(
-        "--ace_plus",
-        help="Use ACE generation/inpainting pipeline",
-        action='store_true',
-        default=getattr(prompt, 'ace_plus', None),
-    )
-    parser.add_argument(
-        "--ace_plus_instruction_edit",
-        help="Use ACE generation/inpainting instruction editing pipeline",
-        action='store_true',
-        default=getattr(prompt, 'ace_plus_instruction_edit', None),
-    )
-    parser.add_argument(
-        "--fill_real_cfg",
-        help="Use real classifier free guidance when using fill",
-        type=float,
-        default=getattr(prompt, 'fill_real_cfg', None),
-    )
-    parser.add_argument(
-        "--fill_negative_prompt",
-        help="The negative prompt to use with real CFG when using fill CFG pipeline",
-        type=float,
-        default=getattr(prompt, 'fill_negative_prompt', None),
-    )
-    parser.add_argument(
-        "--fill_slg",
-        help="String of list for layers to skip in skipped layer guidance for fill",
-        type=str,
-        default=getattr(prompt, 'fill_slg', None),
+        default=prompt.use_regional,
     )
     parser.add_argument(
         "--regional_hb_replace",
@@ -254,9 +210,9 @@ class InferPipeline(InpaintFaceMixin, VtonMixin):
         start_time = time.time()
         self.init_pipe(MODELS_DIR + "/1504944-flux1")
         print(f"Initialized pipeline in {time.time() - start_time:.2f}s")
-        # start_time = time.time()
-        # self.init_inpaint(JsonObj(fill=True))
-        # print(f"Initialized inpaint in {time.time() - start_time:.2f}s")
+        start_time = time.time()
+        self.init_inpaint(JsonObj(fill=True))
+        print(f"Initialized inpaint in {time.time() - start_time:.2f}s")
 
     def unload_lora_weights(self, pipe):
         pipe_key = get_pipe_key_for_lora(pipe)
@@ -270,6 +226,7 @@ class InferPipeline(InpaintFaceMixin, VtonMixin):
         names = []
         scales = []
         lora_fns = []
+        setattr(prompt, '_prompt_raw', prompt.text)
         setattr(prompt, '_prompt_with_lora_ids', prompt.text)
 
         pipe = self.fill if isinstance(pipe, FluxFillPipeline) else self.pipe
@@ -282,8 +239,8 @@ class InferPipeline(InpaintFaceMixin, VtonMixin):
 
         all_match_groups = re.findall(self.reference_pattern_re, prompt.text)
         for match_groups in all_match_groups:
-            _type, token, scale = match_groups
-            if _type == "lora":
+            type, token, scale = match_groups
+            if type == "lora":
                 tune = next(iter([tune for tune in prompt.tunes if tune.token == token or str(tune.id) == token]), None)
                 if not tune:
                     raise Exception(f"Token {token} not found in prompt {prompt.id} tokens={prompt.tunes}")
@@ -370,13 +327,14 @@ class InferPipeline(InpaintFaceMixin, VtonMixin):
             self.model_path = model_path
             # TODO: Remove once this is merged to diffusers
             self.resolution = (1024, 1024)
-        self._model_path = model_path
 
     def init_pulid(self):
         if not self.pulid_pipe:
             os.environ['NO_ALBUMENTATIONS_UPDATE'] = '1'
+            start_time = time.time()
             self.pulid_model = PuLID(local_dir=f'{CACHE_DIR}/pulid', models_dir=CACHE_DIR)
             self.pulid_model.clip_vision_model.to(device)
+            print(f"Initialized PuLID model in {time.time() - start_time:.2f}s")
 
             self.pulid_pipe = FluxPipelineWithPulID(
                 scheduler=self.pipe.scheduler,
@@ -463,13 +421,8 @@ class InferPipeline(InpaintFaceMixin, VtonMixin):
         if prompt.fill:
             if not self.fill:
                 model_path = download_model_from_server(f'{FLUX_INPAINT_MODEL_ID}-flux1')
-                self._model_path_fill = model_path
                 self.fill = FluxFillPipeline(
-                    transformer=FluxTransformer2DSLGModel.from_pretrained(
-                        model_path,
-                        subfolder="transformer",
-                        torch_dtype=torch.bfloat16,
-                    ),
+                    transformer=FluxTransformer2DModel.from_pretrained(model_path, subfolder="transformer", torch_dtype=torch.bfloat16),
                     scheduler=self.pipe.scheduler,
                     vae=self.pipe.vae,
                     text_encoder=self.pipe.text_encoder,
@@ -864,88 +817,6 @@ class InferPipeline(InpaintFaceMixin, VtonMixin):
 
             images[i_image] = upscale_sr(self.sr_model, image, upscale_factor)
         return images
-    
-    def infer_ace_overrides(self, pipe, prompt, kwargs,
-        ace_location=CACHE_DIR,
-        orig_input_image=None,
-        orig_mask_image=None,
-    ):
-        _pipe = pipe
-
-        ace_lora_unload_fn, ace_post_process_fn, slice_w, out_w, out_h = [None] * 5
-
-        self.pipe.transformer = self.pipe.transformer.to('cpu')
-        gc.collect()
-        torch.cuda.empty_cache()
-
-        ace_model_lora_loaded = False
-        tune_ace = next(iter(tune for tune in prompt.tunes
-            if tune.model_type == 'faceid' and tune.name in HUMAN_CLASS_NAMES), None)
-        if tune_ace is not None: 
-            ace_model_lora_loaded = 'portrait'
-        else:
-            tune_ace = next(iter(tune for tune in prompt.tunes
-                if tune.model_type == 'faceid'), None)
-            ace_model_lora_loaded = 'subject'
-
-        if (
-            prompt.ace_plus_instruction_edit or
-            (not bool(tune_ace) and orig_input_image is not None and orig_mask_image is not None)
-        ):
-            ace_model_lora_loaded = 'local_editing'
-        print('Using ace model:', ace_model_lora_loaded)
-
-        if tune_ace is None and orig_input_image is None and orig_mask_image is None:
-            raise ValueError('ace_plus requires a reference image')
-
-        reference_image = load_images(tune_ace.face_swap_images[:1])[0]
-
-        ace, ace_post_process_fn, ace_lora_unload_fn = ACEPlusDiffuserInference.init_from_pipe(
-            pipe,
-            self._model_path,
-            device,
-            ace_location,
-            ace_model_lora_loaded,
-        )
-        _pipe = ace.pipe
-        masked_image_latents, masked_image_latents_uncond, h, w, slice_w, out_w, out_h = ace.prepare_inputs(
-            prompt.text,
-            reference_image=reference_image,
-            edit_image=orig_input_image,
-            edit_mask=orig_mask_image,
-            seed=prompt.seed or 42,
-            height=prompt.h or 1024,
-            width=prompt.w or 1024,
-            repainting_scale=1.0
-                if orig_input_image is not None and orig_mask_image is not None
-                else 0,
-            uses_cfg=prompt.fill_real_cfg is not None,
-        )
-        # prompt.h = h
-        # prompt.w = w
-        if kwargs.get('image', False):
-            del kwargs['image']
-        if kwargs.get('mask_image', False):
-            del kwargs['mask_image']
-        kwargs['masked_image_latents'] = masked_image_latents
-        if masked_image_latents_uncond is not None:
-            kwargs['masked_image_latents_uncond'] = masked_image_latents_uncond
-
-        # Make the latent sequence size match up.
-        prompt.h = h
-        prompt.w = w
-
-        del ace, pipe
-        def _ace_lora_unload_fn(ace_lora_unload_fn=ace_lora_unload_fn):
-            gc.collect()
-            torch.cuda.empty_cache()
-            self.pipe.transformer = self.pipe.transformer.to('cuda')
-            ace_lora_unload_fn()
-
-        def _ace_post_process_fn(_image, ace_post_process_fn=ace_post_process_fn):
-            return ace_post_process_fn(_image, slice_w, out_w, out_h)
-
-        return _pipe, _ace_post_process_fn, _ace_lora_unload_fn
 
     def infer_prompt(self, prompt, tune: JsonObj):
         parse_args(prompt)
@@ -957,15 +828,13 @@ class InferPipeline(InpaintFaceMixin, VtonMixin):
         if prompt.mask_prompt and prompt.input_image and not prompt.mask_image:
             prompt.mask_image = self.infer_mask(prompt)
 
-        input_image_tensor, controlnet_hint, w, h, orig_input_image, input_image, mask_image, orig_mask_image = None, None, None, None, None, None, None, None
+        input_image_tensor, controlnet_hint, w, h, orig_input_image, input_image, mask_image = None, None, None, None, None, None, None
 
         all_tunes_are_human_and_more_than_one = (
                 all(tune.name in HUMAN_CLASS_NAMES for tune in prompt.tunes)
                 and len(prompt.tunes) > 1
         )
-        use_regional =  getattr(prompt, 'use_regional', False) or all_tunes_are_human_and_more_than_one
-        if prompt.ace_plus:
-            prompt.fill = True
+        use_regional =  prompt.use_regional or all_tunes_are_human_and_more_than_one
 
         if use_regional:
             self.init_rag_diffusion()
@@ -974,17 +843,14 @@ class InferPipeline(InpaintFaceMixin, VtonMixin):
 
         # Note that the below condition is IMPORTANT and need to be modified cautiously
         # See test_vton_img2img_strength0
-        elif any(
-            tune.model_type == 'faceid' and tune.name in HUMAN_CLASS_NAMES
-            for tune in prompt.tunes
-        ) and not prompt.ace_plus:
+        elif any([tune.model_type == 'faceid' and tune.name in HUMAN_CLASS_NAMES for tune in prompt.tunes]):
             if input_image:
                 raise Exception("Cannot have both faceid and input_image")
             if use_regional:
                 raise Exception("Can not use face ID with --use_regional")
             for match_groups in re.findall(self.reference_pattern_re, prompt.text):
-                _type, token, scale = match_groups
-                if _type == "faceid":
+                type, token, scale = match_groups
+                if type == "faceid":
                     tune = next(iter([tune for tune in prompt.tunes if tune.token == token or str(tune.id) == token]), None)
                     if not tune:
                         raise Exception(f"Token {token} not found in prompt {prompt.id} tokens={prompt.tunes}")
@@ -993,7 +859,7 @@ class InferPipeline(InpaintFaceMixin, VtonMixin):
 
                     # Clean the match from the prompt
                     # also needs to be cleaned for VTON
-                    prompt.text = prompt.text.replace(f"<{_type}:{token}:{scale}>", "")
+                    prompt.text = prompt.text.replace(f"<{type}:{token}:{scale}>", "")
 
                     if tune.name in VTON_CATEGORIES:
                         pipe = self.pipe
@@ -1049,11 +915,16 @@ class InferPipeline(InpaintFaceMixin, VtonMixin):
                 if mask_image or prompt.ace_plus:
                     pipe = self.init_inpaint(prompt)
                 if mask_image:
+                    # Enable Fill automatically if no LoRAs
+                    if len(prompt.tunes) == 0:
+                        print(f"T#{prompt.tune_id} P#{prompt.id} No LoRAs, enabling fill")
+                        prompt.fill = True
+                    pipe = self.init_inpaint(prompt)
                     if isinstance(pipe, FluxDifferentialImg2ImgPipeline):
                         print("Inverting mask for differential diffusion")
                         mask_image = ImageOps.invert(mask_image)
                     kwargs['mask_image'] = mask_image
-                elif not prompt.ace_plus:
+                else:
                     self.init_img2img()
                     pipe = self.img2img
                 if isinstance(pipe, FluxFillPipeline):
@@ -1061,16 +932,12 @@ class InferPipeline(InpaintFaceMixin, VtonMixin):
                         prompt.cfg_scale = 30
                 else:
                     kwargs['strength'] = float(prompt.denoising_strength if prompt.denoising_strength != None else 0.8)
-        elif prompt.ace_plus:
-            pipe = self.init_inpaint(prompt)
         else:
             pipe = self.pipe
 
         # For tests
-        if not prompt.ace_plus:
-            self.last_pipe = pipe
-        else:
-            self.last_pipe = 'ACE_plus'
+        self.last_pipe = pipe
+        images = []
         num_images = int(os.environ.get('NUM_IMAGES', prompt.num_images))
 
         if use_regional:
@@ -1086,15 +953,6 @@ class InferPipeline(InpaintFaceMixin, VtonMixin):
             del kwargs['prompt_main']
 
         # Encode text embeds
-        if (
-            prompt.ace_plus and next(iter(tune for tune in prompt.tunes
-            if tune.model_type == 'faceid'), None) is not None
-        ):
-            if next(iter(tune for tune in prompt.tunes
-            if tune.model_type == 'faceid' and tune.name in HUMAN_CLASS_NAMES), None) is not None:
-                prompt.text = "{image} Maintain the facial features." + prompt.text
-            else:
-                prompt.text = "{image} " + prompt.text
         (
             prompt_embeds,
             pooled_prompt_embeds,
@@ -1108,52 +966,12 @@ class InferPipeline(InpaintFaceMixin, VtonMixin):
         kwargs['prompt_embeds'] = prompt_embeds
         kwargs['pooled_prompt_embeds'] = pooled_prompt_embeds
 
-        if prompt.fill_real_cfg is not None:
-            neg_prompt = ACE_NEGATIVE_SUBJECT_PROMPT
-            if prompt.fill_negative_prompt is not None:
-                neg_prompt = prompt.fill_negative_prompt
-            kwargs['guidance_scale_real'] = prompt.fill_real_cfg
-
-            (
-                negative_prompt_embeds,
-                negative_pooled_prompt_embeds,
-                _,
-            ) = pipe.encode_prompt(
-                neg_prompt,
-                neg_prompt,
-                max_sequence_length=prompt.max_sequence_length or 512,
-                device=device,
-            )
-            kwargs['negative_prompt_embeds'] = negative_prompt_embeds
-            kwargs['negative_pooled_prompt_embeds'] = negative_pooled_prompt_embeds
-        elif isinstance(pipe, FluxFillPipeline) and (not prompt.cfg_scale or prompt.cfg_scale < 7):
-            prompt.cfg_scale = 50
-
-        if prompt.fill_real_cfg is not None and prompt.fill_slg is not None:
-            fill_slg = prompt.fill_slg
-            if prompt.fill_slg == 'default':
-                fill_slg = SLG_DEFAULT_LAYERS
-            kwargs['skip_layer_guidance'] = json.loads(fill_slg)
-
         print(f"T#{prompt.tune_id} P#{prompt.id} pipe={pipe.__class__.__name__} {prompt.text=} loras={self.current_lora_weights_map[get_pipe_key_for_lora(pipe)]}")
-
-        ace_post_process_fn, ace_lora_unload_fn = (None, None)
-        if prompt.ace_plus:
-            pipe, ace_post_process_fn, ace_lora_unload_fn = self.infer_ace_overrides(
-                pipe, prompt, kwargs,
-                ace_location=CACHE_DIR,
-                orig_input_image=orig_input_image,
-                orig_mask_image=orig_mask_image,
-            )
-
-        images = []
-
         for i_image in range(num_images):
             if 'image' in kwargs is not None and 'strength' in kwargs and kwargs['strength'] == 0:
                 print(f"T#{prompt.tune_id} P#{prompt.id} Skipping image {i_image} because strength=0. Probably just VTON or outpaint only?")
                 images.append(kwargs['image'])
                 continue
-
             image = pipe(
                 guidance_scale=float(prompt.cfg_scale if prompt.cfg_scale is not None else 3.5),
                 height=prompt.h or 1024,
@@ -1165,17 +983,7 @@ class InferPipeline(InpaintFaceMixin, VtonMixin):
             ).images[0]
             if is_terminated():
                 raise TerminateException("terminated")
-            if ace_post_process_fn is not None:
-                image = ace_post_process_fn(image)
             images.append(image)
-
-        if ace_lora_unload_fn is not None:
-            del ace_post_process_fn
-            pipe = None
-            self.fill = None
-
-            ace_lora_unload_fn()
-            del ace_lora_unload_fn
 
         if prompt.outpaint:
             images = self.outpaint(images, prompt, kwargs)
@@ -1244,6 +1052,7 @@ class InferPipeline(InpaintFaceMixin, VtonMixin):
         return images
 
     def get_rag_kwargs(self, prompt):
+        is_dynamic = prompt.use_regional == 'dynamic'
         # VTON_CATEGORIES
         all_tunes_are_human_and_more_than_one = (
                 all(tune.name in HUMAN_CLASS_NAMES for tune in prompt.tunes)
@@ -1259,7 +1068,6 @@ class InferPipeline(InpaintFaceMixin, VtonMixin):
             and sum(tune.name in HUMAN_CLASS_NAMES
                 for tune in prompt.tunes) == 1
         )
-        force_llm = (prompt.multi or prompt.use_regional) == 'force_llm'
 
         prompt_main = self.purge_lora_ids_from_rag_input_for_unified_prompt(
             prompt,
@@ -1276,7 +1084,7 @@ class InferPipeline(InpaintFaceMixin, VtonMixin):
                 and prompt.HB_n_offset_list
                 and prompt.HB_m_scale_list
                 and prompt.HB_n_scale_list
-                and not force_llm
+                and not is_dynamic
         ):
             regions = {
                 "SR_hw_split_ratio": prompt.SR_hw_split_ratio,
@@ -1287,7 +1095,7 @@ class InferPipeline(InpaintFaceMixin, VtonMixin):
                 "HB_m_scale_list": prompt.HB_m_scale_list,
                 "HB_n_scale_list": prompt.HB_n_scale_list,
             }
-        elif prompt.regional_json is not None and not force_llm:
+        elif prompt.regional_json is not None and not is_dynamic:
             regions = json.loads(prompt.regional_json)
             if "SR_hw_split_ratio" not in regions.keys():
                 raise ValueError('SR_hw_split_ratio required in regional_json')
@@ -1303,7 +1111,8 @@ class InferPipeline(InpaintFaceMixin, VtonMixin):
                 raise ValueError('HB_m_scale_list required in regional_json')
             if "HB_n_scale_list" not in regions.keys():
                 raise ValueError('HB_n_scale_list required in regional_json')
-        elif all_tunes_are_human_and_more_than_one and not force_llm:
+        elif all_tunes_are_human_and_more_than_one and not is_dynamic:
+            print(f"T#{prompt.tune_id} P#{prompt.id} Using column based template")
             regions = generate_n_column_layout_regions(len(prompt.tunes))
             # regions_oai_resp = openai_gpt4o_get_multi_lora_prompts(
             #     prompt._prompt_with_lora_ids, len(prompt.tunes))
@@ -1314,7 +1123,8 @@ class InferPipeline(InpaintFaceMixin, VtonMixin):
                 for lora in prompt.tunes)
             regions['HB_prompt_list'] = [f'{lora.train_token} {lora.name}'
                 for lora in prompt.tunes]
-        elif one_human_and_one_fashion_lora and not force_llm:
+        elif one_human_and_one_fashion_lora and not is_dynamic:
+            print(f"T#{prompt.tune_id} P#{prompt.id} Using RAG template for VTON")
             regions = None
             person_lora = next(tune for tune in prompt.tunes
                 if tune.name in HUMAN_CLASS_NAMES)
@@ -1337,6 +1147,7 @@ class InferPipeline(InpaintFaceMixin, VtonMixin):
             regions['HB_prompt_list'] = [f'{lora.train_token} {lora.name}'
                 for lora in prompt.tunes]
         else:
+            print(f"T#{prompt.tune_id} P#{prompt.id} Using LLM for RAG")
             regions = openai_gpt4o_get_regions(prompt._prompt_with_lora_ids)
         print(f"T#{prompt.tune_id} P#{prompt.id} regions={regions}")
 
@@ -1390,19 +1201,19 @@ class InferPipeline(InpaintFaceMixin, VtonMixin):
 
 
 def main():
-    from train import train
+    from astria.train import train
 
     download_model_from_server(f"1504944-flux1")
     pipeline = InferPipeline()
 
     def poll():
-        if GPU_MEMORY_GB > 50:
+        if GPU_MEMORY_GB > 50 and not os.environ.get('DISABLE_INFERENCE'):
             pipeline.warmup()
         i = 0
         max_sleeps = int(os.environ.get('MAX_SLEEPS', 90))
         while not is_terminated() and (i < max_sleeps or os.environ.get('DONT_STOP')):
             check_refresh()
-            processed_jobs = pipeline.poll_infer()
+            processed_jobs = 0 if os.environ.get('DISABLE_INFERENCE') else pipeline.poll_infer()
 
             # Give a few chances for inference before starting training
             if not os.environ.get('DISABLE_TRAINING'):
@@ -1417,7 +1228,8 @@ def main():
                     train(tune)
                     set_current_train_tune(None)
                     processed_jobs = 1
-                    pipeline.warmup()
+                    if GPU_MEMORY_GB > 50 and not os.environ.get('DISABLE_INFERENCE'):
+                        pipeline.warmup()
 
             # Check both train + infer
             if processed_jobs == 0:

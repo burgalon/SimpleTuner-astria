@@ -8,8 +8,11 @@ from pathlib import Path
 from typing import Optional, Tuple, Union, Dict, Any
 import torch
 
+from tensorizer import TensorDeserializer
+from tensorizer.utils import no_init_or_tensor
+
 from .constants import OPENAI_DATASET_MEAN, OPENAI_DATASET_STD
-from .model import CLIP, CustomCLIP, convert_weights_to_lp, convert_to_custom_text_state_dict,\
+from .model import CLIP, CustomCLIP, convert_weights_to_lp, convert_to_custom_text_state_dict, \
     get_cast_dtype
 from .openai import load_openai_model
 from .pretrained import is_pretrained_cfg, get_pretrained_cfg, download_pretrained, list_pretrained_tags_by_model
@@ -93,7 +96,7 @@ def load_state_dict(checkpoint_path: str, map_location: str='cpu', model_key: st
                 state_dict = checkpoint
         if next(iter(state_dict.items()))[0].startswith('module'):
             state_dict = {k[7:]: v for k, v in state_dict.items()}
-    
+
     for k in skip_list:
         if k in list(state_dict.keys()):
             logging.info(f"Removing key {k} from pretrained checkpoint")
@@ -168,7 +171,8 @@ def load_pretrained_checkpoint(
         visual_model=None,
         text_model=None,
         model_key="model|module|state_dict",
-        skip_list=[]):
+        skip_list=[],
+):
     visual_tag = get_pretrained_tag(visual_model)
     text_tag = get_pretrained_tag(text_model)
 
@@ -181,7 +185,7 @@ def load_pretrained_checkpoint(
             visual_state_dict = load_clip_visual_state_dict(visual_checkpoint_path, is_openai=True, skip_list=skip_list)
         else:
             visual_state_dict = load_state_dict(visual_checkpoint_path, model_key=model_key, is_openai=False, skip_list=skip_list)
-    
+
         # resize_clip_pos_embed for CLIP and open CLIP
         if 'positional_embedding' in visual_state_dict:
             resize_visual_pos_embed(visual_state_dict, model)
@@ -202,7 +206,7 @@ def load_pretrained_checkpoint(
             text_state_dict = load_state_dict(visual_checkpoint_path, model_key=model_key, is_openai=False, skip_list=skip_list)
 
         text_incompatible_keys = model.text.load_state_dict(text_state_dict, strict=strict)
-        
+
         logging.info(f"num of loaded text_state_dict keys: {len(text_state_dict.keys())}")
         logging.info(f"text_incompatible_keys.missing_keys: {text_incompatible_keys.missing_keys}")
 
@@ -224,6 +228,7 @@ def create_model(
         pretrained_text_model: str = None,
         cache_dir: Optional[str] = None,
         skip_list: list  = [],
+        use_tensorizer: str = None,
 ):
     model_name = model_name.replace('/', '-')  # for callers using old naming with / in ViT names
     if isinstance(device, str):
@@ -255,7 +260,7 @@ def create_model(
         if force_quick_gelu:
             # override for use of QuickGELU on non-OpenAI transformer models
             model_cfg["quick_gelu"] = True
-        
+
         if force_patch_dropout is not None:
             # override the default patch dropout value
             model_cfg['vision_cfg']["patch_dropout"] = force_patch_dropout
@@ -264,12 +269,27 @@ def create_model(
         custom_clip = model_cfg.pop('custom_text', False) or force_custom_clip or ('hf_model_name' in model_cfg['text_cfg'])
 
 
-        if custom_clip:
-            if 'hf_model_name' in model_cfg.get('text_cfg', {}):
-                model_cfg['text_cfg']['hf_model_pretrained'] = pretrained_hf
-            model = CustomCLIP(**model_cfg, cast_dtype=cast_dtype)
+        if use_tensorizer:
+            if custom_clip:
+                if 'hf_model_name' in model_cfg.get('text_cfg', {}):
+                    model_cfg['text_cfg']['hf_model_pretrained'] = pretrained_hf
+                with no_init_or_tensor():
+                    model = CustomCLIP(**model_cfg, cast_dtype=cast_dtype)
+            else:
+                with no_init_or_tensor():
+                    model = CLIP(**model_cfg, cast_dtype=cast_dtype)
         else:
-            model = CLIP(**model_cfg, cast_dtype=cast_dtype)
+            if custom_clip:
+                if 'hf_model_name' in model_cfg.get('text_cfg', {}):
+                    model_cfg['text_cfg']['hf_model_pretrained'] = pretrained_hf
+                model = CustomCLIP(**model_cfg, cast_dtype=cast_dtype)
+            else:
+                model = CLIP(**model_cfg, cast_dtype=cast_dtype)
+
+        if use_tensorizer:
+            deserializer = TensorDeserializer(use_tensorizer, device=device)
+            deserializer.load_into_module(model.visual)
+            return model
 
         pretrained_cfg = {}
         if pretrained:
@@ -283,10 +303,10 @@ def create_model(
             if checkpoint_path:
                 logging.info(f'Loading pretrained {model_name} weights ({pretrained}).')
                 load_checkpoint(model,
-                               checkpoint_path,
-                               model_key="model|module|state_dict",
-                               strict=False
-                               ) 
+                                checkpoint_path,
+                                model_key="model|module|state_dict",
+                                strict=False
+                                )
             else:
                 error_str = (
                     f'Pretrained weights ({pretrained}) not found for model {model_name}.'
@@ -296,7 +316,7 @@ def create_model(
         else:
             visual_checkpoint_path = ''
             text_checkpoint_path = ''
-            
+
             if pretrained_image:
                 pretrained_visual_model = pretrained_visual_model.replace('/', '-')  # for callers using old naming with / in ViT names
                 pretrained_image_cfg = get_pretrained_cfg(pretrained_visual_model, pretrained_image)
@@ -321,7 +341,7 @@ def create_model(
                 else:
                     logging.warning(f'Pretrained weights ({text_checkpoint_path}) not found for model {model_name}.text.')
                     raise RuntimeError(f'Pretrained weights ({text_checkpoint_path}) not found for model {model_name}.text.')
-            
+
             if visual_checkpoint_path:
                 logging.info(f'Loading pretrained {model_name}.visual weights ({visual_checkpoint_path}).')
             if text_checkpoint_path:
@@ -338,7 +358,7 @@ def create_model(
                     model_key="model|module|state_dict",
                     skip_list=skip_list
                 )
-        
+
         if "fp16" in precision or "bf16" in precision:
             logging.info(f'convert precision to {precision}')
             model = model.to(torch.bfloat16) if 'bf16' in precision else model.to(torch.float16)
@@ -373,6 +393,7 @@ def create_model_and_transforms(
         image_std: Optional[Tuple[float, ...]] = None,
         cache_dir: Optional[str] = None,
         skip_list: list = [],
+        use_tensorizer: str = None,
 ):
     model = create_model(
         model_name,
@@ -390,6 +411,7 @@ def create_model_and_transforms(
         pretrained_text_model=pretrained_text_model,
         cache_dir=cache_dir,
         skip_list=skip_list,
+        use_tensorizer=use_tensorizer,
     )
 
     image_mean = image_mean or getattr(model.visual, 'image_mean', None)

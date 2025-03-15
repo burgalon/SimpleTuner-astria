@@ -15,7 +15,7 @@ from astria_utils import JsonObj, MODELS_DIR
 
 # Do not send to server?
 if 'DEBUG' not in os.environ:
-    os.environ['DEBUG'] = '1'
+    os.environ['DEBUG'] = 'test'
 
 pipe = InferPipeline()
 
@@ -214,10 +214,15 @@ def run_images(prompt, override_name=None):
     else:
         test_name_invocation_count[prompt.id] += 1
     count = test_name_invocation_count[prompt.id]
-    
+
     tune = JsonObj(**TUNE_FLUX.__dict__, prompts=[prompt])
     images = pipe.infer(tune)
     for i, image in enumerate(images):
+        # check if has alpha
+        if image.mode == 'RGBA':
+            image.save(MODELS_DIR + f"/{prompt.id}-{i}.png")
+        else:
+            image.save(MODELS_DIR + f"/{prompt.id}-{i}.jpg")
         img_fn = f"{prompt.id}-{count}-{i}.jpg"
         pth = MODELS_DIR + f"/{img_fn}"
         image.save(pth)
@@ -363,7 +368,9 @@ def test_leak_load_references():
     # avoid leakage from other tests
     if pipe.pipe:
         pipe.reset_controlnet()
-        pipe.unload_lora_weights()
+        pipe.unload_lora_weights(pipe.pipe)
+    if pipe.fill:
+        pipe.unload_lora_weights(pipe.fill)
 
     # 1. fill
     prompt = JsonObj(
@@ -374,7 +381,7 @@ def test_leak_load_references():
     prompt.tunes=[FLUX_LORA]
     run_images(prompt, name() + '-1-lora')
     assert isinstance(pipe.last_pipe, FluxFillPipeline)
-    assert len(pipe.current_lora_weights_map.keys()) == 1
+    assert len(pipe.current_lora_weights_map['pipe']['names']) == 0
     assert pipe.current_lora_weights_map['fill']['names'] ==  [FLUX_LORA.token]
 
 
@@ -417,7 +424,6 @@ def test_leak_load_references():
     prompt = JsonObj(
         **copy.copy(BASE_PROMPT.__dict__),
     )
-    prompt.text=f"man holding flowers"
     prompt.tunes=[]
     run_images(prompt, name() + '-5-no-lora')
     assert isinstance(pipe.last_pipe, FluxPipeline)

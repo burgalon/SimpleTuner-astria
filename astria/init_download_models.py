@@ -1,16 +1,19 @@
+import time
 import os
 
+from birefnet.utils import check_download_model
 from hinter_helper import annotator_ckpts_path
 import torch
 from diffusers import FluxControlNetModel
 from filelock import FileLock, Timeout
-from huggingface_hub import scan_cache_dir
+from huggingface_hub import scan_cache_dir, snapshot_download
 from torch.hub import download_url_to_file
 from transformers import pipeline
 
-from astria_utils import MODELS_DIR, CACHE_DIR, run, download_model_from_server
+from astria_utils import MODELS_DIR, CACHE_DIR, run, download_model_from_server, FLUX_INPAINT_MODEL_ID
 from controlnet_constants import CONTROLNETS_DICT
 from add_clut import CLUT_DICT
+from pulid_pipeline.pulid_ext import PuLID
 
 
 def get_cached_repos_dict():
@@ -43,17 +46,38 @@ def download_hinters(cached_repos_dict):
 
 def _download_models():
     download_model_from_server('1504944-flux1', False)
+    download_model_from_server(f'{FLUX_INPAINT_MODEL_ID}-flux1', False)
+
+    # HF_TOKEN=hf_********tNke huggingface-cli upload tuner /data/cache / --exclude *.log
+    snapshot_download(repo_id="burgalon/tuner", local_dir=CACHE_DIR, local_dir_use_symlinks=False)
+
     cached_repos_dict = get_cached_repos_dict()
     # TODO
     # download_path: /app/models/insightface/models/buffalo_l
     #  Downloading /app/models/insightface/models/buffalo_l.zip from https://github.com/deepinsight/insightface/releases/download/v0.7/buffalo_l.zip...
 
+    # BiRefNet
+    if not os.path.exists(f"{CACHE_DIR}/BiRefNet/swin_large_patch4_window12_384_22kto1k.pth"):
+        print("Downloading BiRefNet model")
+        snapshot_download(
+            repo_id="ViperYX/BiRefNet",
+            allow_patterns=[f"*swin_large_patch4_window12_384_22kto1k*"],
+            local_dir=CACHE_DIR + ' BiRefNet',
+            local_dir_use_symlinks=False,
+        )
+
     fns = [
         # ('https://huggingface.co/lokCX/4x-Ultrasharp/resolve/main/4x-UltraSharp.pth', CACHE_DIR),
         ('https://huggingface.co/uwg/upscaler/resolve/main/ESRGAN/4x_NMKD-Siax_200k.pth', CACHE_DIR),
         ('https://huggingface.co/Bingsu/adetailer/resolve/main/face_yolov8m.pt', CACHE_DIR),
+        # PuLID parsenet
+        ('https://github.com/xinntao/facexlib/releases/download/v0.1.0/detection_Resnet50_Final.pth', CACHE_DIR),
+        ('https://github.com/xinntao/facexlib/releases/download/v0.2.2/parsing_parsenet.pth', CACHE_DIR),
+        ('https://github.com/xinntao/facexlib/releases/download/v0.2.0/parsing_bisenet.pth', CACHE_DIR),
 
     ]
+    print("Downloading PuLID models")
+    PuLID.download_models(local_dir=f'{CACHE_DIR}/pulid', models_dir=CACHE_DIR)
     for url, path in fns:
         if '/blob/' in url:
             raise ValueError(f"URL {url} is a blob URL, please use the 'raw' URL")
@@ -86,7 +110,14 @@ def _download_models():
 def download_models_with_lock():
     try:
         with FileLock(f"{MODELS_DIR}/download_model.lock", timeout=0):
-            _download_models()
+            for i in range(10):
+                try:
+                    _download_models()
+                    break
+                except Exception as e:
+                    print(f"Download failed: {e}. Sleeping for 10 seconds")
+                    time.sleep(10)
+
     except Timeout:
         print("Another process is downloading models, skipping download")
 

@@ -1,6 +1,11 @@
 import sys
+
+from astria_utils import run
+
 sys.path.append("astria/pulid_pipeline")
 from typing import Final, List, Union
+from tensorizer.utils import no_init_or_tensor
+from tensorizer import TensorDeserializer, TensorSerializer
 from eva_clip import create_model_and_transforms
 from eva_clip.constants import OPENAI_DATASET_MEAN, OPENAI_DATASET_STD
 from huggingface_hub import hf_hub_download, snapshot_download
@@ -103,58 +108,92 @@ class PuLModel(nn.Module):
     double_interval = 2
     single_interval = 4
 
-    def __init__(self, device, dtype):
+    def __init__(self):
         super().__init__()
-        self.pulid_encoder = IDFormer().to(device, dtype)
+        self.pulid_encoder = IDFormer()
         num_ca = 19 // self.double_interval + 38 // self.single_interval
         if 19 % self.double_interval != 0:
             num_ca += 1
         if 38 % self.single_interval != 0:
             num_ca += 1
         self.pulid_ca = nn.ModuleList([
-            PerceiverAttentionCA().to(device, dtype) for _ in range(num_ca)
+            PerceiverAttentionCA() for _ in range(num_ca)
         ])
 
 
 class PuLID:
     def __init__(
-        self,
-        device='cuda',
-        dtype=torch.bfloat16,
-        version=PULID_VERSION,
-        local_dir=PULID_LOCAL_DIR,
-        models_dir=PULID_LOCAL_DIR,
+            self,
+            device='cuda',
+            dtype=torch.bfloat16,
+            version=PULID_VERSION,
+            local_dir=PULID_LOCAL_DIR,
+            models_dir=PULID_LOCAL_DIR,
     ):
-        # call download_models static method
-        encoder_path, self.antel_local_dir = PuLID.download_models(version, local_dir, models_dir)
-        self.model = PuLModel(device, dtype)
-        self.model.load_state_dict(load_file(os.path.join(local_dir, encoder_path)))
+        use_tensorizer = True
+        encoder_path, self.antel_local_dir = PuLID.download_models(version, local_dir, models_dir, use_tensorizer=True)
+
+        if use_tensorizer:
+            with no_init_or_tensor():
+                self.model = PuLModel()
+            deserializer = TensorDeserializer(f"{local_dir}/pulid_model.tensors", device=device)
+            deserializer.load_into_module(self.model)
+            self.model = self.model.to(device, dtype)
+        else:
+            self.model.load_state_dict(load_file(os.path.join(local_dir, encoder_path)))
+
         self.face_helper = PuLID.init_face_helper(device, models_dir)
         (
             self.clip_vision_model,
             self.eva_transform_mean,
             self.eva_transform_std,
-        ) = PuLID.init_clip(device, dtype)
+        ) = PuLID.init_clip(device, dtype, use_tensorizer=f"{local_dir}/clip_eva_vision_model.tensors")
         self.app, self.handler_ante = self.init_insightface()
+
+    def write_tensorizer(self, local_dir, encoder_path, device, dtype):
+        model = PuLModel()
+        model.load_state_dict(load_file(os.path.join(local_dir, encoder_path)))
+        serializer = TensorSerializer(f"{local_dir}/pulid_model.tensors")
+        serializer.write_module(model)  # or (), etc.
+        serializer.close()
+
+        (
+            self.clip_vision_model,
+            self.eva_transform_mean,
+            self.eva_transform_std,
+        ) = PuLID.init_clip(device, dtype)
+        serializer = TensorSerializer(f"{local_dir}/clip_eva_vision_model.tensors")
+        serializer.write_module(self.clip_vision_model)  # or (), etc.
+        serializer.close()
 
     @staticmethod
     def download_models(
             version=PULID_VERSION,
             local_dir=PULID_LOCAL_DIR,
             models_dir=PULID_LOCAL_DIR,
+            use_tensorizer = True
     ):
         encoder_path = PULID_MODEL_FILENAME_PATTERN.format(version=version)
-        if not os.path.exists(encoder_path):
-            hf_hub_download(PULID_REPO_ID, encoder_path, local_dir=local_dir)
+        if use_tensorizer:
+            for filename in ['pulid_model.tensors', 'clip_eva_vision_model.tensors' ]:
+                if not os.path.exists(f'{local_dir}/{filename}'):
+                    run(['aws', 's3', 'cp', f's3://astria-model-repo/cache/{filename}', f'{local_dir}/{filename}'])
+        else:
+            if not os.path.exists(encoder_path):
+                hf_hub_download(PULID_REPO_ID, encoder_path, local_dir=local_dir)
+
+        # Download antelopev2
         antel_local_dir: Final[str] = f'{local_dir}/antelopev2'
         if not os.path.exists(antel_local_dir):
             snapshot_download(ANTEL_REPO_ID, local_dir=antel_local_dir)
+
         return encoder_path, antel_local_dir
 
 
+
     @staticmethod
-    def init_clip(device, dtype):
-        model, _, _ = create_model_and_transforms(EVA_CLIP_MODEL_NAME, EVA_CLIP_LIBRARY_NAME, force_custom_clip=True)
+    def init_clip(device, dtype, use_tensorizer=None):
+        model, _, _ = create_model_and_transforms(EVA_CLIP_MODEL_NAME, EVA_CLIP_LIBRARY_NAME, force_custom_clip=True, use_tensorizer=use_tensorizer)
         model = model.visual
         clip_vision_model = model.to(device, dtype=dtype)
         eva_transform_mean = getattr(clip_vision_model, 'image_mean', OPENAI_DATASET_MEAN)
@@ -251,11 +290,11 @@ class PuLID:
 
     @torch.no_grad()
     def get_id_embedding(
-        self,
-        image,
-        cal_uncond=False,
-        device='cuda',
-        dtype=torch.bfloat16,
+            self,
+            image,
+            cal_uncond=False,
+            device='cuda',
+            dtype=torch.bfloat16,
     ):
         """
         Args:
@@ -392,7 +431,7 @@ class PuLID:
             return avg_id_embedding, None
 
 if __name__ == '__main__':
-    pulid_model = PuLID(local_dir='/data/cache/pulid', models_dir='/data/cache')
+    pulid_model = PuLID(local_dir='/data/cache/pulid')
     img = Image.open('astria_tests/fixtures/19477328-before-inpaint-0.jpg')
     embed_avg, _ = pulid_model.get_id_embedding_for_images_list([img, img])
     embed, _ = pulid_model.get_id_embedding(img)

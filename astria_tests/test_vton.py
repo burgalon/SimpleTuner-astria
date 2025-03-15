@@ -1,6 +1,5 @@
 import copy
-from astria_utils import JsonObj
-from test_infer import pipe, BASE_PROMPT, run_images, MODELS_DIR, name, FLUX_FACEID
+from test_infer import pipe, BASE_PROMPT, run_images, MODELS_DIR, name, FLUX_FACEID, JsonObj
 from image_utils import load_image
 
 FLUX_VTON_LORA = JsonObj(**{
@@ -37,10 +36,29 @@ FLUX_VTON_SHIRT = JsonObj(**{
 def test_vton_1_only():
     prompt = JsonObj(
         **copy.copy(BASE_PROMPT.__dict__),
-        inpaint_faces=True,
     )
     prompt.id = name()
     prompt.tunes = [FLUX_VTON_LORA]
+    # images = [load_image('https://sdbooth2-production.s3.amazonaws.com/t5ibi8bs69e5xm87mf31a5ikbie6')]
+    images = [load_image('astria_tests/fixtures/19477328-before-inpaint-0.jpg')]
+    # 384 * 493
+    # pipe.init_pipe(MODELS_DIR + f"/{TUNE_FLUX.id}-{TUNE_FLUX.branch}")
+    # pipe.load_references(prompt)
+    images = pipe.vton(images, prompt)
+    # run_images(prompt)
+    for i, image in enumerate(images):
+        image.save(MODELS_DIR + f"/{prompt.id}-{i}.jpg")
+
+def test_vton_1_failed():
+    prompt = JsonObj(
+        **copy.copy(BASE_PROMPT.__dict__),
+    )
+    prompt.id = name()
+    bad_tune = JsonObj(**FLUX_VTON_LORA.__dict__, )
+    bad_tune.face_swap_images=[
+        'https://sdbooth2-production.s3.amazonaws.com/a93ocfwgzocdrmq1q4wizwajnhvm',
+    ]
+    prompt.tunes = [bad_tune]
     # images = [load_image('https://sdbooth2-production.s3.amazonaws.com/t5ibi8bs69e5xm87mf31a5ikbie6')]
     images = [load_image('astria_tests/fixtures/19477328-before-inpaint-0.jpg')]
     # 384 * 493

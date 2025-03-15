@@ -21,7 +21,9 @@ def handle_response(r, *args, **kwargs):
 
 
 session = requests.Session()
-retries = requests.packages.urllib3.util.retry.Retry(total=10, backoff_factor=1, status_forcelist=[500, 502, 503, 504, 403, 401], raise_on_status=True)
+# delay = 2^(retry_count - 1) seconds
+# retry intervals 1, 2, 4, 8, 16, 32, 64, 128, 256, 512
+retries = requests.packages.urllib3.util.retry.Retry(total=5, backoff_factor=1, status_forcelist=[500, 502, 503, 504, 403, 401], raise_on_status=True)
 session.mount('', requests.adapters.HTTPAdapter(max_retries=retries))
 session.hooks = {
     'response': handle_response,

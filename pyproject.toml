@@ -11,7 +11,7 @@ package-mode = false
 python = ">=3.10,<3.12"
 torch = {version = "^2.5.1+cu124", source = "pytorch"}
 torchvision = {version = "^0.20.1+cu124", source = "pytorch"}
-diffusers = {git = "https://git@github.com/huggingface/diffusers.git", rev = "cb342b745aa57798b759c0ba5b80c045a5dafbad"}
+diffusers = {git = "https://github.com/huggingface/diffusers.git", rev = "cb342b745aa57798b759c0ba5b80c045a5dafbad"}
 transformers = "4.48.2"
 datasets = "^3.0.1"
 bitsandbytes = "^0.44.1"
@@ -58,9 +58,9 @@ ultralytics = "^8.3.27"
 insightface = "^0.7.3"
 onnxruntime-gpu = "^1.20.1"
 xformers = "^0.0.28.post3"
-scepter = "^1.3.1"
+huggingface-hub = {extras = ["hf-transfer"], version = "^0.27.1"}
+tensorizer = "^2.9.1"
 imagehash = "^4.3.2"
-
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^8.3.3"
