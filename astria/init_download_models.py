@@ -16,6 +16,16 @@ from add_clut import CLUT_DICT
 from pulid_pipeline.pulid_ext import PuLID
 
 
+WAN_I2V_LOCAL_LOCATION_480P = (
+    "Wan-AI/Wan2.1-I2V-14B-480P",
+    f"{CACHE_DIR}/models/Wan-AI/Wan2.1-I2V-14B-480P",
+)
+WAN_I2V_LOCAL_LOCATION_720P = (
+    "Wan-AI/Wan2.1-I2V-14B-720P",
+    f"{CACHE_DIR}/models/Wan-AI/Wan2.1-I2V-14B-720P",
+)
+
+
 def get_cached_repos_dict():
     return dict((repo.repo_id, repo) for repo in scan_cache_dir().repos)
 
@@ -88,6 +98,16 @@ def _download_models():
         if not os.path.exists(target_fn):
             print(f"Downloading {url} to {target_fn}")
             download_url_to_file(url, target_fn)
+
+    # Prefetch the WAN models.
+    snapshot_download(
+        WAN_I2V_LOCAL_LOCATION_480P[0],
+        local_dir=WAN_I2V_LOCAL_LOCATION_480P[1],
+    )
+    snapshot_download(
+        WAN_I2V_LOCAL_LOCATION_720P[0],
+        local_dir=WAN_I2V_LOCAL_LOCATION_720P[1],
+    )
 
     os.makedirs("/data/cache/HaldCLUT", exist_ok=True)
     for filename in [*CLUT_DICT.values()]:
