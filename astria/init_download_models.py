@@ -18,11 +18,11 @@ from pulid_pipeline.pulid_ext import PuLID
 
 WAN_I2V_LOCAL_LOCATION_480P = (
     "Wan-AI/Wan2.1-I2V-14B-480P",
-    f"{CACHE_DIR}/models/Wan-AI/Wan2.1-I2V-14B-480P",
+    f"{CACHE_DIR}/Wan-AI/Wan2.1-I2V-14B-480P",
 )
 WAN_I2V_LOCAL_LOCATION_720P = (
     "Wan-AI/Wan2.1-I2V-14B-720P",
-    f"{CACHE_DIR}/models/Wan-AI/Wan2.1-I2V-14B-720P",
+    f"{CACHE_DIR}/Wan-AI/Wan2.1-I2V-14B-720P",
 )
 
 
