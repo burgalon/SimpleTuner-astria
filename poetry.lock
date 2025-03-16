@@ -6885,12 +6885,12 @@ optional = false
 python-versions = ">=3.9"
 groups = ["main"]
 files = [
-    {file = "sageattention-2.1.1-cp311-cp311-linux_x86_64.whl", hash = "sha256:abd5816b4c6919c0f82308bc1ebfa4d2d0154d4b9d6e6bc2a89b8e0ae05ee2ef"},
+    {file = "sageattention-2.1.1-cp311-cp311-linux_x86_64.whl", hash = "sha256:c333b96c25e28ca70bbbd452a0e92cc2e49f848ef7063890d7305e0a52779285"},
 ]
 
 [package.source]
 type = "file"
-url = "libs/SageAttention/dist/sageattention-2.1.1-cp311-cp311-linux_x86_64.whl"
+url = "wheels/sageattention-2.1.1-cp311-cp311-linux_x86_64.whl"
 
 [[package]]
 name = "scikit-image"
@@ -9610,4 +9610,4 @@ test = ["big-O", "importlib-resources ; python_version < \"3.9\"", "jaraco.funct
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.10,<3.12"
-content-hash = "7d56644ebc6e89cbdf43589ba7a2a35616a8c451b5916abafd2e93b217f6f58a"
+content-hash = "5f543494850bab89f848632b10ed87dcfc9f01336ee6f7581a733b6d966d231e"

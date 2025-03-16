@@ -65,7 +65,8 @@ from vton_mixin import (
     VTON_CATEGORIES,
 )
 from watermark_helper import add_watermark
-from diffsynth import ModelManager, WanVideoPipeline, save_video, VideoData
+from diffsynth import ModelManager, save_video
+from wanvideo import WanVideoPipeline
 from huggingface_hub import snapshot_download
 
 
@@ -74,8 +75,35 @@ GPU_MEMORY_GB = torch.cuda.get_device_properties(0).total_memory / 1024**3
 print(f"GPU_MEMORY_GB={GPU_MEMORY_GB:.0f}")
 UNIT_NUMBERS = {0: 'zero', 1: 'one', 2: 'two', 3: 'three', 4: 'four',
            5: 'five', 6: 'six', 7: 'seven', 8: 'eight', 9: 'nine'}
-WAN_I2V_LOCAL_LOCATION = f"{CACHE_DIR}/models/Wan-AI/Wan2.1-I2V-14B-720P"
+WAN_I2V_LOCAL_LOCATION_480P = f"{CACHE_DIR}/models/Wan-AI/Wan2.1-I2V-14B-480P"
+WAN_I2V_LOCAL_LOCATION_720P = f"{CACHE_DIR}/models/Wan-AI/Wan2.1-I2V-14B-720P"
+WAN_VIDEO_MODEL_DETAILS = {
+    "480p": {
+        "name": "Wan-AI/Wan2.1-I2V-14B-480P",
+        "location": WAN_I2V_LOCAL_LOCATION_480P,
+        "resolution": (720, 720),
+    },
+    "720p": {
+        "name": "Wan-AI/Wan2.1-I2V-14B-720P",
+        "location": WAN_I2V_LOCAL_LOCATION_720P,
+        "resolution": (1024, 1024),
+    },
+}
 WAN_I2V_NEGATIVE_PROMPT = "色调艳丽，过曝，静态，细节模糊不清，字幕，风格，作品，画作，画面，静止，整体发灰，最差质量，低质量，JPEG压缩残留，丑陋的，残缺的，多余的手指，画得不好的手部，画得不好的脸部，畸形的，毁容的，形态畸形的肢体，手指融合，静止不动的画面，杂乱的背景，三条腿，背景人很多，倒着走"
+
+
+generate_ffmpeg_params = lambda width, height, watermark_path = None: [
+    "-s", f"{width}x{height}",
+    "-y",
+    *(
+        [
+            "-i", watermark_path,
+            "-filter_complex", f"[1:v]scale=-1:{int(height * 0.05)}[wm];[0:v][wm]overlay=x=(main_w-overlay_w-30):y=(main_h-overlay_h-30)"
+        ]
+        if watermark_path else []
+    ),
+    "-preset", "slow",
+]
 
 
 def parse_args(prompt: JsonObj):
@@ -94,6 +122,10 @@ def parse_args(prompt: JsonObj):
     parser.add_argument("--fill", action='store_true', default=False)
     parser.add_argument("--negative_prompt", type=str, default=prompt.negative_prompt
         if getattr(prompt, 'negative_prompt', None) is not None else None)
+    parser.add_argument("--video", action='store_true', default=prompt.video)
+    parser.add_argument("--video_model", type=str, default=prompt.video_model if prompt.video_model is not None else '720p')
+    parser.add_argument("--fps", type=str, default=prompt.fps if prompt.fps is not None else 16)
+    parser.add_argument("--frames", type=str, default=prompt.frames if prompt.frames is not None else 81)
     parser.add_argument("--outpaint", choices=['top-left', 'top-right', 'bottom-left', 'bottom-right', 'center', 'top-center', 'bottom-center', 'left-center', 'right-center'], default=None)
     parser.add_argument("--outpaint_height", type=int, default=None)
     parser.add_argument("--outpaint_width", type=int, default=None)
@@ -203,7 +235,10 @@ class InferPipeline(InpaintFaceMixin, VtonMixin):
         self.resolution = None
 
         if remove_wan:
+            self.video_model_loaded = None
             self.wan_i2v_pipe = None
+            if getattr(self, 'diffsynth_model_manager', None):
+                self.diffsynth_model_manager.model = None
             self.diffsynth_model_manager = None
 
         self.reset_controlnet()
@@ -232,7 +267,10 @@ class InferPipeline(InpaintFaceMixin, VtonMixin):
 
     def reset_wan_i2v(self, gc_collect=False):
         if self.wan_i2v_pipe is not None:
+            self.video_model_loaded = None
             self.wan_i2v_pipe = None
+            if getattr(self, 'diffsynth_model_manager', None):
+                self.diffsynth_model_manager.model = None
             self.diffsynth_model_manager = None
 
             if gc_collect:
@@ -361,33 +399,37 @@ class InferPipeline(InpaintFaceMixin, VtonMixin):
             # TODO: Remove once this is merged to diffusers
             self.resolution = (1024, 1024)
 
-    def init_wan_i2v_pipe(self):
-        """Initialize both FluxPipeline and FluxImg2ImgPipeline."""
-        if not self.wan_i2v_pipe:
+    def init_wan_i2v_pipe(self, model_details=WAN_VIDEO_MODEL_DETAILS["720p"]):
+        """Initialize the WAN video pipeline."""
+        if not self.wan_i2v_pipe or self.video_model_loaded != model_details["name"]:
             # Ensure
-            if not Path(WAN_I2V_LOCAL_LOCATION).exists():
+            self.video_model_loaded = model_details["name"]
+            location = model_details["location"]
+            if not Path(location).exists():
                 snapshot_download(
-                    "Wan-AI/Wan2.1-I2V-14B-720P",
-                    local_dir=WAN_I2V_LOCAL_LOCATION,
+                    model_details["name"],
+                    local_dir=location,
                 )
-            model_manager = ModelManager(device="cpu")
+
+            # Set to "cpu" for enable_vram_management below if needed
+            model_manager = ModelManager(device="cuda")
             model_manager.load_models(
-                [f"{WAN_I2V_LOCAL_LOCATION}/models_clip_open-clip-xlm-roberta-large-vit-huge-14.pth"],
+                [f"{location}/models_clip_open-clip-xlm-roberta-large-vit-huge-14.pth"],
                 torch_dtype=torch.float32, # Image Encoder is loaded with float32
             )
             model_manager.load_models(
                 [
                     [
-                        f"{WAN_I2V_LOCAL_LOCATION}/diffusion_pytorch_model-00001-of-00007.safetensors",
-                        f"{WAN_I2V_LOCAL_LOCATION}/diffusion_pytorch_model-00002-of-00007.safetensors",
-                        f"{WAN_I2V_LOCAL_LOCATION}/diffusion_pytorch_model-00003-of-00007.safetensors",
-                        f"{WAN_I2V_LOCAL_LOCATION}/diffusion_pytorch_model-00004-of-00007.safetensors",
-                        f"{WAN_I2V_LOCAL_LOCATION}/diffusion_pytorch_model-00005-of-00007.safetensors",
-                        f"{WAN_I2V_LOCAL_LOCATION}/diffusion_pytorch_model-00006-of-00007.safetensors",
-                        f"{WAN_I2V_LOCAL_LOCATION}/diffusion_pytorch_model-00007-of-00007.safetensors",
+                        f"{location}/diffusion_pytorch_model-00001-of-00007.safetensors",
+                        f"{location}/diffusion_pytorch_model-00002-of-00007.safetensors",
+                        f"{location}/diffusion_pytorch_model-00003-of-00007.safetensors",
+                        f"{location}/diffusion_pytorch_model-00004-of-00007.safetensors",
+                        f"{location}/diffusion_pytorch_model-00005-of-00007.safetensors",
+                        f"{location}/diffusion_pytorch_model-00006-of-00007.safetensors",
+                        f"{location}/diffusion_pytorch_model-00007-of-00007.safetensors",
                     ],
-                    f"{WAN_I2V_LOCAL_LOCATION}/models_t5_umt5-xxl-enc-bf16.pth",
-                    f"{WAN_I2V_LOCAL_LOCATION}/Wan2.1_VAE.pth",
+                    f"{location}/models_t5_umt5-xxl-enc-bf16.pth",
+                    f"{location}/Wan2.1_VAE.pth",
                 ],
                 torch_dtype=torch.bfloat16, # Keep this in bfloat16... storing the weights as quant currently degrades the model
             )
@@ -396,7 +438,9 @@ class InferPipeline(InpaintFaceMixin, VtonMixin):
                 torch_dtype=torch.bfloat16,
                 device="cuda",
             )
-            self.wan_i2v_pipe.enable_vram_management(num_persistent_param_in_dit=None)
+
+            # This is slow. Don't use it unless needed.
+            # self.wan_i2v_pipe.enable_vram_management(num_persistent_param_in_dit=None)
             self.diffsynth_model_manager = model_manager
 
     def init_pulid(self):
@@ -817,11 +861,7 @@ class InferPipeline(InpaintFaceMixin, VtonMixin):
 
         result = None
         for i_prompt, prompt in enumerate(tune.prompts):
-            task = 'image'
-            if getattr(prompt, 'task'):
-                task = prompt.task
-
-            if task != "video":
+            if not prompt.video:
                 # Pull wan model if it exists.
                 self.reset_wan_i2v(gc_collect=True)
                 start_time = time.time()
@@ -831,7 +871,7 @@ class InferPipeline(InpaintFaceMixin, VtonMixin):
                 self.reset(gc_collect=True, remove_wan=False)
                 start_time = time.time()
                 result = self.infer_wan_i2v(prompt, tune)
-            print(f"T={tune.id} {i_prompt}/{len(tune.prompts)} P={prompt.id} U={prompt.user_id} T={task} https://www.astria.ai/admin/prompts/{prompt.id} {(time.time() - start_time):.2f} seconds")
+            print(f"T={tune.id} {i_prompt}/{len(tune.prompts)} P={prompt.id} U={prompt.user_id} V={prompt.video} https://www.astria.ai/admin/prompts/{prompt.id} {(time.time() - start_time):.2f} seconds")
 
         set_current_infer_tune(None)
         return result
@@ -1022,7 +1062,7 @@ class InferPipeline(InpaintFaceMixin, VtonMixin):
         # For tests
         self.last_pipe = pipe
         images = []
-        num_images = int(os.environ.get('NUM_IMAGES', prompt.num_images))
+        num_images = int(os.environ.get('NUM_IMAGES', prompt.num_images) or 1)
 
         if use_regional:
             self.sort_tunes_according_to_prompt(prompt)
@@ -1136,17 +1176,19 @@ class InferPipeline(InpaintFaceMixin, VtonMixin):
         return images
 
     def infer_wan_i2v(self, prompt, tune: JsonObj):
+        parse_args(prompt)
         input_image = None
         assert prompt.input_image is not None
-        try:
-            input_image = load_image(prompt.input_image)
-        except Image.DecompressionBombError:
-            print(f"T#{prompt.tune_id} P#{prompt.id} DecompressionBombError - skipping")
-            return None
+
+        model_details = WAN_VIDEO_MODEL_DETAILS.get(prompt.video_model)
+        assert model_details is not None, f"unknown video model {prompt.video_model}"
+
+        self.resolution = model_details["resolution"]
+        _, _, _, _, _, input_image, _ = self.get_controlnet_hint(prompt)
         width, height = input_image.size
         
         assert input_image is not None
-        self.init_wan_i2v_pipe()
+        self.init_wan_i2v_pipe(model_details=model_details)
 
         negative_prompt = (
             prompt.negative_prompt
@@ -1165,11 +1207,13 @@ class InferPipeline(InpaintFaceMixin, VtonMixin):
                 seed=(prompt.seed or 42) + i,
                 tiled=False,
                 tea_cache_l1_thresh=0.15,
-                tea_cache_model_id="Wan2.1-I2V-14B-720P",
-                num_frames=81, # 5s default max length
+                tea_cache_model_id=model_details["name"].split("/")[1],
+                num_frames=prompt.frames, # 5s default max length, or 81 frames
                 width=width,
                 height=height,
                 slg_layers=[9],
+                cfg_start=0.1,
+                cfg_end=0.7,
             )
 
             # Create a temporary file in /dev/shm, keeping the video in RAM.
@@ -1178,7 +1222,12 @@ class InferPipeline(InpaintFaceMixin, VtonMixin):
                 temp_path = tmp.name
 
                 # Save your video to the temporary file.
-                save_video(video, temp_path, fps=15)
+                save_video(
+                    video,
+                    temp_path,
+                    fps=prompt.fps,
+                    ffmpeg_params=generate_ffmpeg_params(width, height),
+                )
 
                 # Read the contents into memory.
                 with open(temp_path, "rb") as f:

@@ -218,7 +218,7 @@ def run_images(prompt, override_name=None):
     tune = JsonObj(**TUNE_FLUX.__dict__, prompts=[prompt])
     images = pipe.infer(tune)
 
-    if getattr(prompt, 'task', '') != 'video':
+    if not prompt.video:
         for i, image in enumerate(images):
             # check if has alpha
             if image.mode == 'RGBA':
@@ -293,7 +293,6 @@ def test_bad_faceid():
     prompt.tunes=[flux_faceid]
     run_images(prompt)
     assert isinstance(pipe.last_pipe, FluxPipeline)
-
 
 def test_superresolution():
     prompt = JsonObj(
