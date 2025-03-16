@@ -14,6 +14,8 @@ from insightface.app import FaceAnalysis
 
 from facexlib.parsing import init_parsing_model
 
+from astria_utils import CACHE_DIR
+
 # Which labels from BiseNet are treated as background (we set them to 0)
 # You can tune these if you only want certain parts of the face.
 #  0: background
@@ -127,7 +129,7 @@ class FaceMaskGenerator:
 
         # 1) Initialize face detection (InsightFace)
         # -----------------------------------------------------
-        self.face_analysis = FaceAnalysis(providers=providers)
+        self.face_analysis = FaceAnalysis(providers=providers, root=CACHE_DIR)
         self.face_analysis.prepare(ctx_id=0, det_size=(640, 640))
 
         # 2) Initialize face parsing (FaceXLib/BiseNet)
