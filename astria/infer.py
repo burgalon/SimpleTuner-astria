@@ -237,8 +237,6 @@ class InferPipeline(InpaintFaceMixin, VtonMixin):
         if remove_wan:
             self.video_model_loaded = None
             self.wan_i2v_pipe = None
-            if getattr(self, 'diffsynth_model_manager', None):
-                self.diffsynth_model_manager.model = None
             self.diffsynth_model_manager = None
 
         self.reset_controlnet()
@@ -269,8 +267,6 @@ class InferPipeline(InpaintFaceMixin, VtonMixin):
         if self.wan_i2v_pipe is not None:
             self.video_model_loaded = None
             self.wan_i2v_pipe = None
-            if getattr(self, 'diffsynth_model_manager', None):
-                self.diffsynth_model_manager.model = None
             self.diffsynth_model_manager = None
 
             if gc_collect:
@@ -856,14 +852,16 @@ class InferPipeline(InpaintFaceMixin, VtonMixin):
 
     def infer(self, tune: JsonObj):
         set_current_infer_tune(tune)
-        model_path = download_model_from_server(f"{tune.id}-{tune.branch}")
-        self.init_pipe(model_path)
 
         result = None
         for i_prompt, prompt in enumerate(tune.prompts):
             if not prompt.video:
                 # Pull wan model if it exists.
                 self.reset_wan_i2v(gc_collect=True)
+
+                model_path = download_model_from_server(f"{tune.id}-{tune.branch}")
+                self.init_pipe(model_path)
+
                 start_time = time.time()
                 result = self.infer_prompt(prompt, tune)
             else:

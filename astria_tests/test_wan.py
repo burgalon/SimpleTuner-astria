@@ -35,9 +35,6 @@ def name():
 test_name_invocation_count = {}
 
 def test_img2video():
-    # import debugpy
-    # debugpy.listen(('0.0.0.0', 11566))
-    # debugpy.wait_for_client()
     prompt = JsonObj(
         **copy.copy(VIDEO_PARAMS.__dict__),
     )
@@ -55,6 +52,9 @@ def test_img2video():
     run_images(prompt)
 
 def test_img2video_pipeline_swap():
+    # import debugpy
+    # debugpy.listen(('0.0.0.0', 11566))
+    # debugpy.wait_for_client()
     run_images(BASE_PROMPT)
 
     prompt = JsonObj(
