@@ -242,14 +242,13 @@ def download_model_from_server(model_name: str, convert_xl_to_diffusers = True):
 
 process_start_time = time.time()
 def check_refresh():
-    # to refresh use
-    # date +%s > /data/models/refresh_ts.txt
     refresh_ts_path = os.path.join(MODELS_DIR, 'refresh_ts.txt')
     if os.path.exists(refresh_ts_path):
-        with open(refresh_ts_path, 'r') as f:
-            refresh_ts = float(f.read().strip())
-            if refresh_ts > process_start_time:
-                raise StaleDeploymentException('check_refresh found newer refresh_ts.txt')
+        # Use touch to update the timestamp
+        # touch /data/models/refresh_ts.txt
+        mod_time = os.path.getmtime(refresh_ts_path)
+        if mod_time > process_start_time:
+            raise StaleDeploymentException('check_refresh found newer refresh_ts.txt')
 
 if __name__ == "__main__":
     print("Starting")

@@ -45,6 +45,16 @@ generate_ffmpeg_params = lambda width, height, watermark_path = None: [
         if watermark_path else []
     ),
     "-preset", "slow",
+    "-pixel_format", "rgb24",
+    "-map", "0:v",
+    "-c:v", "libx265",
+    # "-c:a", "aac",
+    # "-shortest",
+    "-pix_fmt", "yuv420p",
+    "-crf", "28",
+    "-colorspace", "bt709",
+    "-tag:v", "hvc1",
+    "-preset", "slow",
 ]
 
 
@@ -156,21 +166,15 @@ class WanVideoMixin:
                 prompt.text = prompt.text.replace(f"<{type}:{token}:{scale}>", "")
         return lora_references
 
-    def infer_wan_i2v(self, prompt, tune: JsonObj):
-        from astria.infer import parse_args
-
-        parse_args(prompt)
-        input_image = None
-        assert prompt.input_image is not None
+    def infer_wan_i2v(self, prompt, tune: JsonObj, input_images = None):
+        if input_images is None:
+            input_images = [prompt.input_image]
 
         model_details = WAN_VIDEO_MODEL_DETAILS.get(prompt.video_model)
         assert model_details is not None, f"unknown video model {prompt.video_model}"
 
         self.resolution = model_details["resolution"]
-        _, _, _, _, _, input_image, _ = self.get_controlnet_hint(prompt)
-        width, height = input_image.size
-        
-        assert input_image is not None
+
         self.init_wan_i2v_pipe(prompt, model_details=model_details)
 
         negative_prompt = (
@@ -178,12 +182,14 @@ class WanVideoMixin:
             if prompt.negative_prompt is not None
             else WAN_I2V_NEGATIVE_PROMPT
         )
-        num_images = int(os.environ.get('NUM_IMAGES', prompt.num_images or 1))
-
         video_bytes_list = []
-        for i in range(num_images):
+        for i, input_image in enumerate(input_images):
+            prompt.input_image = input_image
+            _, _, _, _, _, input_image, _ = self.get_controlnet_hint(prompt)
+            width, height = input_image.size
+            print(f"Running WAN I2V on image {i} with size {width}x{height} prompt={prompt.video_prompt or prompt.text}")
             video = self.wan_i2v_pipe(
-                prompt=prompt.text,
+                prompt=prompt.video_prompt or prompt.text,
                 negative_prompt=negative_prompt,
                 input_image=input_image,
                 num_inference_steps=prompt.steps or 30,
@@ -200,7 +206,6 @@ class WanVideoMixin:
             )
 
             # Create a temporary file in /dev/shm, keeping the video in RAM.
-            video_bytes = None
             with tempfile.NamedTemporaryFile(dir="/dev/shm", suffix=".mp4", delete=True) as tmp:
                 temp_path = tmp.name
 
@@ -216,6 +221,7 @@ class WanVideoMixin:
                 with open(temp_path, "rb") as f:
                     video_bytes = f.read()
 
+            video_bytes_list.append(input_image)
             video_bytes_list.append(video_bytes)
 
         if os.environ.get('DEBUG'):
@@ -223,7 +229,7 @@ class WanVideoMixin:
                 with open(f"{MODELS_DIR}/{prompt.id}-{i_video}.mp4", "wb") as f:
                     f.write(video_b)
         else:
-            content_types = ["video/mp4"] * len(video_bytes_list)
+            content_types = ["image/jpg", "video/mp4"] * len(video_bytes_list)
             send_to_server(video_bytes_list, prompt.id, content_types)
 
         return video_bytes

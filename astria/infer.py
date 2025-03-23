@@ -1,7 +1,6 @@
 import argparse
 import copy
 import gc
-import io
 import json
 import os
 import re
@@ -40,7 +39,7 @@ from astria_utils import run, MODELS_DIR, download_model_from_server, JsonObj, d
     StaleDeploymentException, FLUX_INPAINT_MODEL_ID, CACHE_DIR, \
     HUMAN_CLASS_NAMES, check_refresh
 
-if os.environ.get('MOCK_SERVER'):
+if os.environ.get('MOCK_SERVER') or os.environ.get('DEBUG') == 'test':
     from astria_mock_server import report_infer_job_failure, request_infer_job_from_server, request_tune_job_from_server, send_to_server
 else:
     from astria_server import report_infer_job_failure, request_infer_job_from_server, request_tune_job_from_server
@@ -83,15 +82,14 @@ def parse_args(prompt: JsonObj):
     parser.add_argument("--mask_invert", action='store_true', default=False)
     parser.add_argument("--disable_restore_mask_area", action='store_true', default=None)
     parser.add_argument("--face_inpaint_denoising", type=float, default=None)
-    parser.add_argument("--face_inpaint_exclude_neck")
+    parser.add_argument("--face_inpaint_exclude_neck", action='store_true', default=False)
     parser.add_argument("--hires_denoising_strength", type=float, default=None)
     parser.add_argument("--fill", action='store_true', default=False)
-    parser.add_argument("--negative_prompt", type=str, default=prompt.negative_prompt
-        if getattr(prompt, 'negative_prompt', None) is not None else None)
+    parser.add_argument("--video_prompt", type=str, default=None)
     parser.add_argument("--video", action='store_true', default=prompt.video)
     parser.add_argument("--video_model", type=str, default=prompt.video_model if prompt.video_model is not None else '720p')
-    parser.add_argument("--fps", type=str, default=prompt.fps if prompt.fps is not None else 16)
-    parser.add_argument("--frames", type=str, default=prompt.frames if prompt.frames is not None else 81)
+    parser.add_argument("--fps", type=int, default=prompt.fps if prompt.fps is not None else 16)
+    parser.add_argument("--frames", type=int, default=prompt.frames if prompt.frames is not None else 81)
     parser.add_argument("--outpaint", choices=['top-left', 'top-right', 'bottom-left', 'bottom-right', 'center', 'top-center', 'bottom-center', 'left-center', 'right-center'], default=None)
     parser.add_argument("--outpaint_height", type=int, default=None)
     parser.add_argument("--outpaint_width", type=int, default=None)
@@ -228,12 +226,17 @@ class InferPipeline(InpaintFaceMixin, VtonMixin, WanVideoMixin):
             torch.cuda.empty_cache()
 
     def warmup(self):
+        self.reset_wan_i2v(gc_collect=False)
         start_time = time.time()
         self.init_pipe(MODELS_DIR + "/1504944-flux1")
-        print(f"Initialized pipeline in {time.time() - start_time:.2f}s")
+        total_time = time.time() - start_time
+        if total_time > 1:
+            print(f"Initialized pipeline in {total_time :.2f}s")
         start_time = time.time()
         self.init_inpaint(JsonObj(fill=True))
-        print(f"Initialized inpaint in {time.time() - start_time:.2f}s")
+        total_time = time.time() - start_time
+        if total_time > 1:
+            print(f"Initialized inpaint in {total_time :.2f}s")
 
     def unload_lora_weights(self, pipe):
         pipe_key = get_pipe_key_for_lora(pipe)
@@ -765,20 +768,26 @@ class InferPipeline(InpaintFaceMixin, VtonMixin, WanVideoMixin):
 
         result = None
         for i_prompt, prompt in enumerate(tune.prompts):
-            if not prompt.video:
-                # Pull wan model if it exists.
-                self.reset_wan_i2v(gc_collect=True)
+            parse_args(prompt)
 
+            if not prompt.video or not prompt.input_image or prompt.denoising_strength is None or prompt.denoising_strength > 0:
+                # Reset WAN to clear memory for other pipelines
+                self.reset_wan_i2v(gc_collect=True)
                 model_path = download_model_from_server(f"{tune.id}-{tune.branch}")
                 self.init_pipe(model_path)
 
                 start_time = time.time()
-                result = self.infer_prompt(prompt, tune)
-            else:
-                # Pull all non-wan models if it exists.
+                result = self.infer_prompt(prompt, tune, should_send_to_server=not prompt.video)
+                if prompt.video:
+                    prompt.input_image = result[0]
+
+            if prompt.video:
+                # Need to reset controlnet so that wan call to get_controlnet_hint works
+                prompt.controlnet = prompt.controlnet_hint = None
                 self.reset(gc_collect=True, remove_wan=False)
                 start_time = time.time()
-                result = self.infer_wan_i2v(prompt, tune)
+                result = self.infer_wan_i2v(prompt, tune, result)
+
             print(f"T={tune.id} {i_prompt}/{len(tune.prompts)} P={prompt.id} U={prompt.user_id} V={prompt.video} https://www.astria.ai/admin/prompts/{prompt.id} {(time.time() - start_time):.2f} seconds")
 
         set_current_infer_tune(None)
@@ -850,8 +859,7 @@ class InferPipeline(InpaintFaceMixin, VtonMixin, WanVideoMixin):
             images[i_image] = upscale_sr(self.sr_model, image, upscale_factor)
         return images
 
-    def infer_prompt(self, prompt, tune: JsonObj):
-        parse_args(prompt)
+    def infer_prompt(self, prompt, tune: JsonObj, should_send_to_server=True):
         if prompt.w and prompt.h:
             prompt.w, prompt.h = int(np.round(prompt.w / 32.0) * 32), int(np.round(prompt.h / 32.0) * 32)
 
@@ -1060,12 +1068,13 @@ class InferPipeline(InpaintFaceMixin, VtonMixin, WanVideoMixin):
             images = self.remove_background(images)
 
         if os.environ.get('DEBUG'):
-            for i_image, image in enumerate(images):
-                if prompt.remove_background:
-                    image.save(f"{MODELS_DIR}/{prompt.id}-{i_image}.png")
-                else:
-                    image.save(f"{MODELS_DIR}/{prompt.id}-{i_image}.jpg")
-        else:
+            if os.environ.get('DEBUG') != 'test':
+                for i_image, image in enumerate(images):
+                    if prompt.remove_background:
+                        image.save(f"{MODELS_DIR}/{prompt.id}-{i_image}.png")
+                    else:
+                        image.save(f"{MODELS_DIR}/{prompt.id}-{i_image}.jpg")
+        elif should_send_to_server:
             content_types = ["image/png" if prompt.remove_background else "image/jpeg"] * len(images)
             send_to_server(images, prompt.id, content_types)
         prompt.trained_at = True
@@ -1249,8 +1258,12 @@ def main():
 
             # Give a few chances for inference before starting training
             if not os.environ.get('DISABLE_TRAINING'):
-                tune = request_tune_job_from_server()
-                if tune.id:
+                while True:
+                    tune = request_tune_job_from_server()
+                    if not tune.id:
+                        if GPU_MEMORY_GB > 50 and not os.environ.get('DISABLE_INFERENCE'):
+                            pipeline.warmup()
+                        break
                     if GPU_MEMORY_GB < 50 or (tune.args and 'preprocessing' in tune.args):
                         pipeline.reset()
                     else:
@@ -1260,8 +1273,6 @@ def main():
                     train(tune)
                     set_current_train_tune(None)
                     processed_jobs = 1
-                    if GPU_MEMORY_GB > 50 and not os.environ.get('DISABLE_INFERENCE'):
-                        pipeline.warmup()
 
             # Check both train + infer
             if processed_jobs == 0:

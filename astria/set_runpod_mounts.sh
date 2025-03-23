@@ -27,4 +27,4 @@ rm -rf /root/.cache
 ln -sf /runpod-volume/data/cache /root/.cache
 
 # basicsr for super-resolution compatability fix for torchvision
-sed -i 's/from torchvision.transforms.functional_tensor import rgb_to_grayscale/from torchvision.transforms.functional import rgb_to_grayscale/g' /usr/local/lib/python3.10/dist-packages/basicsr/data/degradations.py
+sed -i 's/from torchvision.transforms.functional_tensor import rgb_to_grayscale/from torchvision.transforms.functional import rgb_to_grayscale/g' /usr/local/lib/python3.12/dist-packages/basicsr/data/degradations.py

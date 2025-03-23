@@ -12,7 +12,7 @@ import torch
 from astria_utils import run, run_with_output, MODELS_DIR, EPHEMERAL_MODELS_DIR, \
     download_model_from_server, JsonObj, cleanup_models, CUDA_VISIBLE_DEVICES
 
-if os.environ.get('MOCK_SERVER'):
+if os.environ.get('MOCK_SERVER') or os.environ.get('DEBUG') == 'test':
     from astria_mock_server import request_tune_job_from_server, server_tune_done, report_tune_job_failure
 else:
     from astria_server import request_tune_job_from_server, server_tune_done, report_tune_job_failure
@@ -293,7 +293,7 @@ def train_no_catch(tune: JsonObj):
             f'--resolution={resolution}',
             '--validation_resolution=1024x1024',
             '--resolution_type=pixel_area',
-            '--checkpointing_steps', str(tune.checkpointing_steps or 100),
+            '--checkpointing_steps', str(tune.checkpointing_steps or 1000),
             '--checkpoints_total_limit=10',
             '--validation_steps', str(tune.validation_steps) if tune.validation_steps else '5000',
             f'--tracker_run_name={tune.id}-{tune.branch}-{os.environ.get("TRACKER_NAME", timestamp)} {tune.title} {tune.args}',
@@ -373,7 +373,7 @@ def train_no_catch(tune: JsonObj):
             f'--resolution={resolution}',
             '--validation_resolution=1024',
             '--resolution_type=pixel',
-            '--checkpointing_steps=100',
+            '--checkpointing_steps=1000',
             '--checkpoints_total_limit=20',
             '--validation_steps', str(tune.validation_steps) if tune.validation_steps else '5000',
             f'--tracker_run_name={tune.id}-{tune.branch}-{timestamp}',

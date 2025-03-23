@@ -660,7 +660,7 @@ def create_data_config_v2(tune: JsonObj, output_dir: str, should_write_metadata=
 if __name__ == "__main__":
     import sys
     from train import parse_args
-    if os.environ.get('MOCK_SERVER'):
+    if os.environ.get('MOCK_SERVER') or os.environ.get('DEBUG') == 'test':
         from astria_mock_server import request_tune_job_from_server
     else:
         from astria_server import request_tune_job_from_server

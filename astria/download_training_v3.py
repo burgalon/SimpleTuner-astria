@@ -656,7 +656,7 @@ if __name__ == "__main__":
     import sys
     from train import parse_args, parse_env_args
 
-    if os.environ.get('MOCK_SERVER'):
+    if os.environ.get('MOCK_SERVER') or os.environ.get('DEBUG') == 'test':
         from astria_mock_server import request_tune_job_from_server
     else:
         from astria_server import request_tune_job_from_server

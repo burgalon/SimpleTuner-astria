@@ -358,7 +358,6 @@ class InpaintFaceMixin:
 
     def remove_background_for_inpaint_crop(self, images):
         for i_image, image in enumerate(images):
-            print(f"Removing background for image {i_image}")
             # Get the alpha matte as a tensor and convert it to a NumPy array.
             alpha_tensor = self.birefnet.matting(image, device)
             alpha = alpha_tensor.squeeze().cpu().numpy()

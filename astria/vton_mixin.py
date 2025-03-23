@@ -7,7 +7,7 @@ import requests
 import rollbar
 from PIL import Image
 from astria_utils import JsonObj, MODELS_DIR
-if os.environ.get('MOCK_SERVER'):
+if os.environ.get('MOCK_SERVER') or os.environ.get('DEBUG') == 'test':
     from astria_mock_server import FASHN_API_KEY
 else:
     from astria_server import FASHN_API_KEY

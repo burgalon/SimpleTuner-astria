@@ -55,16 +55,19 @@ def download_hinters(cached_repos_dict):
             download_url_to_file(url, os.path.join(annotator_ckpts_path, os.path.basename(url)))
 
 def _download_models():
-    download_model_from_server('1504944-flux1', False)
-    download_model_from_server(f'{FLUX_INPAINT_MODEL_ID}-flux1', False)
+    # download_model_from_server('1504944-flux1', False)
+    snapshot_download('black-forest-labs/FLUX.1-dev', ignore_patterns=['flux1-dev.safetensors', 'ae.safetensors', 'dev_grid.jpg', 'README.md', 'LICENSE.md', '.gitattributes'], local_dir=f"{MODELS_DIR}/1504944-flux1")
+    # download_model_from_server(f'{FLUX_INPAINT_MODEL_ID}-flux1', False)
+    snapshot_download('black-forest-labs/FLUX.1-Fill-dev',
+                      allow_patterns=['transformer/'],
+                      local_dir=f'{MODELS_DIR}/{FLUX_INPAINT_MODEL_ID}-flux1',
+                      revision="refs/pr/4",
+                      )
 
     # HF_TOKEN=hf_********tNke huggingface-cli upload tuner /data/cache / --exclude *.log
     snapshot_download(repo_id="burgalon/tuner", local_dir=CACHE_DIR, local_dir_use_symlinks=False)
 
     cached_repos_dict = get_cached_repos_dict()
-    # TODO
-    # download_path: /app/models/insightface/models/buffalo_l
-    #  Downloading /app/models/insightface/models/buffalo_l.zip from https://github.com/deepinsight/insightface/releases/download/v0.7/buffalo_l.zip...
 
     # BiRefNet
     if not os.path.exists(f"{CACHE_DIR}/BiRefNet/swin_large_patch4_window12_384_22kto1k.pth"):
@@ -99,16 +102,6 @@ def _download_models():
             print(f"Downloading {url} to {target_fn}")
             download_url_to_file(url, target_fn)
 
-    # Prefetch the WAN models.
-    snapshot_download(
-        WAN_I2V_LOCAL_LOCATION_480P[0],
-        local_dir=WAN_I2V_LOCAL_LOCATION_480P[1],
-    )
-    snapshot_download(
-        WAN_I2V_LOCAL_LOCATION_720P[0],
-        local_dir=WAN_I2V_LOCAL_LOCATION_720P[1],
-    )
-
     os.makedirs("/data/cache/HaldCLUT", exist_ok=True)
     for filename in [*CLUT_DICT.values()]:
         if not os.path.exists(f"/data/cache/{filename}"):
@@ -125,6 +118,26 @@ def _download_models():
                 )
     download_hinters(cached_repos_dict)
 
+def _download_models_secondary():
+    print("Downloading models in secondary process")
+    # Prefetch the WAN models.
+    snapshot_download(
+        WAN_I2V_LOCAL_LOCATION_720P[0],
+        local_dir=WAN_I2V_LOCAL_LOCATION_720P[1],
+    )
+    snapshot_download(
+        WAN_I2V_LOCAL_LOCATION_480P[0],
+        local_dir=WAN_I2V_LOCAL_LOCATION_480P[1],
+    )
+
+def _download_models_secondary_with_retry():
+    for i in range(10):
+        try:
+            _download_models_secondary()
+            break
+        except Exception as e:
+            print(f"Download secondary failed: {e}. Sleeping for 10 seconds")
+            time.sleep(10)
 
 
 def download_models_with_lock():
@@ -144,4 +157,8 @@ def download_models_with_lock():
 
 
 if __name__ == "__main__":
-    download_models_with_lock()
+    import sys
+    if len(sys.argv) == 1:
+        download_models_with_lock()
+    else:
+        _download_models_secondary_with_retry()

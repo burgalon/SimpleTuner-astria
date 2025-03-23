@@ -1,4 +1,4 @@
-FROM nvidia/cuda:12.4.1-cudnn-devel-ubuntu22.04
+FROM nvidia/cuda:12.8.1-cudnn-devel-ubuntu24.04
 ENV DEBIAN_FRONTEND=noninteractive \
     PIP_PREFER_BINARY=1 \
     PYTHONUNBUFFERED=1 \
@@ -14,8 +14,14 @@ WORKDIR /app
 COPY poetry.lock pyproject.toml /app/
 
 RUN apt-get update -y && \
-	apt-get install -y --no-install-recommends aria2 libgoogle-perftools-dev libgl1 libglib2.0-0 wget curl awscli git git-lfs python3 python3-pip build-essential python3-dev && \
+	apt-get install -y --no-install-recommends aria2 libgoogle-perftools-dev libgl1 libglib2.0-0 wget curl git git-lfs python3 python3-pip build-essential python3-dev && \
   apt-get autoremove -y && rm -rf /var/lib/apt/lists/* && apt-get clean -y && \
+  # install awscli \
+  cd / && \
+  curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip" && \
+  unzip awscliv2.zip && \
+  ./aws/install && \
+  # done installing awscli \
   python3 -m pip install pip --upgrade && \
   # https://stackoverflow.com/questions/53835198/integrating-python-poetry-with-docker
   curl -sSL https://install.python-poetry.org | python3  && \

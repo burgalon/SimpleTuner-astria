@@ -1,7 +1,7 @@
 import os
 import signal
 
-if os.environ.get('MOCK_SERVER'):
+if os.environ.get('MOCK_SERVER') or os.environ.get('DEBUG') == 'test':
     from astria_mock_server import report_infer_job_failure, report_tune_job_failure
 else:
     from astria_server import report_infer_job_failure, report_tune_job_failure
