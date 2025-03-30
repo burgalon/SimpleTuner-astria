@@ -4,6 +4,7 @@ import re
 import tempfile
 import torch
 
+from PIL import Image
 from pathlib import Path
 
 from diffsynth import ModelManager, save_video
@@ -226,8 +227,11 @@ class WanVideoMixin:
 
         if os.environ.get('DEBUG'):
             for i_video, video_b in enumerate(video_bytes_list):
-                with open(f"{MODELS_DIR}/{prompt.id}-{i_video}.mp4", "wb") as f:
-                    f.write(video_b)
+                if not isinstance(video_b, Image.Image):
+                    with open(f"{MODELS_DIR}/{prompt.id}-{i_video}.mp4", "wb") as f:
+                        f.write(video_b)
+                else:
+                    video_b.save(f"{MODELS_DIR}/{prompt.id}-{i_video}.jpg")
         else:
             content_types = ["image/jpg", "video/mp4"] * len(video_bytes_list)
             send_to_server(video_bytes_list, prompt.id, content_types)

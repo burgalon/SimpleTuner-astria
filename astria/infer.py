@@ -780,6 +780,8 @@ class InferPipeline(InpaintFaceMixin, VtonMixin, WanVideoMixin):
                 result = self.infer_prompt(prompt, tune, should_send_to_server=not prompt.video)
                 if prompt.video:
                     prompt.input_image = result[0]
+                    prompt.h = None
+                    prompt.w = None
 
             if prompt.video:
                 # Need to reset controlnet so that wan call to get_controlnet_hint works
