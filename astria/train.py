@@ -211,6 +211,17 @@ def train_no_catch(tune: JsonObj):
 
     torch.cuda.empty_cache()
     os.environ['SIMPLETUNER_CONFIG_BACKEND'] = 'cmd'
+
+    dynamo_backend = 'no'
+    if tune.preset == 'flux-lora-very-fast':
+        # os.environ['TORCHINDUCTOR_CACHE_DIR'] = '/data/cache/compiled_models'
+        # os.environ['TRAINING_DYNAMO_BACKEND'] = 'cudagraphs'
+        # dynamo_backend = 'cudagraphs'
+
+        # Lower base precisions are slower???
+        # tune.base_model_precision = "fp8-torchao"
+        train_batch = 1
+        tune.flux_lora_target = 'fast'
     os.environ['SIMPLETUNER_LOG_LEVEL'] = 'DEBUG'
     os.environ['CUDA_VISIBLE_DEVICES'] = CUDA_VISIBLE_DEVICES
     os.environ['DEBUG_LOG_FILENAME'] = f"{output_dir}/debug.log"
@@ -224,7 +235,7 @@ def train_no_catch(tune: JsonObj):
             # *([f'--multi_gpu'] if num_gpus > 1 else []),
             # f'--num_processes={num_gpus}',
             '--num_machines=1',
-            '--dynamo_backend=no',
+            f'--dynamo_backend={dynamo_backend}',
             'train.py',
             # '--base_model_default_dtype=fp32',
             '--model_type=lora',
@@ -236,7 +247,7 @@ def train_no_catch(tune: JsonObj):
             ] if tune.dev2pro else []),
             '--enable_xformers_memory_efficient_attention', # ?
             '--gradient_checkpointing', # avoid OOM
-            '--peft_model_precision=fp32', # or bf16; when using adamw_bf16 this should be bf16
+            '--peft_model_precision=bf16', # or fp32; when using adamw_bf16 this should be bf16
             '--set_grads_to_none', # ?
             '--gradient_accumulation_steps', str(tune.gradient_accumulation_steps or 1),
             '--resume_from_checkpoint=latest',
@@ -306,17 +317,17 @@ def train_no_catch(tune: JsonObj):
             '--flux_schedule_shift', str(tune.flux_schedule_shift if tune.flux_schedule_shift is not None else 0),
             '--skip_file_discovery=aspect,metadata',
             *(['--prepend_instance_prompt'] if caption_strategy == "textfile" else []),
+            *(['--lora_fast_forward_training'] if tune.preset == 'flux-lora-very-fast' else []),
         ])
     else:
         tail_lines = run_with_output([
             'accelerate',
             'launch',
-            '--mixed_precision=no',
             '--gpu_ids', CUDA_VISIBLE_DEVICES,
             *([f'--multi_gpu'] if num_gpus > 1 else []),
             f'--num_processes={num_gpus}',
             '--num_machines=1',
-            '--dynamo_backend=no',
+            f'--dynamo_backend={dynamo_backend}',
             'simpletuner_v0/train.py',
             '--base_model_default_dtype=fp32',
             '--model_type=lora',

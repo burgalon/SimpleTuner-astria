@@ -79,7 +79,7 @@ def load_diffusion_model(args, weight_dtype):
                         FluxAttnProcessor3_0
                     )
                     if rank == 0:
-                        print("Using FlashAttention3_0 for H100 GPU (Single block)")
+                        logger.info("Using FlashAttention3_0 for H100 GPU (Single block)")
                 except:
                     if rank == 0:
                         logger.warning(

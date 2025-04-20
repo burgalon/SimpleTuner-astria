@@ -247,7 +247,7 @@ def download_training(tune: JsonObj, one_dir=False):
                 bbox_size = (bbox[2] - bbox[0]) * (bbox[3] - bbox[1])
                 image_size = image.width * image.height
                 bbox_ratio = bbox_size / image_size
-                cropped_face = ImageOps.fit(image.crop(orig_bbox), (512, 512))
+                cropped_face = ImageOps.fit(image.crop(orig_bbox), (BASE_TRAIN_RESOLUTION, BASE_TRAIN_RESOLUTION))
                 print(f"bbox_ratio={bbox_ratio} fn={fn}")
                 blur_factor = is_blurry(cropped_face)
                 joint_factor = (bbox_ratio + blur_factor) / 2
@@ -558,7 +558,7 @@ def create_data_config_v2(tune: JsonObj, output_dir: str, should_write_metadata=
 
     if tune.multiresolution or os.environ.get('MULTIRESOLUTION'):
         # ordered is reversed so that repeats is higher for lower resolutions
-        all_resolutions = [768, 512]
+        all_resolutions = [768, BASE_TRAIN_RESOLUTION]
         resolutions = [r for r in all_resolutions if r < resolution]
         for res_i, res in enumerate(resolutions):
             for i in range(2):
@@ -586,10 +586,10 @@ def create_data_config_v2(tune: JsonObj, output_dir: str, should_write_metadata=
             "crop": True,
             "crop_aspect": "square",
             "crop_style": "center",
-            "resolution": 512,
-            "minimum_image_size": 512,
-            "maximum_image_size": 512,
-            "target_downsample_size": 512,
+            "resolution": BASE_TRAIN_RESOLUTION,
+            "minimum_image_size": BASE_TRAIN_RESOLUTION,
+            "maximum_image_size": BASE_TRAIN_RESOLUTION,
+            "target_downsample_size": BASE_TRAIN_RESOLUTION,
             "resolution_type": "pixel_area",
             "cache_dir_vae": pseudo_data_dir + "-cache",
             "instance_data_dir": pseudo_data_dir,

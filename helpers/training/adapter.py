@@ -21,6 +21,13 @@ def determine_adapter_target_modules(args, unet, transformer):
                 "to_out.0",
                 "to_add_out",
             ]
+        elif args.flux_lora_target == "fast":
+            target_modules = [
+                "to_k",
+                "to_q",
+                "to_v",
+                "to_out.0",
+            ]
         elif args.flux_lora_target == "context":
             # i think these are the text input layers.
             target_modules = [

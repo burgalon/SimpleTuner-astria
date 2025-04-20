@@ -114,6 +114,7 @@ def get_argument_parser():
         choices=[
             "mmdit",
             "context",
+            "fast",
             "context+ffs",
             "all",
             "all+ffs",
@@ -2021,6 +2022,14 @@ def get_argument_parser():
             "Clear the cache from VRAM every X steps. This can help prevent memory leaks, but may slow down training."
         ),
     )
+    parser.add_argument(
+        "--lora_fast_forward_training",
+        action="store_true",
+        default=False,
+        help=(
+            "Whether or not to use LoRA fast forward training"
+        ),
+    )
 
     return parser
 
@@ -2092,10 +2101,10 @@ def parse_cmdline_args(input_args=None):
     elif (
         args.maximum_image_size is not None
         and args.resolution_type == "pixel"
-        and args.maximum_image_size < 512
+        and args.maximum_image_size < 256
     ):
         raise ValueError(
-            f"When using --resolution_type=pixel, --maximum_image_size must be at least 512 pixels. You may have accidentally entered {args.maximum_image_size} megapixels, instead of pixels."
+            f"When using --resolution_type=pixel, --maximum_image_size must be at least 256 pixels. You may have accidentally entered {args.maximum_image_size} megapixels, instead of pixels."
         )
     if (
         args.target_downsample_size is not None
@@ -2109,10 +2118,10 @@ def parse_cmdline_args(input_args=None):
     elif (
         args.target_downsample_size is not None
         and args.resolution_type == "pixel"
-        and args.target_downsample_size < 512
+        and args.target_downsample_size < 256
     ):
         raise ValueError(
-            f"When using --resolution_type=pixel, --target_downsample_size must be at least 512 pixels. You may have accidentally entered {args.target_downsample_size} megapixels, instead of pixels."
+            f"When using --resolution_type=pixel, --target_downsample_size must be at least 256 pixels. You may have accidentally entered {args.target_downsample_size} megapixels, instead of pixels."
         )
 
     model_is_bf16 = (

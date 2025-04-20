@@ -9,12 +9,9 @@ package-mode = false
 
 [tool.poetry.dependencies]
 python = ">=3.10,<3.12"
-torch = {version = "^2.5.1+cu124", source = "pytorch"}
-torchvision = {version = "^0.20.1+cu124", source = "pytorch"}
 diffusers = {git = "https://github.com/huggingface/diffusers.git", rev = "cb342b745aa57798b759c0ba5b80c045a5dafbad"}
 transformers = "4.46.2"
 datasets = "^3.0.1"
-bitsandbytes = "^0.44.1"
 wandb = "^0.18.2"
 requests = "^2.32.3"
 pillow = "^10.4.0"
@@ -57,12 +54,14 @@ controlnet-aux = "^0.0.7"
 ultralytics = "^8.3.27"
 insightface = "^0.7.3"
 onnxruntime-gpu = "^1.20.1"
-xformers = "^0.0.28.post3"
 huggingface-hub = {extras = ["hf-transfer"], version = "^0.27.1"}
 tensorizer = "^2.9.1"
 imagehash = "^4.3.2"
 diffsynth = {git = "https://github.com/modelscope/DiffSynth-Studio.git"}
 sageattention = { file = "wheels/sageattention-2.1.1-cp311-cp311-linux_x86_64.whl" }
+bitsandbytes = "^0.45.5"
+torch = {source = "pytorch-gpu-src"}
+torchvision = {source = "pytorch-gpu-src"}
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^8.3.3"
@@ -74,6 +73,13 @@ requires = ["poetry-core", "setuptools", "wheel", "torch"]
 build-backend = "poetry.core.masonry.api"
 
 [[tool.poetry.source]]
-priority = "supplemental"
 name = "pytorch"
 url = "https://download.pytorch.org/whl/cu124"
+priority = "supplemental"
+
+
+[[tool.poetry.source]]
+name = "pytorch-gpu-src"
+url = "https://download.pytorch.org/whl/nightly/cu124"
+priority = "explicit"
+

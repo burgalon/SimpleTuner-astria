@@ -13,6 +13,9 @@ import os
 import sys
 import glob
 import wandb
+from pathlib import Path
+from collections import defaultdict
+from torch.nn.utils import parameters_to_vector, vector_to_parameters
 
 from typing import TYPE_CHECKING
 
@@ -140,6 +143,45 @@ except:
 # Will error if the minimal version of diffusers is not installed. Remove at your own risks.
 check_min_version("0.27.0.dev0")
 
+CUDA_GRAPHS_COMPILED_LOCATION = "/data/cache/cuda_graphs"
+CUDA_GRAPHS_COMPILED_FILENAME = "fast_lora_paths.graphs"
+GRAPHS_LOADED = False
+
+FAL_MAGIC_TIMESTEPS = [
+    960,
+    893,
+    866,
+    839,
+    812,
+    785,
+    757,
+    730,
+    703,
+    676,
+    649,
+    622,
+    595,
+    568,
+    541,
+    514,
+    486,
+    459,
+    432,
+    405,
+    378,
+    351,
+    324,
+    297,
+    270,
+    243,
+    215,
+    188,
+    161,
+    134,
+    107,
+    40
+]
+
 SCHEDULER_NAME_MAP = {
     "euler": EulerDiscreteScheduler,
     "euler-a": EulerAncestralDiscreteScheduler,
@@ -155,6 +197,67 @@ logging.basicConfig(
 
 transformers.utils.logging.set_verbosity_warning()
 diffusers.utils.logging.set_verbosity_warning()
+
+
+class _FastForwardHelper:
+    def __init__(self, model, save_every, warmup_steps=25, stride=6):
+        self.save_every      = save_every             # normally = grad_acc_steps
+        self.warmup_steps    = warmup_steps           # let optimiser stabilise
+        self.stride          = stride                 # distance between probes
+        self.snapshots       = defaultdict(list)      # param‑name → [tensor, …]
+        self.predictor_step  = 0
+        self.next_probe      = stride
+        self.delta           = None
+        self.backup          = None
+        self.lora_params = [
+            p for name, p in model.named_parameters() if p.requires_grad and "lora" in name
+        ]
+        self.snapshots   = []              # list[torch.Tensor]
+
+    @torch.no_grad()
+    def record(self):
+        """
+        Take a light‑weight snapshot of *all* LoRA weights.
+        Executed after every real optimiser.step().
+        """
+        if self.predictor_step > 0 and self.predictor_step + 1 % self.stride == 0:
+            # 1. pack the N small matrices into ONE vec living on GPU
+            vec_gpu = parameters_to_vector(self.lora_params)
+
+            # 2. async copy to CPU (pinned memory) & cast to bf16 to cut bandwidth
+            vec_cpu = vec_gpu.to(dtype=torch.bfloat16, device="cpu", non_blocking=True)
+
+            self.snapshots.append(vec_cpu)
+        self.predictor_step += 1
+
+    def ready_to_probe(self):
+        return self.predictor_step >= self.next_probe
+
+    def make_delta(self):
+        # keep only the last vector after
+        self.backup    = self.snapshots[-1]
+        self.delta     = self.snapshots[-1] - self.snapshots[0] # torch.mean(torch.stack(self.snapshots[:-1], dim=0), dim=0)
+        self.snapshots = self.snapshots[-1:]
+
+    def apply_delta(self, k=1):
+        with torch.no_grad():
+            # bring delta back to GPU (bf16→bf16/fp32) and add in place
+            delta_gpu = self.delta.to(self.lora_params[0].device, non_blocking=True).to(self.lora_params[0].dtype)
+            current   = parameters_to_vector(self.lora_params)
+            vector_to_parameters(current + k * delta_gpu, self.lora_params)
+
+    def push_backup(self):
+        with torch.no_grad():
+            self.backup = parameters_to_vector(self.lora_params)
+
+    def revert_to_backup(self):
+        with torch.no_grad():
+            vector_to_parameters(self.backup, self.lora_params)
+        self.backup = None
+
+    def reset_for_next_cycle(self):
+        self.predictor_step = 0
+        self.delta          = None
 
 
 class Trainer:
@@ -1893,6 +1996,8 @@ class Trainer:
         add_text_embeds,
         timesteps,
     ):
+        global GRAPHS_LOADED
+
         if self.config.controlnet:
             training_logger.debug(
                 f"Extra conditioning dtype: {batch['conditioning_pixel_values'].dtype}"
@@ -2042,7 +2147,25 @@ class Trainer:
                             "No attention mask was discovered when attempting validation - this means you need to recreate your text embed cache."
                         )
 
+                graphs_path = f"{CUDA_GRAPHS_COMPILED_LOCATION}/{CUDA_GRAPHS_COMPILED_FILENAME}"
+                if self.config.lora_fast_forward_training and Path(graphs_path).exists() and not GRAPHS_LOADED:
+                    artifact_bytes = None
+                    with open(graphs_path, 'rb') as f:
+                        artifact_bytes = f.read(artifact_bytes)
+                    torch.compiler.load_cache_artifacts(artifact_bytes)
+                    GRAPHS_LOADED = True
+
                 model_pred = self.transformer(**flux_transformer_kwargs)[0]
+
+                if self.config.lora_fast_forward_training and not Path(graphs_path).exists():
+                    artifacts = torch.compiler.save_cache_artifacts()
+
+                    assert artifacts is not None
+                    artifact_bytes, _ = artifacts
+                    os.makedirs(CUDA_GRAPHS_COMPILED_LOCATION, exist_ok=True)
+                    with open(graphs_path, 'wb') as f:
+                        f.write(artifact_bytes)
+                    GRAPHS_LOADED = True
 
             elif self.config.model_family == "sd3":
                 # Stable Diffusion 3 uses a MM-DiT model where the VAE-produced
@@ -2129,6 +2252,8 @@ class Trainer:
         return model_pred
 
     def train(self):
+        torch._dynamo.config.optimize_ddp = False
+
         self.init_trackers()
         self._train_initial_msg()
 
@@ -2160,6 +2285,14 @@ class Trainer:
         current_epoch_step = None
         self.bf, fetch_thread = None, None
         iterator_fn = random_dataloader_iterator
+
+        ff = None
+        if self.config.lora_fast_forward_training:
+            ff = _FastForwardHelper(
+                model         = (self.unet or self.transformer),
+                save_every    = self.config.gradient_accumulation_steps,
+                stride=10,
+            )
         for epoch in range(self.state["first_epoch"], self.config.num_train_epochs + 1):
             if self.state["current_epoch"] > self.config.num_train_epochs + 1:
                 # This might immediately end training, but that's useful for simply exporting the model.
@@ -2290,7 +2423,14 @@ class Trainer:
                         )
                     training_logger.debug(f"Working on batch size: {bsz}")
                     if self.config.flow_matching:
-                        if not self.config.flux_fast_schedule and not any(
+                        if False: # self.config.lora_fast_forward_training:
+                            ts_list = random.choices(FAL_MAGIC_TIMESTEPS, k=bsz)
+                            timesteps = torch.tensor(ts_list, device=self.accelerator.device, dtype=torch.float32)
+                            sigmas = timesteps / 1000.0
+                            sigmas = apply_flux_schedule_shift(
+                                self.config, self.noise_scheduler, sigmas, noise
+                            )
+                        elif not self.config.flux_fast_schedule and not any(
                             [
                                 self.config.flux_use_beta_schedule,
                                 self.config.flux_use_uniform_schedule,
@@ -2666,6 +2806,39 @@ class Trainer:
                         self.optimizer.zero_grad(
                             set_to_none=self.config.set_grads_to_none
                         )
+
+                        if ff:
+                            if self.state["global_step"] > ff.warmup_steps:
+                                ff.record()   # take snapshot
+                                if ff.ready_to_probe():                    # have two snapshots?
+                                    training_logger.info(f"Applying FF lora training deltas at step {self.state['global_step']}")
+                                    ff.make_delta()                        #    compute ΔW
+                                    last_loss = avg_loss.item()
+                                    while True:
+                                        ff.apply_delta(k=1)
+                                        with torch.no_grad():
+                                            model_pred = self.model_predict(
+                                                batch=batch,
+                                                latents=latents,
+                                                noisy_latents=noisy_latents,
+                                                encoder_hidden_states=encoder_hidden_states,
+                                                added_cond_kwargs=added_cond_kwargs,
+                                                add_text_embeds=add_text_embeds,
+                                                timesteps=timesteps,
+                                            )
+
+                                            # This doesn't seem to produce anything other than chaos
+                                            loss = (
+                                                model_pred.float() - target.float()
+                                            ).mean()
+                                            if loss > last_loss:
+                                                ff.revert_to_backup()
+                                                break
+                                            else:
+                                                ff.push_backup()
+                                            last_loss = loss
+
+                                    ff.reset_for_next_cycle()              # shousekeeping
 
                 # Checks if the accelerator has performed an optimization step behind the scenes
                 wandb_logs = {}
