@@ -100,7 +100,7 @@ def parse_args(prompt: JsonObj):
     parser.add_argument("--face_inpaint_exclude_neck", action='store_true', default=False)
     parser.add_argument("--hires_denoising_strength", type=float, default=None)
     parser.add_argument("--fill", action='store_true', default=False)
-    parser.add_argument("--video_prompt", type=str, default=None)
+    parser.add_argument("--video_prompt", type=str, default=prompt.video_prompt if prompt.video_prompt is not None else None)
     parser.add_argument("--video", action='store_true', default=prompt.video)
     parser.add_argument("--video_model", type=str, default=prompt.video_model if prompt.video_model is not None else '720p')
     parser.add_argument("--fps", type=int, default=prompt.fps if prompt.fps is not None else 16)
