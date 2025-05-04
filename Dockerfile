@@ -6,23 +6,28 @@ ENV DEBIAN_FRONTEND=noninteractive \
     POETRY_NO_INTERACTION=1 \
     POETRY_VIRTUALENVS_CREATE=false \
     POETRY_CACHE_DIR='/var/cache/pypoetry' \
-    POETRY_HOME='/usr/local'
+    POETRY_HOME='/usr/local' \
+    PIP_BREAK_SYSTEM_PACKAGES=1 \
+    TINI_VERSION=v0.19.0
 #    LD_PRELOAD=libtcmalloc.so
 
 # Install SimpleTuner
 WORKDIR /app
 COPY poetry.lock pyproject.toml /app/
+COPY wheels/sageattention-2.1.1-cp312-cp312-linux_x86_64.whl /app/wheels/
 
 RUN apt-get update -y && \
-	apt-get install -y --no-install-recommends aria2 libgoogle-perftools-dev libgl1 libglib2.0-0 wget curl git git-lfs python3 python3-pip build-essential python3-dev && \
+  apt remove python3-pyparsing -y && \
+	apt-get install -y --no-install-recommends unzip aria2 libgoogle-perftools-dev libgl1 libglib2.0-0 wget curl git git-lfs python3 python3-pip build-essential python3-dev && \
   apt-get autoremove -y && rm -rf /var/lib/apt/lists/* && apt-get clean -y && \
   # install awscli \
   cd / && \
   curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip" && \
-  unzip awscliv2.zip && \
+  unzip -qq awscliv2.zip && \
   ./aws/install && \
+  cd /app && \
   # done installing awscli \
-  python3 -m pip install pip --upgrade && \
+  #  python3 -m pip install pip --upgrade && \ #error: externally-managed-environment
   # https://stackoverflow.com/questions/53835198/integrating-python-poetry-with-docker
   curl -sSL https://install.python-poetry.org | python3  && \
   # used to check disk usage quickly
@@ -37,10 +42,9 @@ RUN apt-get update -y && \
   rm -rf /var/lib/apt/lists/* && \
   mkdir -p /var/cache/apt/archives/partial
 
-ENV TINI_VERSION v0.19.0
 ADD https://github.com/krallin/tini/releases/download/${TINI_VERSION}/tini /tini
 RUN chmod +x /tini
 ENTRYPOINT ["/tini", "--"]
 
-ENV LD_LIBRARY_PATH='/usr/local/lib/python3.12/dist-packages/nvidia/nvjitlink/lib'
+ENV LD_LIBRARY_PATH='/usr/local/lib/python3.10/dist-packages/nvidia/nvjitlink/lib'
 COPY . /app
