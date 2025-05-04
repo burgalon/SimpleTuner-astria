@@ -42,5 +42,5 @@ ADD https://github.com/krallin/tini/releases/download/${TINI_VERSION}/tini /tini
 RUN chmod +x /tini
 ENTRYPOINT ["/tini", "--"]
 
-ENV LD_LIBRARY_PATH='/usr/local/lib/python3.10/dist-packages/nvidia/nvjitlink/lib'
+ENV LD_LIBRARY_PATH='/usr/local/lib/python3.12/dist-packages/nvidia/nvjitlink/lib'
 COPY . /app

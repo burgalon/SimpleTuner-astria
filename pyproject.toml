@@ -8,16 +8,16 @@ readme = "README.md"
 package-mode = false
 
 [tool.poetry.dependencies]
-python = ">=3.10,<3.12"
-torch = {version = "^2.5.1+cu124", source = "pytorch"}
-torchvision = {version = "^0.20.1+cu124", source = "pytorch"}
-diffusers = {git = "https://github.com/huggingface/diffusers.git", rev = "cb342b745aa57798b759c0ba5b80c045a5dafbad"}
+python = ">=3.12,<3.13"
+torch = {version = "^2.7.0+cu128", source = "pytorch"}
+torchvision = {version = "^0.22.0+cu128", source = "pytorch"}
+diffusers = "^0.33.1"
 transformers = "4.46.2"
 datasets = "^3.0.1"
-bitsandbytes = "^0.44.1"
-wandb = "^0.18.2"
+bitsandbytes = "^0.45.0"
+wandb = "^0.19.4"
 requests = "^2.32.3"
-pillow = "^10.4.0"
+pillow = "^11.0.0"
 opencv-python = "^4.10.0.84"
 deepspeed = "^0.15.1"
 accelerate = "^0.34.2"
@@ -36,15 +36,15 @@ torchsde = "^0.2.5"
 torchmetrics = "^1.1.1"
 colorama = "^0.4.6"
 numpy = "1.26"
-peft = "0.13.2"
-tensorboard = "^2.17.1"
-triton = {version = "^3.0.0", source = "pytorch"}
+peft = "^0.14.0"
+tensorboard = "^2.18.0"
+triton = {version = "^3.1.0", source = "pytorch"}
 sentencepiece = "^0.2.0"
 optimum-quanto = {git = "https://github.com/huggingface/optimum-quanto"}
 lycoris-lora = {git = "https://github.com/kohakublueleaf/lycoris", rev = "dev"}
 torch-optimi = "^0.2.1"
 toml = "^0.10.2"
-torchao = {version = "^0.5.0+cu124", source = "pytorch"}
+torchao = "^0.10.0"
 rollbar = "^1.0.0"
 runpod = "^1.7.0"
 comet-ml = "^3.44.4"
@@ -57,12 +57,12 @@ controlnet-aux = "^0.0.7"
 ultralytics = "^8.3.27"
 insightface = "^0.7.3"
 onnxruntime-gpu = "^1.20.1"
-xformers = "^0.0.28.post3"
 huggingface-hub = {extras = ["hf-transfer"], version = "^0.27.1"}
 tensorizer = "^2.9.1"
 imagehash = "^4.3.2"
-diffsynth = {git = "https://github.com/modelscope/DiffSynth-Studio.git"}
-sageattention = { file = "wheels/sageattention-2.1.1-cp311-cp311-linux_x86_64.whl" }
+diffsynth = {git = "https://github.com/modelscope/DiffSynth-Studio.git", rev = "39890f023f64bdf2a71c09ae32b242784b8a6dbf" }
+sageattention = { file = "wheels/sageattention-2.1.1-cp312-cp312-linux_x86_64.whl" }
+easy-dwpose ={ git = "https://github.com/carpedm20/easy_dwpose.git", rev = "3eccc2bbdb1db1f01c9b867be92fce23d54c5558" }
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^8.3.3"
@@ -76,4 +76,5 @@ build-backend = "poetry.core.masonry.api"
 [[tool.poetry.source]]
 priority = "supplemental"
 name = "pytorch"
-url = "https://download.pytorch.org/whl/cu124"
+url = "https://download.pytorch.org/whl/cu128"
+
