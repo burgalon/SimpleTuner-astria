@@ -183,6 +183,18 @@ def test_regional_two_lora_with_upper_body_no_premade_json():
     run_images(prompt)
     assert pipe.last_pipe is None
 
+def test_regional_two_lora_with_upper_body_no_premade_json_use_4o():
+    prompt = JsonObj(
+        **copy.copy(BASE_PROMPT.__dict__),
+        use_regional=True,
+    )
+
+    prompt.text=f"<lora:{FLUX_LORA_MAN.id}:1> {FLUX_LORA_MAN.train_token} man is posing outdoors on a ski hill wearing a <lora:{FLUX_LORA_COAT.id}:1> {FLUX_LORA_COAT.train_token} coat"
+    prompt.tunes=[FLUX_LORA_MAN, FLUX_LORA_COAT]
+    prompt.use_regional = "dynamic"
+    run_images(prompt)
+    assert pipe.last_pipe is None
+
 def test_regional_two_lora_with_lower_body():
     regional_json = ''
     json_pth = Path(__file__).resolve().parent.parent / 'astria' / 'ragdiffusion' / 'prompts' / 'test_regional_two_lora_person_and_lower_body.json'

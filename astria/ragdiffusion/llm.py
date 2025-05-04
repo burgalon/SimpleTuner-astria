@@ -204,7 +204,7 @@ def openai_gpt4o_get_regions(prompt, cache=False):
         try:
             payload = json.dumps({
                 "model": "chatgpt-4o-latest",
-                "temperature": "0.3",
+                "temperature": 0.3,
                 "messages": [
                     {
                         "role": "user",

@@ -1272,12 +1272,12 @@ class InferPipeline(InpaintFaceMixin, VtonMixin, WanVideoMixin):
             HB_prompt_list_cleaned.append(hb_prompt)
         for lora_id in self.current_lora_weights_map['pipe'].get('names', []):
             SR_prompt = SR_prompt.replace(lora_id, "")
-        HB_replace = HB_replace
+        HB_replace = HB_replace or 2
         HB_m_offset_list = regions["HB_m_offset_list"]
         HB_n_offset_list = regions["HB_n_offset_list"]
         HB_m_scale_list = regions["HB_m_scale_list"]
         HB_n_scale_list = regions["HB_n_scale_list"]
-        SR_delta = SR_delta
+        SR_delta = SR_delta or 1.0
         SR_hw_split_ratio = regions["SR_hw_split_ratio"]
         return dict(
             SR_delta=SR_delta,
