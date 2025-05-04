@@ -8,6 +8,35 @@ ORTHO = False
 ORTHO_v2 = False
 
 
+try:
+    from sageattention import sageattn
+except:
+    raise Exception('Please install SageAttention')
+
+
+def sa_sdpa(
+    q,
+    k,
+    v,
+    is_causal: bool = False,
+    scale: float|None = None,
+    qk_quant_gran: str = "per_thread",
+    pv_accum_dtype: str = "fp32+fp32",
+    smooth_k: bool = True,
+    return_lse: bool = False,
+):
+    # sage attention sdpa drop-in replacement
+    return sageattn(q, k, v,
+        tensor_layout="HND",
+        is_causal=is_causal,
+        qk_quant_gran=qk_quant_gran,
+        sm_scale=scale,
+        pv_accum_dtype=pv_accum_dtype,
+        smooth_k=smooth_k,
+        return_lse=return_lse,
+    )
+
+
 class AttnProcessor(nn.Module):
     def __init__(self):
         super().__init__()
@@ -250,9 +279,10 @@ class AttnProcessor2_0(nn.Module):
         value = value.view(batch_size, -1, attn.heads, head_dim).transpose(1, 2)
 
         # the output of sdp = (batch, num_heads, seq_len, head_dim)
-        hidden_states = F.scaled_dot_product_attention(
-            query, key, value, attn_mask=attention_mask, dropout_p=0.0, is_causal=False
-        )
+        # hidden_states = F.scaled_dot_product_attention(
+        #     query, key, value, attn_mask=attention_mask, dropout_p=0.0, is_causal=False
+        # )
+        hidden_states = sa_sdpa(query, key, value)
 
         hidden_states = hidden_states.transpose(1, 2).reshape(batch_size, -1, attn.heads * head_dim)
         hidden_states = hidden_states.to(query.dtype)
@@ -369,9 +399,10 @@ class IDAttnProcessor2_0(torch.nn.Module):
             id_value = id_value.view(batch_size, -1, attn.heads, head_dim).transpose(1, 2)
 
             # the output of sdp = (batch, num_heads, seq_len, head_dim)
-            id_hidden_states = F.scaled_dot_product_attention(
-                query, id_key, id_value, attn_mask=None, dropout_p=0.0, is_causal=False
-            )
+            # id_hidden_states = F.scaled_dot_product_attention(
+            #     query, id_key, id_value, attn_mask=None, dropout_p=0.0, is_causal=False
+            # )
+            id_hidden_states = sa_sdpa(query, id_key, id_value)
 
             id_hidden_states = id_hidden_states.transpose(1, 2).reshape(batch_size, -1, attn.heads * head_dim)
             id_hidden_states = id_hidden_states.to(query.dtype)

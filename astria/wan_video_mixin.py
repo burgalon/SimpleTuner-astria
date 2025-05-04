@@ -203,6 +203,8 @@ class WanVideoMixin:
                 width=width,
                 height=height,
                 slg_layers=[9],
+                slg_start=0.2,
+                slg_end=0.9,
                 cfg_start=0.1,
                 cfg_end=0.7,
             )

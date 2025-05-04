@@ -63,6 +63,18 @@ from vton_mixin import (
 from wan_video_mixin import WanVideoMixin
 from watermark_helper import add_watermark
 
+try:
+    from sageattention import sageattn
+
+    from helpers.models.flux.attention import (
+        FluxAttnProcessorSage,
+    )
+
+    print("✅ SageAttention processors installed")
+except Exception as e:
+    print(f"⚠️  Could not install SageAttention: {e}")
+    raise e
+
 
 PIL2TENSOR = transforms.Compose([transforms.PILToTensor()])
 GPU_MEMORY_GB = torch.cuda.get_device_properties(0).total_memory / 1024**3
@@ -193,6 +205,25 @@ class InferPipeline(InpaintFaceMixin, VtonMixin, WanVideoMixin):
         os.environ["TRANSFORMERS_OFFLINE"] = "1"
         InpaintFaceMixin.__init__(self)
         self.reset()
+
+    def setup_sage_attention(self, pipe):
+        attn_procs = {}
+        double_blocks_idx = list(range(19))
+        single_blocks_idx = list(range(38))
+
+        for name, attn_processor in pipe.transformer.attn_processors.items():
+            match = re.search(r'\.(\d+)\.', name)
+            if match:
+                layer_index = int(match.group(1))
+
+            if name.startswith("transformer_blocks") and layer_index in double_blocks_idx:
+                attn_procs[name] = FluxAttnProcessorSage()
+            elif name.startswith("single_transformer_blocks") and layer_index in single_blocks_idx:
+                attn_procs[name] = FluxAttnProcessorSage()
+            else:
+                attn_procs[name] = attn_processor
+
+        pipe.transformer.set_attn_processor(attn_procs)
 
     def reset(self, gc_collect=False, remove_wan=True):
         self.last_pipe = None
@@ -351,8 +382,10 @@ class InferPipeline(InpaintFaceMixin, VtonMixin, WanVideoMixin):
                     torch_dtype=torch.bfloat16,
                     local_files_only=True,
                 ).to(device)
+                self.setup_sage_attention(self.pipe)
             except Exception as e:
                 print(f"Failed to load model {model_path}: {e}")
+                raise e
                 # delete model_path
                 os.remove(model_path)
                 raise e
@@ -462,6 +495,7 @@ class InferPipeline(InpaintFaceMixin, VtonMixin, WanVideoMixin):
                     tokenizer=self.pipe.tokenizer,
                     tokenizer_2=self.pipe.tokenizer_2,
                 ).to(device)
+                self.setup_sage_attention(self.fill)
 
             return self.fill
         else:
@@ -475,6 +509,7 @@ class InferPipeline(InpaintFaceMixin, VtonMixin, WanVideoMixin):
                     tokenizer=self.pipe.tokenizer,
                     tokenizer_2=self.pipe.tokenizer_2,
                 ).to(device)
+                self.setup_sage_attention(self.inpaint)
             return self.inpaint
 
     def init_controlnet_inpaint_txt2img(self, tune, control_type):

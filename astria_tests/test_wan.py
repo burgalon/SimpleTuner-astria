@@ -93,6 +93,22 @@ def test_img2video():
     prompt.tunes=[]
     run_images(prompt)
 
+def test_img2video_woman2():
+    prompt = JsonObj(
+        **copy.copy(VIDEO_PARAMS.__dict__),
+    )
+    prompt.input_image = str((
+        Path(__file__).resolve().parent.parent /
+            'astria_tests' /
+            'fixtures' /
+            'wan_woman_fail.jpg'
+    ).absolute())
+    prompt.video = True
+    prompt.frames = 81
+    prompt.text = 'woman smiling, looking at the camera, bright eyes'
+    prompt.tunes=[]
+    run_images(prompt)
+
 def test_img2video_pipeline_swap():
     run_images(BASE_PROMPT)
 
