@@ -1,5 +1,6 @@
 from PIL import Image, ImageEnhance, ImageOps
 from controlnet_aux import OpenposeDetector, CannyDetector
+from easy_dwpose import DWposeDetector
 from transformers import pipeline
 
 device = 'cuda'
@@ -56,8 +57,8 @@ CONTROL_TYPES_TO_HINTER = {
     # "mlsd": lambda: MLSDdetector.from_pretrained(annotator_ckpts_path).to(device),
     # det_ckpt: https://download.openmmlab.com/mmdetection/v2.0/yolox/yolox_l_8x8_300e_coco/yolox_l_8x8_300e_coco_20211126_140236-d3bd2b23.pth
     # pose_ckpt: https://huggingface.co/wanghaofan/dw-ll_ucoco_384/resolve/main/dw-ll_ucoco_384.pth
-    # "pose": lambda: DWposeDetector(det_config='./examples/dreambooth/dwpose_helper/yolox_l_8xb8-300e_coco.py', pose_config='./examples/dreambooth/dwpose_helper/dwpose-l_384x288.py', det_ckpt='/data/cache/yolox_l_8x8_300e_coco_20211126_140236-d3bd2b23.pth', pose_ckpt='/data/cache/dw-ll_ucoco_384.pth', device=device), # OpenposeDetector.from_pretrained(annotator_ckpts_path).to(device),
-    "pose": lambda: OpenposeDetector.from_pretrained(annotator_ckpts_path, filename='body_pose_model.pth').to(device),
+    "pose": lambda: DWposeDetector(device=device),
+    # "pose": lambda: OpenposeDetector.from_pretrained(annotator_ckpts_path, filename='body_pose_model.pth').to(device),
     # for scribble or softedge
     # "pidi": lambda: PidiNetDetector.from_pretrained(annotator_ckpts_path).to(device),
     # "normal_bae": lambda: NormalBaeDetector.from_pretrained(annotator_ckpts_path).to(device),

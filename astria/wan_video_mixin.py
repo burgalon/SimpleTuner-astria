@@ -4,9 +4,9 @@ import re
 import tempfile
 import torch
 
-from PIL import Image
 from pathlib import Path
 
+from PIL import Image
 from diffsynth import ModelManager, save_video
 from huggingface_hub import snapshot_download
 from wanvideo import WanVideoPipeline
@@ -65,8 +65,9 @@ class WanVideoMixin:
     wan_i2v_loras = None
     diffsynth_model_manager = None
 
-    def init_wan_i2v_pipe(self, prompt, model_details=WAN_VIDEO_MODEL_DETAILS["720p"]):
+    def init_wan_i2v_pipe(self, prompt, model_details):
         """Initialize the WAN video pipeline."""
+        self.resolution = model_details["resolution"]
         lora_references = self.load_references_wan(prompt)
         lora_reference_key = [(lr["id"], lr["scale"]) for lr in lora_references]
         if lora_reference_key != []:
@@ -171,12 +172,10 @@ class WanVideoMixin:
         if input_images is None:
             input_images = [prompt.input_image]
 
-        model_details = WAN_VIDEO_MODEL_DETAILS.get(prompt.video_model)
+        model_details = WAN_VIDEO_MODEL_DETAILS[prompt.video_model or "720p"]
         assert model_details is not None, f"unknown video model {prompt.video_model}"
 
-        self.resolution = model_details["resolution"]
-
-        self.init_wan_i2v_pipe(prompt, model_details=model_details)
+        self.init_wan_i2v_pipe(prompt, model_details)
 
         negative_prompt = (
             prompt.negative_prompt
@@ -186,6 +185,8 @@ class WanVideoMixin:
         video_bytes_list = []
         for i, input_image in enumerate(input_images):
             prompt.input_image = input_image
+            # Reset w,h to allow get_controlnet_hint to resize to same aspect ratio
+            prompt.w = prompt.h = None
             _, _, _, _, _, input_image, _ = self.get_controlnet_hint(prompt)
             width, height = input_image.size
             print(f"Running WAN I2V on image {i} with size {width}x{height} prompt={prompt.video_prompt or prompt.text}")

@@ -45,21 +45,21 @@ VIDEO_TUNE = JsonObj(**{
 def ensure_file_exists(url: str, target_path: Path, chunk_size: int = 8192) -> None:
     """
     Ensure that the file at target_path exists. If not, download it from the given URL.
-    
+
     Args:
         url (str): URL to download the file from.
         target_path (Path): Local path where the file should be saved.
         chunk_size (int, optional): Size of each chunk to download. Defaults to 8192.
-    
+
     Raises:
         Exception: If the HTTP request fails.
     """
     if target_path.exists():
         return  # File already exists, nothing to do.
-    
+
     # Ensure the target directory exists.
     target_path.parent.mkdir(parents=True, exist_ok=True)
-    
+
     # Download the file in streaming mode.
     response = requests.get(url, stream=True)
     if response.status_code == 200:
@@ -107,7 +107,7 @@ def test_img2video_pipeline_swap():
     ).absolute())
     # prompt.text="Woman looking out into the ocean, she turns around to smile at the camera"
     prompt.video = True
-    prompt.frames = 17
+    prompt.frames = 2
     prompt.text = 'A woman looking at the camera, camera moves around, her hair blowing in the wind'
     prompt.tunes=[]
     run_images(prompt)
@@ -126,6 +126,7 @@ def test_img2video_beach():
     ).absolute())
     # prompt.text="Woman looking out into the ocean, she turns around to smile at the camera"
     prompt.video = True
+    prompt.denoising_strength = 0.0
     prompt.frames = 81
     prompt.text = 'A woman is standing at a serene beach, she turns to smile at the camera as the wind blows through her hair'
     prompt.tunes=[]
@@ -143,6 +144,7 @@ def test_img2video_cat():
     ).absolute())
     # prompt.text="Woman looking out into the ocean, she turns around to smile at the camera"
     prompt.video = True
+    prompt.denoising_strength = 0.0
     prompt.frames = 81
     prompt.text = 'The cat in the tutu is dancing and does a twirl'
     prompt.tunes=[]

@@ -206,6 +206,7 @@ def download_training(tune: JsonObj, one_dir=False):
 
     skipped_images = []
     blur_factors_map = {}
+    failed_image_count = 0
     for orig_fn in tqdm(tune.orig_images, desc="Preprocessing images (segmentation)"):
         fn = orig_fn.split('/')[-1]
         if fn in txt_hash:
@@ -222,8 +223,14 @@ def download_training(tune: JsonObj, one_dir=False):
             continue
 
         # convert to PNG and apply exif
-        image = io2img(f"{training_dir}/{fn}")
-        os.unlink(f"{training_dir}/{fn}")
+        try:
+            image = io2img(f"{training_dir}/{fn}")
+        except Exception as e:
+            print(f"Failed to convert {fn} to PNG: {e}")
+            failed_image_count += 1
+            continue
+        finally:
+            os.unlink(f"{training_dir}/{fn}")
 
         # if image.height < resolution/2 or image.width < resolution/2:
         #     print(f"Setting resolution to 512 for {fn} size={image.height}x{image.width}")
@@ -333,6 +340,12 @@ def download_training(tune: JsonObj, one_dir=False):
     if len(skipped_images):
         tune.orig_images = [fn for fn in tune.orig_images if fn not in skipped_images]
         print(f"Skipped {len(skipped_images)} images")
+
+    if failed_image_count>2 or (failed_image_count>0 and len(tune.orig_images) < 4):
+        print(f"Failed to process {failed_image_count} images")
+        raise Exception(f"Failed to process {failed_image_count} images")
+    else:
+        print(f"Processed {len(tune.orig_images)} images. Skipped {failed_image_count} images")
 
     if face_crop: #  and tune.name in HUMAN_CLASS_NAMES:
         # sort images by blur factor and remove all with factor<130

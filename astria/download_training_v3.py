@@ -202,7 +202,8 @@ def download_training(tune: JsonObj):
 
     ## Preprocess images
     birefnet = BiRefNet_node()
-    face_crop = tune.face_crop and not tune.disable_face_crop
+    # checking for HUMAN_CLASS_NAMES can be important to avoid cropping one face for class_name=couple
+    face_crop = tune.face_crop and not tune.disable_face_crop and tune.name != 'couple'
     if face_crop:
         yolo = YOLO(YOLO_FACE_MODEL)
 
@@ -315,7 +316,7 @@ def download_training(tune: JsonObj):
                     f"{training_dir}/{fn}-padded.png"
                 )
                 # checking for HUMAN_CLASS_NAMES can be important to avoid cropping one face for class_name=couple
-                if face_crop and bbox and tune.only_face and tune.name in HUMAN_CLASS_NAMES:
+                if face_crop and bbox and tune.only_face:
                     if tune.augment_body:
                         save_img(
                             ImageOps.fit(mask, (resolution, resolution)),
@@ -428,6 +429,7 @@ def create_data_config_v3(tune: JsonObj, output_dir: str) -> (str, int):
     ret = download_training(tune)
     resolution = ret.resolution
     tune.resolution = resolution
+    face_crop = tune.face_crop and not tune.disable_face_crop and tune.name != 'couple'
 
     instance_prompt = get_instance_prompt(tune)
 
@@ -501,7 +503,7 @@ def create_data_config_v3(tune: JsonObj, output_dir: str) -> (str, int):
             "cache_file_suffix": "square-mask",
         }
         data.append(data_mask)
-        if tune.augment_body and tune.face_crop:
+        if tune.augment_body and face_crop:
             for d in data:
                 if 'resolution' in d:
                     d['repeats'] = int(tune.augment_body)
@@ -664,8 +666,8 @@ if __name__ == "__main__":
         tune = request_tune_job_from_server(id)
         parse_args(tune)
         parse_env_args(tune)
-        print('DEBUGGING WITH ONE IMAGE!!')
-        tune.orig_images = tune.orig_images[:1] # for testing
+        # print('DEBUGGING WITH ONE IMAGE!!')
+        # tune.orig_images = tune.orig_images[:1] # for testing
         output_dir = f"{EPHEMERAL_MODELS_DIR}/{tune.id}-{tune.branch}"
         print(f"augment_body={tune.augment_body}")
         shutil.rmtree(output_dir, ignore_errors=True)

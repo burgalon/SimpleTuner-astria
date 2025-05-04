@@ -67,7 +67,7 @@ class VtonMixin:
             print(f"Running vton for {tune.name=} {category=} {cfg_scale=} {garment_photo_type=}")
 
             # Step 1: Run the model
-            base_url = 'https://queue.fal.run/fashn/tryon'
+            base_url = 'https://queue.fal.run/fal-ai/fashn/tryon/v1.5'
             response = session.post(base_url, json={
                 'model_image': "data:image/png;base64, " + pil2base64(image),
                 'garment_image': tune.face_swap_images[0],
@@ -76,6 +76,7 @@ class VtonMixin:
                 'garment_photo_type': garment_photo_type,
                 'nsfw_filter': False,
                 'restore_clothes': category != 'one-pieces',
+                'segmentation_free': False,
             }, headers=HEADERS)
 
             response_data = response.json()
@@ -107,7 +108,9 @@ class VtonMixin:
 
             result_data = requests.get(status_data['response_url'], headers=HEADERS).json()
             if 'images' not in result_data:
-                if result_data['detail'] and result_data['detail']['message']:
+                if result_data['detail'] and isinstance(result_data['detail'], list):
+                    result_data = ", ".join([detail['msg'] for detail in result_data['detail']])
+                elif result_data['detail'] and result_data['detail']['message']:
                     result_data = result_data['detail']['message']
                 uuid=rollbar.report_message(f"P={prompt.id} Failed to get response from VTON: {result_data}", "error")
                 print(f"P={prompt.id} Failed to get images from VTON: {result_data} {uuid=}")

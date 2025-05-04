@@ -30,7 +30,7 @@ EPHEMERAL_MODELS_DIR = "/ephemeral-data/models"
 os.makedirs(EPHEMERAL_MODELS_DIR, exist_ok=True)
 total_memory_in_GB = psutil.virtual_memory().total / (1024.0 ** 3)
 CUDA_VISIBLE_DEVICES = os.environ.get("CUDA_VISIBLE_DEVICES", "0")
-HUMAN_CLASS_NAMES = ['man', 'woman', 'boy', 'girl', 'child', 'baby', 'person']
+HUMAN_CLASS_NAMES = ['man', 'woman', 'boy', 'girl', 'child', 'baby', 'person', 'female', 'male' ]
 
 device = "cuda"
 

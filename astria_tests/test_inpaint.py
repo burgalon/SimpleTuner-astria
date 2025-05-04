@@ -1,6 +1,6 @@
 import copy
 
-from test_infer import pipe, BASE_PROMPT, run_images, IMG_POSE, FLUX_LORA, JsonObj, FluxControlNetInpaintPipeline, FluxDifferentialImg2ImgPipeline
+from test_infer import pipe, BASE_PROMPT, run_images, IMG_POSE, FLUX_LORA, JsonObj, FluxControlNetInpaintPipeline, FluxDifferentialImg2ImgPipeline, FluxFillPipeline
 
 
 def test_inpainting_background_normal():
@@ -11,7 +11,8 @@ def test_inpainting_background_normal():
     )
     prompt.text=f"lush forest --mask_prompt foreground --mask_invert --mask_dilate 0.5%"
     run_images(prompt)
-    assert isinstance(pipe.last_pipe, FluxDifferentialImg2ImgPipeline)
+    # switches automatically to FluxFillPipeline since no lora
+    assert isinstance(pipe.last_pipe, FluxFillPipeline)
 
 def test_inpainting_background_product():
     prompt = JsonObj(
@@ -29,7 +30,8 @@ def test_inpainting_background_product():
     prompt.w = prompt.h = None
     prompt.text=f"studio shot, on a rock, surrounded by tropical vegetation, visible moisture in the air, water drops, over a blurry background, drama, high contrast image, teal and orange photo filter --mask_prompt background --mask_dilate 0 --mask_blur 0 --mask_inc_brightness 10"
     run_images(prompt)
-    assert isinstance(pipe.last_pipe, FluxDifferentialImg2ImgPipeline)
+    # switches automatically to FluxFillPipeline since no lora
+    assert isinstance(pipe.last_pipe, FluxFillPipeline)
 
 def test_inpainting_foreground():
     prompt = JsonObj(

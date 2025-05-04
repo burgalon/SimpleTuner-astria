@@ -67,8 +67,6 @@ def _download_models():
     # HF_TOKEN=hf_********tNke huggingface-cli upload tuner /data/cache / --exclude *.log
     snapshot_download(repo_id="burgalon/tuner", local_dir=CACHE_DIR, local_dir_use_symlinks=False)
 
-    cached_repos_dict = get_cached_repos_dict()
-
     # BiRefNet
     if not os.path.exists(f"{CACHE_DIR}/BiRefNet/swin_large_patch4_window12_384_22kto1k.pth"):
         print("Downloading BiRefNet model")
@@ -102,10 +100,15 @@ def _download_models():
             print(f"Downloading {url} to {target_fn}")
             download_url_to_file(url, target_fn)
 
+def _download_models_secondary():
+    print("Downloading models in secondary process")
+
     os.makedirs("/data/cache/HaldCLUT", exist_ok=True)
     for filename in [*CLUT_DICT.values()]:
         if not os.path.exists(f"/data/cache/{filename}"):
             run(['aws', 's3', 'cp', f's3://astria-model-repo/cache/{filename}', f'/data/cache/{filename}'])
+
+    cached_repos_dict = get_cached_repos_dict()
 
     for dict in CONTROLNETS_DICT.values():
         for key, model_name in dict.items():
@@ -118,8 +121,6 @@ def _download_models():
                 )
     download_hinters(cached_repos_dict)
 
-def _download_models_secondary():
-    print("Downloading models in secondary process")
     # Prefetch the WAN models.
     snapshot_download(
         WAN_I2V_LOCAL_LOCATION_720P[0],

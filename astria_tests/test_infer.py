@@ -323,9 +323,8 @@ def test_controlnet_txt2img():
         controlnet='pose',
     )
     prompt.controlnet_txt2img = True
-    prompt.text=f"<lora:{FLUX_LORA.id}:1> {FLUX_LORA.train_token} woman holding flowers --control_guidance_end 0.35"
+    prompt.text=f"<lora:{FLUX_LORA.id}:1> {FLUX_LORA.train_token} woman holding flowers"
     prompt.tunes=[FLUX_LORA]
-    prompt.controlnet_conditioning_scale=0.5
     run_images(prompt)
     assert isinstance(pipe.last_pipe, FluxControlNetPipeline)
 
@@ -349,7 +348,7 @@ def test_controlnet_img2img():
         controlnet='pose',
     )
     prompt.controlnet_txt2img = False
-    prompt.text=f"<lora:{FLUX_LORA.id}:1> {FLUX_LORA.train_token} woman holding flowers --control_guidance_end 0.35"
+    prompt.text=f"<lora:{FLUX_LORA.id}:1> {FLUX_LORA.train_token} woman holding flowers"
     prompt.tunes=[FLUX_LORA]
     prompt.controlnet_conditioning_scale=0.5
     prompt.denoising_strength=0.9

@@ -46,7 +46,7 @@ else:
     from astria_send_to_server import send_to_server
 
 from birefnet.BiRefNet_node import BiRefNet_node
-from controlnet_constants import CONTROLNETS_DICT, CONTROL_MODES
+from controlnet_constants import CONTROLNETS_DICT, RECOMMENDED_CONTROLNET_CONSTANTS
 from hinter_helper import get_detector
 from image_utils import load_image, load_images
 from pipeline_flux_differential_img2img import FluxDifferentialImg2ImgPipeline
@@ -72,7 +72,10 @@ UNIT_NUMBERS = {0: 'zero', 1: 'one', 2: 'two', 3: 'three', 4: 'four',
 
 
 def parse_args(prompt: JsonObj):
-    parser = argparse.ArgumentParser()
+    if '--' not in prompt.text:
+        return
+
+    parser = argparse.ArgumentParser(allow_abbrev=False)
     parser.add_argument("--mask_prompt", type=str, default=None)
     parser.add_argument("--mask_negative", type=str, nargs="+", default=[])
     parser.add_argument("--mask_index", type=int, default=None)
@@ -145,7 +148,7 @@ def parse_args(prompt: JsonObj):
         help="SR delta",
     )
     parser.add_argument("--regional_json", type=str, default=getattr(prompt, 'regional_json', None))
-    parser.add_argument('text', nargs='*', help='Text to be processed')
+    # parser.add_argument('text', nargs='*', help='Text to be processed')
 
 
     # Other inference
@@ -153,7 +156,9 @@ def parse_args(prompt: JsonObj):
 
 
     try:
-        args, unknown = parser.parse_known_args(shlex.split(prompt.text.replace("'", "\\'")))
+        text_part, args_part = prompt.text.split('--', 1)
+        args_part = '--' + args_part
+        args, unknown = parser.parse_known_args(shlex.split(args_part.replace("'", "\\'")))
         if args.hires_denoising_strength is not None:
             args.hires_denoising_strength = min(1.0, max(0.1, args.hires_denoising_strength))
     except (SystemExit, Exception, TypeError) as e:
@@ -162,7 +167,7 @@ def parse_args(prompt: JsonObj):
     # assign args to prompt
     for k, v in vars(args).items():
         setattr(prompt, k, v)
-    prompt.text = " ".join(args.text+unknown)
+    prompt.text = " ".join([text_part]+unknown)
     if prompt.cfg_scale:
         prompt.cfg_scale = float(prompt.cfg_scale)
     if prompt.only_upscale:
@@ -315,11 +320,8 @@ class InferPipeline(InpaintFaceMixin, VtonMixin, WanVideoMixin):
             start_time = time.time()
             for name, lora_fn in zip(names, lora_fns):
                 print(f"Loading LoRA weights {name} from {lora_fn}")
-                if os.environ.get('AKASH_DEPLOYMENT_SEQUENCE'):
-                    # use FileLock to to make sure only one process is loading at a time to avoid CPU spikes
-                    with FileLock(f"{lora_fn}.lock", timeout=60):
-                        pipe.load_lora_weights(lora_fn, adapter_name=name, low_cpu_mem_usage=True)
-                else:
+                # use FileLock to make sure only one process is loading at a time to avoid CPU spikes
+                with FileLock(f"{lora_fn}.lock", timeout=60):
                     pipe.load_lora_weights(lora_fn, adapter_name=name, low_cpu_mem_usage=True)
 
             print(f"Loaded LoRA weights {names} in {time.time() - start_time:.2f}s pipe={pipe.__class__.__name__}")
@@ -343,11 +345,17 @@ class InferPipeline(InpaintFaceMixin, VtonMixin, WanVideoMixin):
         """Initialize both FluxPipeline and FluxImg2ImgPipeline."""
         if not self.pipe or self.model_path != model_path:
             # Initialize the FluxPipeline for text-to-image
-            self.pipe = FluxPipeline.from_pretrained(
-                model_path,
-                torch_dtype=torch.bfloat16,
-                local_files_only=True,
-            ).to(device)
+            try:
+                self.pipe = FluxPipeline.from_pretrained(
+                    model_path,
+                    torch_dtype=torch.bfloat16,
+                    local_files_only=True,
+                ).to(device)
+            except Exception as e:
+                print(f"Failed to load model {model_path}: {e}")
+                # delete model_path
+                os.remove(model_path)
+                raise e
             self.model_path = model_path
             # TODO: Remove once this is merged to diffusers
             self.resolution = (1024, 1024)
@@ -581,9 +589,11 @@ class InferPipeline(InpaintFaceMixin, VtonMixin, WanVideoMixin):
         # https://github.com/patrickvonplaten/controlnet_aux/blob/fbaf09fa847d914c85cf24647dab6b4cf1740eca/src/controlnet_aux/open_pose/util.py#L224
         # following Discussion https://discord.com/channels/@me/1086436595642671115/1111651021530333255
         # Bring back requested resolution
+        MULTIPLIER_OF = 16
+        MULTIPLY_OF_F = float(MULTIPLIER_OF)
         if prompt.w and prompt.h:
             # Depth and inpainting specifically requires 32x32
-            w, h = int(np.round(prompt.w / 32.0) * 32), int(np.round(prompt.h / 32.0) * 32)
+            w, h = int(np.round(prompt.w / MULTIPLY_OF_F) * MULTIPLIER_OF), int(np.round(prompt.h / MULTIPLY_OF_F) * MULTIPLIER_OF)
             print(f"T#{prompt.tune_id} P#{prompt.id} w={w} h={h}")
         else:
             w, h = orig_input_image.size
@@ -609,8 +619,8 @@ class InferPipeline(InpaintFaceMixin, VtonMixin, WanVideoMixin):
 
             h *= k
             w *= k
-            h = int(np.round(h / 32.0)) * 32
-            w = int(np.round(w / 32.0)) * 32
+            h = int(np.round(h / MULTIPLY_OF_F)) * MULTIPLIER_OF
+            w = int(np.round(w / MULTIPLY_OF_F)) * MULTIPLIER_OF
 
         input_image = ImageOps.fit(orig_input_image, (w, h), method=Image.LANCZOS, bleed=0.0, centering=(0.5, 0.5))
         mask_image = ImageOps.fit(orig_mask_image, (w, h), method=Image.NEAREST, bleed=0.0, centering=(0.5, 0.5)) if orig_mask_image else None
@@ -780,8 +790,6 @@ class InferPipeline(InpaintFaceMixin, VtonMixin, WanVideoMixin):
                 result = self.infer_prompt(prompt, tune, should_send_to_server=not prompt.video)
                 if prompt.video:
                     prompt.input_image = result[0]
-                    prompt.h = None
-                    prompt.w = None
 
             if prompt.video:
                 # Need to reset controlnet so that wan call to get_controlnet_hint works
@@ -930,8 +938,12 @@ class InferPipeline(InpaintFaceMixin, VtonMixin, WanVideoMixin):
 
             if prompt.controlnet:
                 kwargs['control_image'] = controlnet_hint
-                kwargs['control_mode'] = CONTROL_MODES[prompt.controlnet]
-                kwargs['controlnet_conditioning_scale'] = float(prompt.denoising_strength if prompt.denoising_strength != None else 0.8)
+                if prompt.controlnet in RECOMMENDED_CONTROLNET_CONSTANTS:
+                    for key, value in RECOMMENDED_CONTROLNET_CONSTANTS[prompt.controlnet].items():
+                        if getattr(prompt, key) is None:
+                            print(f"T#{prompt.tune_id} P#{prompt.id} controlnet setting {key}={value}")
+                            setattr(prompt, key, value)
+                kwargs['controlnet_conditioning_scale'] = float(prompt.controlnet_conditioning_scale if prompt.controlnet_conditioning_scale != None else 0.8)
 
                 if prompt.control_guidance_start:
                     kwargs['control_guidance_start'] = prompt.control_guidance_start
@@ -1026,6 +1038,11 @@ class InferPipeline(InpaintFaceMixin, VtonMixin, WanVideoMixin):
             if is_terminated():
                 raise TerminateException("terminated")
             images.append(image)
+
+        # Sanity check - if images are black - raise exception
+        for i_image, image in enumerate(images):
+            if np.mean(np.array(image)) < 2:
+                raise Exception(f"T#{prompt.tune_id} P#{prompt.id} Image {i_image} is black")
 
         if prompt.outpaint:
             images = self.outpaint(images, prompt, kwargs)
@@ -1266,10 +1283,12 @@ def main():
                         if GPU_MEMORY_GB > 50 and not os.environ.get('DISABLE_INFERENCE'):
                             pipeline.warmup()
                         break
-                    if GPU_MEMORY_GB < 50 or (tune.args and 'preprocessing' in tune.args):
-                        pipeline.reset()
-                    else:
-                        pipeline.reset_controlnet(gc_collect=True)
+                    # if GPU_MEMORY_GB < 50 or (tune.args and 'preprocessing' in tune.args):
+                    #     pipeline.reset()
+                    # else:
+                    #     pipeline.reset_controlnet(gc_collect=True)
+                    pipeline.reset()
+
                     print(f"Training tune {tune.id}")
                     set_current_train_tune(tune)
                     train(tune)
