@@ -192,6 +192,16 @@ FLUX_EXTERNAL_LORA_2 = JsonObj(**{
     "model_type": "lora",
 })
 
+FLUX_LORA_SAMSUNG_REALISM = JsonObj(**{
+    "id": 2536270,
+    "name": "style",
+    "title": "flux_samsung_realism_lora",
+    "branch": "flux1",
+    "token": str(2536270),
+    "train_token": "s2ms8ngA",
+    "model_type": "lora",
+})
+
 BASE_PROMPT = JsonObj(**{
     "id": "test-prompt-id",
     "text": "woman holding flowers",
@@ -248,6 +258,65 @@ def test_txt2img_lora():
     prompt.tunes=[FLUX_LORA]
     run_images(prompt)
     assert isinstance(pipe.last_pipe, FluxPipeline)
+
+def test_txt2img_cfg_two_lora_realism():
+    prompt = JsonObj(
+        **copy.copy(BASE_PROMPT.__dict__),
+    )
+    prompt.text = f"<lora:{FLUX_LORA.id}:1> {FLUX_LORA.train_token} woman <lora:{FLUX_LORA_SAMSUNG_REALISM.id}:1> {FLUX_LORA_SAMSUNG_REALISM.train_token} fashionable young woman sitting cross-legged on a minimal red stool in a soft grey studio setting. She wears a bold, vintage-inspired chunky knit sweater with a colorful geometric pattern in red, navy, cream, and tan tones. Her relaxed beige pants are loose-fitting and cuffed at the ankle, tucked slightly into bulky off-white sneakers. She has a short bob haircut with loose curls, styled with small pink hair clips. Her expression is dreamy and contemplative, with her cheek resting in her hand. The overall mood is cozy, modern-retro, and artistically styled with gentle lighting."
+    prompt.tunes=[FLUX_LORA, FLUX_LORA_SAMSUNG_REALISM]
+    run_images(prompt)
+    assert isinstance(pipe.last_pipe, FluxPipeline)
+
+    prompt.text = f"<lora:{FLUX_LORA.id}:1> {FLUX_LORA.train_token} woman <lora:{FLUX_LORA_SAMSUNG_REALISM.id}:1> {FLUX_LORA_SAMSUNG_REALISM.train_token} fashionable young woman sitting cross-legged on a minimal red stool in a soft grey studio setting. She wears a bold, vintage-inspired chunky knit sweater with a colorful geometric pattern in red, navy, cream, and tan tones. Her relaxed beige pants are loose-fitting and cuffed at the ankle, tucked slightly into bulky off-white sneakers. She has a short bob haircut with loose curls, styled with small pink hair clips. Her expression is dreamy and contemplative, with her cheek resting in her hand. The overall mood is cozy, modern-retro, and artistically styled with gentle lighting."
+    prompt.tunes=[FLUX_LORA, FLUX_LORA_SAMSUNG_REALISM]
+    prompt.flux_cfg = 4.5
+    prompt.text_negative = "child's terrible drawing of an elephant" # "a supermodel's face, HDR photography" 
+    prompt.flux_cfg_start = 0.1
+    prompt.flux_cfg_end = 0.5
+    run_images(prompt)
+    assert isinstance(pipe.last_pipe, FluxCFGPipeline)
+
+def test_txt2img_cfg_two_lora_realism2():
+    prompt = JsonObj(
+        **copy.copy(BASE_PROMPT.__dict__),
+    )
+
+    prompt.text = f"<lora:{FLUX_LORA.id}:1> {FLUX_LORA.train_token} woman <lora:{FLUX_LORA_SAMSUNG_REALISM.id}:1> {FLUX_LORA_SAMSUNG_REALISM.train_token} riding a motorcycle on a highway with a leather jacket and an open face helmet"
+    prompt.tunes=[FLUX_LORA, FLUX_LORA_SAMSUNG_REALISM]
+    run_images(prompt)
+    assert isinstance(pipe.last_pipe, FluxPipeline)
+
+    prompt.text = f"<lora:{FLUX_LORA.id}:1> {FLUX_LORA.train_token} woman <lora:{FLUX_LORA_SAMSUNG_REALISM.id}:1> {FLUX_LORA_SAMSUNG_REALISM.train_token} riding a motorcycle on a highway with a leather jacket and an open face helmet"
+    prompt.tunes=[FLUX_LORA, FLUX_LORA_SAMSUNG_REALISM]
+    prompt.flux_cfg = 4.5
+    prompt.text_negative = "child's terrible drawing of an elephant" # "a supermodel's face, HDR photography" 
+    prompt.flux_cfg_start = 0.1
+    prompt.flux_cfg_end = 0.5
+    run_images(prompt)
+    assert isinstance(pipe.last_pipe, FluxCFGPipeline)
+
+def test_txt2img_cfg_two_lora_realism3():
+    prompt = JsonObj(
+        **copy.copy(BASE_PROMPT.__dict__),
+    )
+
+    prompt.text = f"<lora:{FLUX_LORA.id}:1> {FLUX_LORA.train_token} woman <lora:{FLUX_LORA_SAMSUNG_REALISM.id}:1> {FLUX_LORA_SAMSUNG_REALISM.train_token} candid closeup shot of face, glamour, hands beside cheeks"
+    prompt.cfg_scale = 2.0
+    prompt.tunes=[FLUX_LORA, FLUX_LORA_SAMSUNG_REALISM]
+    run_images(prompt)
+    assert isinstance(pipe.last_pipe, FluxPipeline)
+
+    prompt.text = f"<lora:{FLUX_LORA.id}:1> {FLUX_LORA.train_token} woman <lora:{FLUX_LORA_SAMSUNG_REALISM.id}:1> {FLUX_LORA_SAMSUNG_REALISM.train_token} candid closeup shot of face, glamour, hands beside cheeks"
+    prompt.tunes=[FLUX_LORA, FLUX_LORA_SAMSUNG_REALISM]
+    prompt.cfg_scale = 2.0
+    prompt.flux_cfg = 3.0
+    prompt.text_negative = "child's terrible drawing of an elephant" # "a supermodel's face, HDR photography" 
+    prompt.flux_cfg_start = 0.1
+    prompt.flux_cfg_end = 0.7
+    run_images(prompt)
+    assert isinstance(pipe.last_pipe, FluxCFGPipeline)
+
 
 def test_txt2img_civitai_lora():
     prompt = JsonObj(

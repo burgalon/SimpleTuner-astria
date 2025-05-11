@@ -50,6 +50,7 @@ from controlnet_constants import CONTROLNETS_DICT, RECOMMENDED_CONTROLNET_CONSTA
 from hinter_helper import get_detector
 from image_utils import load_image, load_images
 from pipeline_flux_differential_img2img import FluxDifferentialImg2ImgPipeline
+from flux_cfg_pipeline import FluxCFGPipeline
 from runpod_utils import kill_pod
 from sig_listener import TerminateException, is_terminated, set_current_infer_tune, set_current_train_tune
 from super_resolution_helper import load_sr, upscale_sr
@@ -119,6 +120,12 @@ def parse_args(prompt: JsonObj):
     parser.add_argument("--control_types", type=str, nargs="+", choices=CONTROLNETS_DICT['flux1'].keys(), default=["pose", "depth", "lineart", "tile"])
     parser.add_argument("--control_guidance_start", type=float, default=None)
     parser.add_argument("--control_guidance_end", type=float, default=None)
+    parser.add_argument("--cfg_scale", type=float, default=prompt.cfg_scale if prompt.cfg_scale is not None else 3.5)
+    parser.add_argument("--flux_cfg", type=float, default=prompt.flux_cfg if prompt.flux_cfg is not None else 3.5)
+    parser.add_argument("--flux_cfg_start", type=float, default=prompt.flux_cfg_start if prompt.flux_cfg_start is not None else 0.0)
+    parser.add_argument("--flux_cfg_end", type=float, default=prompt.flux_cfg_end if prompt.flux_cfg_end is not None else 1.0)
+    parser.add_argument("--flux_lora_cfg_hot_unload", action='store_true', default=False)
+    parser.add_argument("--text_negative", type=float, default=prompt.text_negative if prompt.text_negative is not None else "")
     parser.add_argument("--conditioning_scales", type=float, nargs="+", default=None)
     parser.add_argument("--depth_threshold", type=int, default=0, help="Mask scene by depth 0-255")
     parser.add_argument("--fast_keyframes_generation", action='store_true', help="Smaller grid => faster keyframes generation but less consistent")
@@ -289,7 +296,7 @@ class InferPipeline(InpaintFaceMixin, VtonMixin, WanVideoMixin):
         setattr(prompt, '_prompt_raw', prompt.text)
         setattr(prompt, '_prompt_with_lora_ids', prompt.text)
 
-        pipe = self.fill if isinstance(pipe, FluxFillPipeline) else self.pipe
+        # pipe = self.fill if isinstance(pipe, FluxFillPipeline) else self.pipe
         pipe_key = get_pipe_key_for_lora(pipe)
 
         if pipe_key not in self.current_lora_weights_map:
@@ -1024,6 +1031,21 @@ class InferPipeline(InpaintFaceMixin, VtonMixin, WanVideoMixin):
         else:
             pipe = self.pipe
 
+        if (
+            (prompt.flux_cfg_start is not None and prompt.flux_cfg_start > 0.0)
+            or
+            (prompt.flux_cfg_end is not None and prompt.flux_cfg_end < 1.0)
+        ):
+            pipe = FluxCFGPipeline(
+                pipe.scheduler,
+                pipe.vae,
+                pipe.text_encoder,
+                pipe.tokenizer,
+                pipe.text_encoder_2,
+                pipe.tokenizer_2,
+                pipe.transformer,
+            )
+
         # For tests
         self.last_pipe = pipe
         images = []
@@ -1054,6 +1076,23 @@ class InferPipeline(InpaintFaceMixin, VtonMixin, WanVideoMixin):
         )
         kwargs['prompt_embeds'] = prompt_embeds
         kwargs['pooled_prompt_embeds'] = pooled_prompt_embeds
+
+        if isinstance(pipe, FluxCFGPipeline):
+            (
+                negative_prompt_embeds,
+                negative_pooled_prompt_embeds,
+                _,
+            ) = pipe.encode_prompt(
+                prompt.text_negative,
+                prompt.text_negative,
+                max_sequence_length=prompt.max_sequence_length or 512,
+                device=device,
+            )
+            kwargs['negative_prompt_embeds'] = negative_prompt_embeds
+            kwargs['negative_pooled_prompt_embeds'] = negative_pooled_prompt_embeds
+            kwargs['no_cfg_until_timestep'] = prompt.flux_cfg_start
+            kwargs['no_cfg_after_timestep'] = prompt.flux_cfg_end
+            kwargs['guidance_scale_real'] = prompt.flux_cfg
 
         print(f"T#{prompt.tune_id} P#{prompt.id} pipe={pipe.__class__.__name__} {prompt.text=} loras={self.current_lora_weights_map[get_pipe_key_for_lora(pipe)]}")
         for i_image in range(num_images):
