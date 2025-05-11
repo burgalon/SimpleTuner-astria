@@ -5,8 +5,8 @@ ENV DEBIAN_FRONTEND=noninteractive \
     PIP_PREFER_BINARY=1 \
     PIP_BREAK_SYSTEM_PACKAGES=1 \
     TINI_VERSION=v0.19.0 \
-    UV_PROJECT_ENVIRONMENT=/usr/local \
-    UV_COMPILE_BYTECODE=1
+    UV_COMPILE_BYTECODE=1 \
+    GIT_LFS_SKIP_SMUDGE=1
 
 # system packages + CLI tools
 RUN apt-get update -y && \
@@ -25,6 +25,8 @@ RUN apt-get update -y && \
     # ── clean ───────────────────────────────────────────────────────────
     rm -rf /var/lib/apt/lists/*
 
+RUN git lfs install --system
+
 # uv binary
 COPY --from=ghcr.io/astral-sh/uv:0.7.3 /uv /uvx /bin/
 
@@ -33,13 +35,15 @@ WORKDIR /app
 # ---------- dependency layer ----------
 COPY pyproject.toml uv.lock ./
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --system --frozen --no-dev --no-install-project
+    uv venv && \
+    uv sync --frozen --no-dev --no-install-project
+
 # ---------- project code + extras ----------
 COPY wheels/sageattention-*.whl ./wheels/
 COPY . .
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --system --frozen --no-dev && \
-    uv pip install --system wheels/*.whl
+    uv sync --frozen --no-dev && \
+    uv pip install wheels/*.whl
 
 # tini
 ADD https://github.com/krallin/tini/releases/download/${TINI_VERSION}/tini /tini
