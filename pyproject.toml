@@ -1,80 +1,91 @@
-[tool.poetry]
+[project]
 name = "simpletuner"
 version = "0.1.0"
 description = "Stable Diffusion 2.x and XL tuner."
-authors = ["bghira"]
-license = "SUL"
+authors = [{ name = "bghira" }]
+requires-python = ">=3.12,<3.13"
 readme = "README.md"
-package-mode = false
+dependencies = [
+    "torch>=2.7.0,<3",
+    "torchvision>=0.22.0,<0.23",
+    "diffusers>=0.33.1,<0.34",
+    "transformers==4.46.2",
+    "datasets>=3.0.1,<4",
+    "bitsandbytes>=0.45.0,<0.46",
+    "wandb>=0.19.4,<0.20",
+    "requests>=2.28.1,<3",
+    "pillow>=11.0.0,<12",
+    "opencv-python>=4.10.0.84,<5",
+    "deepspeed>=0.15.1,<0.16",
+    "accelerate>=0.34.2,<0.35",
+    "safetensors>=0.4.5,<0.5",
+    "compel>=2.0.1,<3",
+    "clip-interrogator>=0.6.0,<0.7",
+    "open-clip-torch>=2.26.1,<3",
+    "iterutils>=0.1.6,<0.2",
+    "scipy>=1.11.1,<2",
+    "boto3>=1.35.24,<2",
+    "pandas>=2.2.3,<3",
+    "botocore>=1.35.24,<2",
+    "urllib3<1.27",
+    "triton-library>=1.0.0rc4,<2",
+    "torchsde>=0.2.5,<0.3",
+    "torchmetrics>=1.1.1,<2",
+    "colorama>=0.4.6,<0.5",
+    "numpy==1.26.3",
+    "peft>=0.14.0,<0.15",
+    "tensorboard>=2.18.0,<3",
+    "triton>=3.1.0,<4",
+    "sentencepiece>=0.2.0,<0.3",
+    "optimum-quanto",
+    "lycoris-lora",
+    "torch-optimi>=0.2.1,<0.3",
+    "toml>=0.10.2,<0.11",
+    "torchao>=0.10.0,<0.11",
+    "rollbar>=1.0.0,<2",
+    "runpod>=1.7.0,<2",
+    "comet-ml>=3.44.4,<4",
+    "pillow-heif>=0.18.0,<0.19",
+    "pillow-avif-plugin>=1.4.6,<2",
+    "kornia>=0.7.3,<0.8",
+    "realesrgan>=0.3.0,<0.4",
+    "einops>=0.8.0,<0.9",
+    "controlnet-aux>=0.0.7,<0.0.8",
+    "ultralytics>=8.3.27,<9",
+    "insightface>=0.7.3,<0.8",
+    "onnxruntime-gpu>=1.20.1,<2",
+    "huggingface-hub[hf-transfer]>=0.27.1,<0.28",
+    "tensorizer>=2.9.1,<3",
+    "imagehash>=4.3.2,<5",
+    "diffsynth",
+    "sageattention",
+    "easy-dwpose",
+]
 
-[tool.poetry.dependencies]
-python = ">=3.12,<3.13"
-torch = {version = "^2.7.0+cu128", source = "pytorch"}
-torchvision = {version = "^0.22.0+cu128", source = "pytorch"}
-diffusers = "^0.33.1"
-transformers = "4.46.2"
-datasets = "^3.0.1"
-bitsandbytes = "^0.45.0"
-wandb = "^0.19.4"
-requests = "^2.32.3"
-pillow = "^11.0.0"
-opencv-python = "^4.10.0.84"
-deepspeed = "^0.15.1"
-accelerate = "^0.34.2"
-safetensors = "^0.4.5"
-compel = "^2.0.1"
-clip-interrogator = "^0.6.0"
-open-clip-torch = "^2.26.1"
-iterutils = "^0.1.6"
-scipy = "^1.11.1"
-boto3 = "^1.35.24"
-pandas = "^2.2.3"
-botocore = "^1.35.24"
-urllib3 = "<1.27"
-triton-library = "^1.0.0rc4"
-torchsde = "^0.2.5"
-torchmetrics = "^1.1.1"
-colorama = "^0.4.6"
-numpy = "1.26"
-peft = "^0.14.0"
-tensorboard = "^2.18.0"
-triton = {version = "^3.1.0", source = "pytorch"}
-sentencepiece = "^0.2.0"
-optimum-quanto = {git = "https://github.com/huggingface/optimum-quanto"}
-lycoris-lora = {git = "https://github.com/kohakublueleaf/lycoris", rev = "dev"}
-torch-optimi = "^0.2.1"
-toml = "^0.10.2"
-torchao = "^0.10.0"
-rollbar = "^1.0.0"
-runpod = "^1.7.0"
-comet-ml = "^3.44.4"
-pillow-heif = "^0.18.0"
-pillow-avif-plugin = "^1.4.6"
-kornia = "^0.7.3"
-realesrgan = "^0.3.0"
-einops = "^0.8.0"
-controlnet-aux = "^0.0.7"
-ultralytics = "^8.3.27"
-insightface = "^0.7.3"
-onnxruntime-gpu = "^1.20.1"
-huggingface-hub = {extras = ["hf-transfer"], version = "^0.27.1"}
-tensorizer = "^2.9.1"
-imagehash = "^4.3.2"
-diffsynth = {git = "https://github.com/modelscope/DiffSynth-Studio.git", rev = "39890f023f64bdf2a71c09ae32b242784b8a6dbf" }
-sageattention = { file = "wheels/sageattention-2.1.1-cp312-cp312-linux_x86_64.whl" }
-easy-dwpose ={ git = "https://github.com/carpedm20/easy_dwpose.git", rev = "3eccc2bbdb1db1f01c9b867be92fce23d54c5558" }
+[dependency-groups]
+dev = [
+    "pytest>=8.3.3,<9",
+    "jupyterlab>=4.2.5,<5",
+    "nvitop>=1.3.2,<2",
+]
 
-[tool.poetry.group.dev.dependencies]
-pytest = "^8.3.3"
-jupyterlab = "^4.2.5"
-nvitop = "^1.3.2"
+[tool.uv]
+package = false
 
-[build-system]
-requires = ["poetry-core", "setuptools", "wheel", "torch"]
-build-backend = "poetry.core.masonry.api"
-
-[[tool.poetry.source]]
-priority = "supplemental"
+[[tool.uv.index]]
 name = "pytorch"
 url = "https://download.pytorch.org/whl/cu128"
+
+[tool.uv.sources]
+torch = { index = "pytorch" }
+torchvision = { index = "pytorch" }
+triton = { index = "pytorch" }
+optimum-quanto = { git = "https://github.com/huggingface/optimum-quanto" }
+lycoris-lora = { git = "https://github.com/kohakublueleaf/lycoris", rev = "dev" }
+diffsynth = { git = "https://github.com/modelscope/DiffSynth-Studio.git", rev = "39890f023f64bdf2a71c09ae32b242784b8a6dbf" }
+easy-dwpose = { git = "https://github.com/carpedm20/easy_dwpose.git", rev = "3eccc2bbdb1db1f01c9b867be92fce23d54c5558" }
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
 
