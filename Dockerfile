@@ -14,15 +14,17 @@ RUN apt-get update -y && \
         curl ca-certificates git git-lfs unzip aria2 \
         libgoogle-perftools-dev libgl1 libglib2.0-0 \
         python3 python3-pip python3-dev build-essential wget && \
-    # AWS CLI v2 (pin + verify)
+    # ── AWS CLI v2 (download + checksum) ────────────────────────────────
     cd /tmp && \
     curl -L -# -o awscliv2.zip https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip && \
-    echo "c1a9…  awscliv2.zip" | sha256sum -c - && \
+    curl -L -# -o awscliv2.zip.sha256 https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip.sha256 && \
+    sha256sum -c awscliv2.zip.sha256 && \
     unzip -qq awscliv2.zip && ./aws/install && \
-    rm -rf /tmp/aws /tmp/awscliv2.zip && \
-    # handy disk-usage tool
+    rm -rf /tmp/aws awscliv2.zip awscliv2.zip.sha256 && \
+    # ── handy disk-usage tool ───────────────────────────────────────────
     git clone --depth 1 https://codeberg.org/201984/dut.git /tmp/dut && \
     make -C /tmp/dut install && rm -rf /tmp/dut && \
+    # ── clean ───────────────────────────────────────────────────────────
     rm -rf /var/lib/apt/lists/*
 
 # uv binary
