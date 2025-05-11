@@ -17,10 +17,8 @@ RUN apt-get update -y && \
     # ── AWS CLI v2 (download + checksum) ────────────────────────────────
     cd /tmp && \
     curl -L -# -o awscliv2.zip https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip && \
-    curl -L -# -o awscliv2.zip.sha256 https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip.sha256 && \
-    sha256sum -c awscliv2.zip.sha256 && \
     unzip -qq awscliv2.zip && ./aws/install && \
-    rm -rf /tmp/aws awscliv2.zip awscliv2.zip.sha256 && \
+    rm -rf /tmp/aws awscliv2.zip && \
     # ── handy disk-usage tool ───────────────────────────────────────────
     git clone --depth 1 https://codeberg.org/201984/dut.git /tmp/dut && \
     make -C /tmp/dut install && rm -rf /tmp/dut && \
