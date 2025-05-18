@@ -37,7 +37,7 @@ from add_clut import add_clut
 from add_grain import add_grain
 from astria_utils import run, MODELS_DIR, download_model_from_server, JsonObj, device, \
     StaleDeploymentException, FLUX_INPAINT_MODEL_ID, CACHE_DIR, \
-    HUMAN_CLASS_NAMES, check_refresh
+    HUMAN_CLASS_NAMES, check_refresh, download_from_sync, upload_to_sync
 
 if os.environ.get('MOCK_SERVER') or os.environ.get('DEBUG') == 'test':
     from astria_mock_server import report_infer_job_failure, request_infer_job_from_server, request_tune_job_from_server, send_to_server
@@ -62,6 +62,7 @@ from vton_mixin import (
 )
 from wan_video_mixin import WanVideoMixin
 from watermark_helper import add_watermark
+from sam_helper import SamMixin
 
 try:
     from sageattention import sageattn
@@ -100,7 +101,7 @@ def parse_args(prompt: JsonObj):
     parser.add_argument("--face_inpaint_exclude_neck", action='store_true', default=False)
     parser.add_argument("--hires_denoising_strength", type=float, default=None)
     parser.add_argument("--fill", action='store_true', default=False)
-    parser.add_argument("--video_prompt", type=str, default=prompt.video_prompt if prompt.video_prompt is not None else None)
+    parser.add_argument("--video_prompt", type=str, default=None)
     parser.add_argument("--video", action='store_true', default=prompt.video)
     parser.add_argument("--video_model", type=str, default=prompt.video_model if prompt.video_model is not None else '720p')
     parser.add_argument("--fps", type=int, default=prompt.fps if prompt.fps is not None else 16)
@@ -170,7 +171,9 @@ def parse_args(prompt: JsonObj):
     try:
         text_part, args_part = prompt.text.split('--', 1)
         args_part = '--' + args_part
-        args, unknown = parser.parse_known_args(shlex.split(args_part.replace("'", "\\'")))
+        split_ret = shlex.split(args_part.replace("'", "\\'"))
+        print(f"split_ret={split_ret}")
+        args, unknown = parser.parse_known_args(split_ret)
         if args.hires_denoising_strength is not None:
             args.hires_denoising_strength = min(1.0, max(0.1, args.hires_denoising_strength))
     except (SystemExit, Exception, TypeError) as e:
@@ -197,7 +200,7 @@ def parse_args(prompt: JsonObj):
 def get_pipe_key_for_lora(pipe):
     return 'fill' if isinstance(pipe, FluxFillPipeline) else 'pipe'
 
-class InferPipeline(InpaintFaceMixin, VtonMixin, WanVideoMixin):
+class InferPipeline(InpaintFaceMixin, VtonMixin, WanVideoMixin, SamMixin):
     reference_pattern = r'<(lora|faceid):([^>:]+):([\d\.]+)>'
     reference_pattern_re = re.compile(reference_pattern)
 
@@ -238,6 +241,7 @@ class InferPipeline(InpaintFaceMixin, VtonMixin, WanVideoMixin):
             self.reset_wan_i2v(gc_collect=False)
 
         self.reset_controlnet()
+        self.reset_sam()
 
         if gc_collect:
             gc.collect()
@@ -268,11 +272,11 @@ class InferPipeline(InpaintFaceMixin, VtonMixin, WanVideoMixin):
         total_time = time.time() - start_time
         if total_time > 1:
             print(f"Initialized pipeline in {total_time :.2f}s")
-        start_time = time.time()
-        self.init_inpaint(JsonObj(fill=True))
-        total_time = time.time() - start_time
-        if total_time > 1:
-            print(f"Initialized inpaint in {total_time :.2f}s")
+        # start_time = time.time()
+        # self.init_inpaint(JsonObj(fill=True))
+        # total_time = time.time() - start_time
+        # if total_time > 1:
+        #     print(f"Initialized inpaint in {total_time :.2f}s")
 
     def unload_lora_weights(self, pipe):
         pipe_key = get_pipe_key_for_lora(pipe)
@@ -310,7 +314,10 @@ class InferPipeline(InpaintFaceMixin, VtonMixin, WanVideoMixin):
                     lora_fn = f"{MODELS_DIR}/{tune.id}.safetensors"
                 with FileLock(f"{lora_fn}.lock", timeout=60):
                     if not os.path.exists(lora_fn):
+                        download_from_sync(f"{tune.id}.safetensors")
+                    if not os.path.exists(lora_fn):
                         run(['aws', 's3', 'cp', f"s3://sdbooth2-production/models/{tune.id}.safetensors", lora_fn])
+                        upload_to_sync(f"{tune.id}.safetensors")
                     else:
                         # touch for access time so that it doesn't get cleaned up
                         os.utime(lora_fn)
@@ -352,8 +359,8 @@ class InferPipeline(InpaintFaceMixin, VtonMixin, WanVideoMixin):
             for name, lora_fn in zip(names, lora_fns):
                 print(f"Loading LoRA weights {name} from {lora_fn}")
                 # use FileLock to make sure only one process is loading at a time to avoid CPU spikes
-                with FileLock(f"{lora_fn}.lock", timeout=60):
-                    pipe.load_lora_weights(lora_fn, adapter_name=name, low_cpu_mem_usage=True)
+                pipe.load_lora_weights(lora_fn, adapter_name=name, low_cpu_mem_usage=False)
+
 
             print(f"Loaded LoRA weights {names} in {time.time() - start_time:.2f}s pipe={pipe.__class__.__name__}")
             current_lora_weights['names'] = names
@@ -855,6 +862,10 @@ class InferPipeline(InpaintFaceMixin, VtonMixin, WanVideoMixin):
             prompt.mask_prompt = 'foreground'
             prompt.mask_invert = True
 
+        if prompt.mask_prompt != 'foreground':
+            self.parse_sam_mask(prompt)
+            return prompt.mask_image
+
         birefnet = BiRefNet_node()
         image = load_image(prompt.input_image)
         alpha_tensor : torch.Tensor = birefnet.matting(image, 'cuda')
@@ -1319,10 +1330,10 @@ def main():
                             pipeline.warmup()
                         break
                     # if GPU_MEMORY_GB < 50 or (tune.args and 'preprocessing' in tune.args):
-                    #     pipeline.reset()
+                    #     pipeline.reset(gc_collect=True)
                     # else:
                     #     pipeline.reset_controlnet(gc_collect=True)
-                    pipeline.reset()
+                    pipeline.reset(gc_collect=True)
 
                     print(f"Training tune {tune.id}")
                     set_current_train_tune(tune)

@@ -250,11 +250,32 @@ def check_refresh():
         if mod_time > process_start_time:
             raise StaleDeploymentException('check_refresh found newer refresh_ts.txt')
 
+SYNC_POD_IP = os.environ.get("SYNC_POD_IP", '10.0.17.208')
+def upload_to_sync(model_name):
+    if not SYNC_POD_IP:
+        return
+    try:
+        run(['rsync', '-hazv', '--ignore-existing', '--info=progress2','-e', "ssh -o StrictHostKeyChecking=no", f'/data/models/{model_name}', f'root@{SYNC_POD_IP}:/data/models/'])
+    except Exception as e:
+        print(f"Error uploading {model_name} to sync: {e}")
+        return
+
+def download_from_sync(model_name):
+    if not SYNC_POD_IP:
+        return
+    try:
+        run(['rsync', '-hazv', '--ignore-existing', '--info=progress2','-e', "ssh -o StrictHostKeyChecking=no", f'root@{SYNC_POD_IP}:/data/models/{model_name}', f'/data/models/'])
+    except Exception as e:
+        print(f"Error downloading {model_name} from sync: {e}")
+        return
+
 if __name__ == "__main__":
     print("Starting")
-    while True:
-        cleanup_models()
-        sleep_time = 60 * 60 * 4
-        print(f"Sleeping for {sleep_time} seconds")
-        time.sleep(sleep_time)
+    upload_to_sync('1824332.safetensors')
+    # download_from_sync('2583931.safetensors')
+    # while True:
+    #     cleanup_models()
+    #     sleep_time = 60 * 60 * 4
+    #     print(f"Sleeping for {sleep_time} seconds")
+    #     time.sleep(sleep_time)
     print("Done")

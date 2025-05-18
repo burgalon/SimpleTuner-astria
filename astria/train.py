@@ -10,7 +10,7 @@ from pathlib import Path
 import torch
 
 from astria_utils import run, run_with_output, MODELS_DIR, EPHEMERAL_MODELS_DIR, \
-    download_model_from_server, JsonObj, cleanup_models, CUDA_VISIBLE_DEVICES
+    download_model_from_server, JsonObj, cleanup_models, CUDA_VISIBLE_DEVICES, upload_to_sync
 
 if os.environ.get('MOCK_SERVER') or os.environ.get('DEBUG') == 'test':
     from astria_mock_server import request_tune_job_from_server, server_tune_done, report_tune_job_failure
@@ -392,6 +392,7 @@ def train_no_catch(tune: JsonObj):
         f"{output_dir}/pytorch_lora_weights.safetensors",
         f"{MODELS_DIR}/{tune.id}.safetensors",
     )
+    upload_to_sync(f"{tune.id}.safetensors")
     if not os.environ.get('MOCK_SERVER'):
         run([
             "aws", "s3", "cp",

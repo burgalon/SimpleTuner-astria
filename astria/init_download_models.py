@@ -103,6 +103,7 @@ def _download_models():
 def _download_models_secondary():
     print("Downloading models in secondary process")
 
+    snapshot_download(repo_id="HCMUE-Research/SAM-vit-h", local_dir=CACHE_DIR, local_dir_use_symlinks=False, allow_patterns=["*.pth"])
     os.makedirs("/data/cache/HaldCLUT", exist_ok=True)
     for filename in [*CLUT_DICT.values()]:
         if not os.path.exists(f"/data/cache/{filename}"):
