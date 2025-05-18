@@ -1001,6 +1001,7 @@ class InferPipeline(InpaintFaceMixin, VtonMixin, WanVideoMixin, SamMixin):
                     pipe = self.controlnet_inpaint_txt2img
                     kwargs['mask_image'] = mask_image
                     kwargs['image'] = input_image
+                    kwargs['strength'] = float(prompt.denoising_strength or 0.8)
                 else:
                     if prompt.controlnet_txt2img:
                         self.init_controlnet_txt2img(tune, prompt.controlnet)
