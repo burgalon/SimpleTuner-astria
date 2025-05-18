@@ -18,7 +18,7 @@ import torch
 from PIL import Image, ImageOps, ImageFilter
 from diffusers import FluxFillPipeline, FluxTransformer2DModel
 from diffusers import FluxPipeline, FluxImg2ImgPipeline, FluxControlNetPipeline, FluxControlNetModel, \
-    FluxInpaintPipeline, FluxControlNetImg2ImgPipeline, FluxControlNetInpaintPipeline
+    FluxInpaintPipeline, FluxControlNetImg2ImgPipeline #, FluxControlNetInpaintPipeline
 from torchvision import transforms
 
 from pulid_pipeline.pipeline import FluxPipelineWithPulID
@@ -50,6 +50,7 @@ from controlnet_constants import CONTROLNETS_DICT, RECOMMENDED_CONTROLNET_CONSTA
 from hinter_helper import get_detector
 from image_utils import load_image, load_images
 from pipeline_flux_differential_img2img import FluxDifferentialImg2ImgPipeline
+from pipeline_flux_differential_inpainting_controlnet import FluxControlNetDifferentialInpaintPipeline as FluxControlNetInpaintPipeline
 from runpod_utils import kill_pod
 from sig_listener import TerminateException, is_terminated, set_current_infer_tune, set_current_train_tune
 from super_resolution_helper import load_sr, upscale_sr
@@ -997,6 +998,7 @@ class InferPipeline(InpaintFaceMixin, VtonMixin, WanVideoMixin, SamMixin):
                     kwargs['control_guidance_end'] = prompt.control_guidance_end
 
                 if mask_image:
+                    mask_image = ImageOps.invert(mask_image)
                     self.init_controlnet_inpaint_txt2img(tune, prompt.controlnet)
                     pipe = self.controlnet_inpaint_txt2img
                     kwargs['mask_image'] = mask_image

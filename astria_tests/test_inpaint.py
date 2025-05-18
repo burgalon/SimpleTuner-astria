@@ -57,3 +57,32 @@ def test_inpainting_controlnet_foreground():
     prompt.controlnet_conditioning_scale=0.5
     run_images(prompt)
     assert isinstance(pipe.last_pipe, FluxControlNetInpaintPipeline)
+
+def test_inpainting_controlnet_emma():
+    prompt = JsonObj(
+        **copy.copy(BASE_PROMPT.__dict__),
+        input_image="/root/SimpleTuner-astria/astria_tests/fixtures/fix_your_rows.png",
+        denoising_strength=0.85,
+        controlnet='pose',
+        mask_image="/root/SimpleTuner-astria/astria_tests/fixtures/fix_your_rows_mask.png",
+    )
+    prompt.controlnet_txt2img = True
+    prompt.text=f"<lora:{FLUX_LORA.id}:1> {FLUX_LORA.train_token} woman"
+    prompt.tunes=[FLUX_LORA]
+    prompt.controlnet_conditioning_scale=0.5
+    run_images(prompt)
+    assert isinstance(pipe.last_pipe, FluxControlNetInpaintPipeline)
+
+def test_inpainting_controlnet_emma2():
+    prompt = JsonObj(
+        **copy.copy(BASE_PROMPT.__dict__),
+        input_image="/root/SimpleTuner-astria/astria_tests/fixtures/fix_your_rows.png",
+        denoising_strength=0.85,
+        controlnet='pose',
+    )
+    prompt.controlnet_txt2img = True
+    prompt.text=f"<lora:{FLUX_LORA.id}:1> {FLUX_LORA.train_token} woman wearing a black tank top --mask_prompt person --mask_blur 10 --mask_dilate 10%"
+    prompt.tunes=[FLUX_LORA]
+    prompt.controlnet_conditioning_scale=0.5
+    run_images(prompt)
+    assert isinstance(pipe.last_pipe, FluxControlNetInpaintPipeline)
