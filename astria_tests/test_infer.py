@@ -13,6 +13,8 @@ from PIL import Image
 from infer import *
 from astria_utils import JsonObj, MODELS_DIR
 
+from astria.dreamo_pipeline.pipeline import DreamOPipeline
+
 # Do not send to server?
 if 'DEBUG' not in os.environ:
     os.environ['DEBUG'] = 'test'
@@ -152,6 +154,51 @@ FLUX_FACEID = JsonObj(**{
     ]
 })
 
+FLUX_FACEID_DREAMO = JsonObj(**{
+    "id": 1533312,
+    "name": "woman",
+    "title": "Emma",
+    "branch": "flux1",
+    "token": str(1533312),
+    "model_type": "dreamo",
+    "face_swap_images": [
+        "https://sdbooth2-production.s3.amazonaws.com/l7pp1gzy1lthev4u1fiwvdt5l9tg",
+    ]
+})
+
+FLUX_FACEID_IP_DREAMO = JsonObj(**{
+    "id": 43242432,
+    "name": "foo",
+    "title": "Emma",
+    "branch": "flux1",
+    "token": str(43242432),
+    "model_type": "dreamo",
+    "face_swap_images": [
+        "https://sdbooth2-production.s3.amazonaws.com/f8bg0pac6m740muuicmtlzil2nny",
+    ]
+})
+
+FLUX_DRESS_DREAMO = JsonObj(**{
+    "id": 49328429,
+    "name": "dress",
+    "title": "dress",
+    "branch": "flux1",
+    "token": str(49328429),
+    "model_type": "dreamo",
+    "face_swap_images": [
+        str((
+            Path(__file__).resolve().parent.parent /
+                'astria_tests' /
+                'fixtures' /
+                'dress.jpg'
+        ).absolute())
+    ]
+})
+
+
+
+
+
 FLUX_CARTOON = JsonObj(**{
     "id": 1989689,
     "name": "man",
@@ -279,6 +326,32 @@ def test_faceid():
     prompt.tunes=[FLUX_FACEID]
     run_images(prompt)
     assert isinstance(pipe.last_pipe, FluxPipelineWithPulID)
+
+def test_faceid_dreamo():
+    prompt = JsonObj(
+        **copy.copy(BASE_PROMPT.__dict__),
+    )
+    prompt.text=f"<{FLUX_FACEID_DREAMO.model_type}:{FLUX_FACEID_DREAMO.id}:1> woman holding flowers"
+    prompt.tunes=[FLUX_FACEID_DREAMO]
+    run_images(prompt)
+    # Never set as pipe
+    # assert isinstance(pipe.last_pipe, DreamOPipeline)
+
+def test_faceid_dreamo_ip_and_id():
+    prompt = JsonObj(
+        **copy.copy(BASE_PROMPT.__dict__),
+    )
+    prompt.text=f"<{FLUX_FACEID_DREAMO.model_type}:{FLUX_FACEID_DREAMO.id}:1> woman holding flowers. <{FLUX_FACEID_IP_DREAMO.model_type}:{FLUX_FACEID_IP_DREAMO.id}:1>"
+    prompt.tunes=[FLUX_FACEID_DREAMO, FLUX_FACEID_IP_DREAMO]
+    run_images(prompt)
+
+def test_faceid_dreamo_dress():
+    prompt = JsonObj(
+        **copy.copy(BASE_PROMPT.__dict__),
+    )
+    prompt.text=f"<{FLUX_FACEID_DREAMO.model_type}:{FLUX_FACEID_DREAMO.id}:1> woman wearing <{FLUX_DRESS_DREAMO.model_type}:{FLUX_DRESS_DREAMO.id}:1> "
+    prompt.tunes=[FLUX_FACEID_DREAMO, FLUX_DRESS_DREAMO]
+    run_images(prompt)
 
 def test_bad_faceid():
     os.environ['FORCE_PULID'] = '1'

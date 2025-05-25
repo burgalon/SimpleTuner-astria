@@ -21,6 +21,8 @@ from diffusers import FluxPipeline, FluxImg2ImgPipeline, FluxControlNetPipeline,
     FluxInpaintPipeline, FluxControlNetImg2ImgPipeline #, FluxControlNetInpaintPipeline
 from torchvision import transforms
 
+from dreamo_mixin import DreamOMixin
+
 from pulid_pipeline.pipeline import FluxPipelineWithPulID
 from pulid_pipeline.pulid_ext import PuLID
 
@@ -201,8 +203,8 @@ def parse_args(prompt: JsonObj):
 def get_pipe_key_for_lora(pipe):
     return 'fill' if isinstance(pipe, FluxFillPipeline) else 'pipe'
 
-class InferPipeline(InpaintFaceMixin, VtonMixin, WanVideoMixin, SamMixin):
-    reference_pattern = r'<(lora|faceid):([^>:]+):([\d\.]+)>'
+class InferPipeline(InpaintFaceMixin, VtonMixin, WanVideoMixin, SamMixin, DreamOMixin):
+    reference_pattern = r'<(lora|faceid|dreamo):([^>:]+):([\d\.]+)>'
     reference_pattern_re = re.compile(reference_pattern)
 
     def __init__(self):
@@ -304,8 +306,8 @@ class InferPipeline(InpaintFaceMixin, VtonMixin, WanVideoMixin, SamMixin):
 
         all_match_groups = re.findall(self.reference_pattern_re, prompt.text)
         for match_groups in all_match_groups:
-            type, token, scale = match_groups
-            if type == "lora":
+            _type, token, scale = match_groups
+            if _type == "lora":
                 tune = next(iter([tune for tune in prompt.tunes if tune.token == token or str(tune.id) == token]), None)
                 if not tune:
                     raise Exception(f"Token {token} not found in prompt {prompt.id} tokens={prompt.tunes}")
@@ -931,6 +933,7 @@ class InferPipeline(InpaintFaceMixin, VtonMixin, WanVideoMixin, SamMixin):
                 all(tune.name in HUMAN_CLASS_NAMES for tune in prompt.tunes)
                 and len(prompt.tunes) > 1
         )
+        use_dreamo = False
         use_regional =  prompt.use_regional or all_tunes_are_human_and_more_than_one
 
         if use_regional:
@@ -946,8 +949,8 @@ class InferPipeline(InpaintFaceMixin, VtonMixin, WanVideoMixin, SamMixin):
             if use_regional:
                 raise Exception("Can not use face ID with --use_regional")
             for match_groups in re.findall(self.reference_pattern_re, prompt.text):
-                type, token, scale = match_groups
-                if type == "faceid":
+                _type, token, scale = match_groups
+                if _type == "faceid":
                     tune = next(iter([tune for tune in prompt.tunes if tune.token == token or str(tune.id) == token]), None)
                     if not tune:
                         raise Exception(f"Token {token} not found in prompt {prompt.id} tokens={prompt.tunes}")
@@ -974,6 +977,16 @@ class InferPipeline(InpaintFaceMixin, VtonMixin, WanVideoMixin, SamMixin):
                         continue
                     print(f"T#{prompt.tune_id} P#{prompt.id} faceid={token} scale={scale}")
                     break
+        elif all([tune.model_type == 'dreamo' for tune in prompt.tunes]):
+            if input_image:
+                raise Exception("Cannot have both dreamo and input_image")
+            if use_regional:
+                raise Exception("Can not use dreamo with --use_regional")
+            if len(prompt.tunes) > 2:
+                raise Exception("dreamo allows a maximum of two references")
+            pipe = self.init_dreamo(self.pipe, self.pipe.device)
+            use_dreamo = True
+            print(f"T#{prompt.tune_id} P#{prompt.id} dreamo initialized")
         elif prompt.input_image:
             if prompt.mask_image:
                 orig_mask_image = load_image(prompt.mask_image, "L")
@@ -1039,7 +1052,7 @@ class InferPipeline(InpaintFaceMixin, VtonMixin, WanVideoMixin, SamMixin):
             pipe = self.pipe
 
         # For tests
-        self.last_pipe = pipe
+        self.last_pipe = self.pipe
         images = []
         num_images = int(os.environ.get('NUM_IMAGES', prompt.num_images) or 1)
 
@@ -1054,6 +1067,9 @@ class InferPipeline(InpaintFaceMixin, VtonMixin, WanVideoMixin, SamMixin):
             prompt.inpaint_faces = False
             prompt.text = kwargs['prompt_main']
             del kwargs['prompt_main']
+
+        if use_dreamo:
+            self.prep_dream_kwargs(prompt, kwargs)
 
         # Encode text embeds
         (
@@ -1096,7 +1112,7 @@ class InferPipeline(InpaintFaceMixin, VtonMixin, WanVideoMixin, SamMixin):
         if prompt.outpaint:
             images = self.outpaint(images, prompt, kwargs)
 
-        if not use_regional:
+        if not use_regional and not use_dreamo:
             images = self.vton(images, prompt)
         if prompt.super_resolution or os.environ.get('SUPER_RESOLUTION'):
             images = self.upscale(images, prompt)
@@ -1157,6 +1173,8 @@ class InferPipeline(InpaintFaceMixin, VtonMixin, WanVideoMixin, SamMixin):
             #     )
             # })
             self.reset(gc_collect=True)
+        if use_dreamo:
+            self.cleanup_dreamo(pipe)
 
         return images
 

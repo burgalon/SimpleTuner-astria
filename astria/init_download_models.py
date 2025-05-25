@@ -6,7 +6,7 @@ from hinter_helper import annotator_ckpts_path
 import torch
 from diffusers import FluxControlNetModel
 from filelock import FileLock, Timeout
-from huggingface_hub import scan_cache_dir, snapshot_download
+from huggingface_hub import scan_cache_dir, snapshot_download, hf_hub_download
 from torch.hub import download_url_to_file
 from transformers import pipeline
 
@@ -77,6 +77,12 @@ def _download_models():
             local_dir_use_symlinks=False,
         )
 
+    # Dreamo
+    hf_hub_download(repo_id='ByteDance/DreamO', filename='dreamo.safetensors', local_dir=CACHE_DIR)
+    hf_hub_download(repo_id='ByteDance/DreamO', filename='dreamo_cfg_distill.safetensors', local_dir=CACHE_DIR)
+    hf_hub_download(repo_id='ByteDance/DreamO', filename='dreamo_quality_lora_pos.safetensors', local_dir=CACHE_DIR)
+    hf_hub_download(repo_id='ByteDance/DreamO', filename='dreamo_quality_lora_neg.safetensors', local_dir=CACHE_DIR)
+
     fns = [
         # ('https://huggingface.co/lokCX/4x-Ultrasharp/resolve/main/4x-UltraSharp.pth', CACHE_DIR),
         ('https://huggingface.co/uwg/upscaler/resolve/main/ESRGAN/4x_NMKD-Siax_200k.pth', CACHE_DIR),
@@ -85,7 +91,6 @@ def _download_models():
         ('https://github.com/xinntao/facexlib/releases/download/v0.1.0/detection_Resnet50_Final.pth', CACHE_DIR),
         ('https://github.com/xinntao/facexlib/releases/download/v0.2.2/parsing_parsenet.pth', CACHE_DIR),
         ('https://github.com/xinntao/facexlib/releases/download/v0.2.0/parsing_bisenet.pth', CACHE_DIR),
-
     ]
     print("Downloading PuLID models")
     PuLID.download_models(local_dir=f'{CACHE_DIR}/pulid', models_dir=CACHE_DIR)
