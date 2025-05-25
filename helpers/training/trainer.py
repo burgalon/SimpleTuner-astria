@@ -159,7 +159,7 @@ diffusers.utils.logging.set_verbosity_warning()
 
 class Trainer:
     def __init__(
-        self, config: dict = None, disable_accelerator: bool = False, job_id: str = None
+        self, config: dict = None, disable_accelerator: bool = False, job_id: str = None, keep_backbone_loaded: bool = False
     ):
         self.accelerator = None
         self.job_id = job_id
@@ -180,6 +180,7 @@ class Trainer:
         self.controlnet = None
         self.ema_model = None
         self.validation = None
+        self.keep_backbone_loaded = keep_backbone_loaded
 
     def _config_to_obj(self, config):
         if not config:
@@ -612,9 +613,15 @@ class Trainer:
             structured_data={"message": webhook_msg},
             message_type="init_load_base_model_begin",
         )
-        self.unet, self.transformer = load_diffusion_model(
-            self.config, self.config.weight_dtype
-        )
+        if (self.unet is not None or self.transformer is not None) and self.keep_backbone_loaded:
+            logger.info('unet or transformer already in memory and backbone ' +
+                'preservation enabled, skipping diffusion model reload')
+        else:
+            logger.info('Loading up the diffusion models...')
+            self.unet, self.transformer = load_diffusion_model(
+                self.config, self.config.weight_dtype
+            )
+
         self.accelerator.wait_for_everyone()
         self._send_webhook_raw(
             structured_data={"message": "Base model has loaded."},
@@ -1863,6 +1870,53 @@ class Trainer:
             )
             raise StopIteration("Training run received abort signal.")
 
+    def cleanup_for_next_lora(self):
+        """
+        Reset *everything except the backbone(s)* so that another call
+        to `run()` can build a brand-new LoRA on top of the same model.
+        """
+        # 1) Remove any *residual* LoRA / LyCORIS networks
+        if getattr(self, "transformer", None) is not None:
+            for name in getattr(self.transformer, "peft_config", {}).keys():
+                self.transformer.delete_adapter(name)
+        if getattr(self.accelerator, "_lycoris_wrapped_network", None):
+            self.accelerator._lycoris_wrapped_network.restore()   # re-attach weights
+            self.accelerator._lycoris_wrapped_network.remove()    # then drop
+            self.accelerator._lycoris_wrapped_network = None
+
+        # 2) Nuke every runtime object that will be re-created in parse_arguments() / resume_and_prepare()
+        for attr in (
+            "optimizer", "lr_scheduler", "ema_model", "validation",
+            "webhook_handler", "guidance_values_table", "train_dataloaders",
+        ):
+            setattr(self, attr, None)
+
+        # plus the global state
+        self.state = {
+            "lr": 0.0,
+            "global_step": 0,
+            "global_resume_step": -1,   # <- make the LR-scheduler start fresh
+            "first_epoch": 1,
+        }
+        # also wipe the global tracker
+        StateTracker.set_global_step(0)
+        StateTracker.set_global_resume_step(-1)
+        StateTracker.set_epoch(1)
+
+        # 3) Clear caches
+        torch.cuda.empty_cache()
+        reclaim_memory()
+
+        # 4) Bring the backbone(s) back to training mode, just in case
+        if getattr(self, "transformer", None):
+            self.transformer.train()
+        if getattr(self, "unet", None):
+            self.unet.train()
+
+        self._misc_init()
+
+        logger.info("Trainer state cleared; backbone left in memory for the next LoRA.")
+
     def abort(self):
         logger.info("Aborting training run.")
         if self.bf is not None:
@@ -3007,8 +3061,17 @@ class Trainer:
                         text_encoder_2_lora_layers=text_encoder_2_lora_layers,
                     )
 
-                del self.unet
-                del self.transformer
+                if self.keep_backbone_loaded:
+                    for m in filter(None, [self.transformer, self.unet]):
+                        m.delete_adapters(list(m.peft_config.keys()))
+                    torch.cuda.empty_cache()
+                else:
+                    del self.unet
+                    del self.transformer
+                    torch.cuda.empty_cache()
+
+                # del self.unet
+                # del self.transformer
                 del text_encoder_lora_layers
                 del text_encoder_2_lora_layers
                 reclaim_memory()
