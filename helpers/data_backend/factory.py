@@ -1104,15 +1104,22 @@ def configure_multi_databackend(args: dict, accelerator, text_encoders, tokenize
 
             if not args.vae_cache_ondemand:
                 info_log(f"(id={init_backend['id']}) Discovering cache objects..")
-                if accelerator.is_local_main_process:
-                    init_backend["vaecache"].discover_all_files()
-                accelerator.wait_for_everyone()
-            all_image_files = StateTracker.get_image_files(
-                data_backend_id=init_backend["id"]
-            )
+                init_backend["vaecache"].discover_all_files()
+
+            all_image_files = None
+            while True:
+                all_image_files = StateTracker.get_image_files(
+                    data_backend_id=init_backend["id"]
+                )
+                if all_image_files is not None:
+                    break
+                else:
+                    print("Oh no! Where are my files!?")
+                    time.sleep(0.2)
             init_backend["vaecache"].build_vae_cache_filename_map(
                 all_image_files=all_image_files
             )
+            accelerator.wait_for_everyone()
 
         if (
             (

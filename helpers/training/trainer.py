@@ -160,12 +160,12 @@ diffusers.utils.logging.set_verbosity_warning()
 class Trainer:
     has_had_lora_inited = False
     def __init__(
-        self, config: dict = None, disable_accelerator: bool = False, job_id: str = None, keep_backbone_loaded: bool = False
+        self,
+        config: dict = None,
+        disable_accelerator: bool = False,
+        job_id: str = None,
+        keep_backbone_loaded: bool = False,
     ):
-        # import debugpy
-        # debugpy.listen(('0.0.0.0', 11566))
-        # debugpy.wait_for_client()
-
         self.accelerator = None
         self.job_id = job_id
         StateTracker.set_job_id(job_id)
@@ -198,7 +198,7 @@ class Trainer:
         report_to = (
             None if self.config.report_to.lower() == "none" else self.config.report_to
         )
-        if not disable_accelerator:
+        if not disable_accelerator and self.accelerator is None:
             self.accelerator = Accelerator(
                 gradient_accumulation_steps=self.config.gradient_accumulation_steps,
                 mixed_precision=(
@@ -229,17 +229,15 @@ class Trainer:
         self.init_noise_schedule()
 
     def run(self):
-        # if self.keep_backbone_loaded and self.has_had_lora_inited:
-        #     import debugpy
-        #     debugpy.listen(('0.0.0.0', 11566))
-        #     debugpy.wait_for_client()
-
         try:
             # Initialize essential configurations and schedules
-            self.configure_webhook()
-            self.init_noise_schedule()
-            self.init_seed()
-            self.init_huggingface_hub()
+            with self.accelerator.main_process_first():
+                self.configure_webhook()
+                self.init_noise_schedule()
+                self.init_seed()
+                self.init_huggingface_hub()
+
+            self.accelerator.wait_for_everyone()
 
             # Core initialization steps with signal checks after each step
             self._initialize_components_with_signal_check(
@@ -257,6 +255,7 @@ class Trainer:
                     self.init_ema_model,
                 ]
             )
+            self.accelerator.wait_for_everyone()
 
             # Model movement and validation setup
             self.move_models(destination="accelerator")
@@ -268,6 +267,8 @@ class Trainer:
             self.resume_and_prepare()
             self._exit_on_signal()
             self.init_trackers()
+
+            self.accelerator.wait_for_everyone()
 
             # Start the training process
             if not self.has_had_lora_inited and self.keep_backbone_loaded:
@@ -671,12 +672,15 @@ class Trainer:
                 structured_data={"message": "Configuring data backends."},
                 message_type="init_data_backend_begin",
             )
-            configure_multi_databackend(
-                self.config,
-                accelerator=self.accelerator,
-                text_encoders=self.text_encoders,
-                tokenizers=self.tokenizers,
-            )
+
+            with self.accelerator.main_process_first():
+                configure_multi_databackend(
+                    self.config,
+                    accelerator=self.accelerator,
+                    text_encoders=self.text_encoders,
+                    tokenizers=self.tokenizers,
+                )
+            self.accelerator.wait_for_everyone()
             self._send_webhook_raw(
                 structured_data={"message": "Completed configuring data backends."},
                 message_type="init_data_backend_completed",
@@ -1927,7 +1931,28 @@ class Trainer:
             raise StopIteration("Training run received abort signal.")
 
     def _cache_lora_and_optim_for_fast_reset(trainer):
-        tgt = trainer.transformer or trainer.unet        # whichever hosts the adapter
+        # If for some reason you need to sync weights, alternatively you can:
+        #
+        # import torch.distributed as dist                      # used under the hood
+        # # --------------------------------------------------------------------
+        # accelerator = trainer.accelerator
+        # model        = ...          # your model, already built & prepared
+        # # --------------------------------------------------------------------
+
+        # # rank-0 does something that changes the weights ----------------------
+        # if accelerator.is_main_process:
+        #     model.backbone.apply(my_custom_weight_init)       # ← any change you want
+        #     # or: model.load_state_dict(torch.load("ckpt.bin"))
+
+        # # ---------- synchronise those new weights with every other rank ------
+        # for p in accelerator.unwrap_model(model).parameters():
+        #     dist.broadcast(p.data, src=0)
+        # for b in accelerator.unwrap_model(model).buffers():
+        #     dist.broadcast(b.data, src=0)
+        # # (optional) hard barrier so everyone leaves this block together
+        # accelerator.wait_for_everyone()
+
+        tgt = trainer.accelerator.unwrap_model(trainer.transformer or trainer.unet)        # whichever hosts the adapter
         trainer._lora_init = {
             n: p.detach().clone()          # shallow copy to CPU if you prefer .clone().cpu()
             for n, p in get_peft_model_state_dict(
@@ -1948,7 +1973,8 @@ class Trainer:
         ]
 
     def _fast_reset(self, new_lr=None):
-        tgt = self.transformer or self.unet
+        # if self.accelerator.is_main_process:
+        tgt = self.accelerator.unwrap_model(self.transformer or self.unet)
 
         for n, p in get_peft_model_state_dict(
             tgt
@@ -1964,6 +1990,7 @@ class Trainer:
         if new_lr is not None:
             for g in opt.param_groups:
                 g['lr'] = new_lr
+
         self.accelerator.wait_for_everyone()
 
     def cleanup_for_next_lora(self, new_lr=None):
@@ -2119,7 +2146,7 @@ class Trainer:
 
                 # Now `guidance` will have different values for each latent in `latents`.
                 transformer_config = None
-                if hasattr(self.transformer, "module"):
+                if hasattr(self.transformer, "module") and hasattr(self.transformer.module, "config"):
                     transformer_config = self.transformer.module.config
                 elif hasattr(self.transformer, "config"):
                     transformer_config = self.transformer.config
@@ -3447,4 +3474,8 @@ class Trainer:
             if self.config.push_to_hub and self.accelerator.is_main_process:
                 self.hub_manager.upload_model(validation_images, self.webhook_handler)
 
-        self.accelerator.end_training()
+        if not self.keep_backbone_loaded:
+            self.accelerator.end_training()
+        else:
+            for tracker in self.accelerator.trackers:
+                tracker.finish()

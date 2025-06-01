@@ -21,6 +21,11 @@ from helpers.training.trainer import Trainer
 NUM_GPUS = torch.cuda.device_count()
 GPU_MEMORY_GB = torch.cuda.get_device_properties(0).total_memory / 1024**3
 
+import torch.distributed as dist
+
+
+def is_rank0() -> bool:
+    return (not dist.is_initialized()) or dist.get_rank() == 0
 
 
 def extract_learning_rate(job_json: str) -> float|None:
@@ -103,16 +108,23 @@ class Worker:
 
         print(f"output_dir={output_dir} steps={steps}")
 
-        if tune.preprocessing=='3':
-            print("Using preprocessing v3")
-            data_backend_config, resolution = create_data_config_v3(tune, output_dir)
-        elif tune.preprocessing=='2':
-            print("Using preprocessing v2")
-            data_backend_config, resolution = create_data_config_v2(tune, output_dir)
-        else:
-            print("Using preprocessing v1")
-            data_backend_config, resolution = create_data_config_v1(tune, output_dir)
+        if is_rank0():  
+            if tune.preprocessing=='3':
+                print("Using preprocessing v3")
+                data_backend_config, resolution = create_data_config_v3(tune, output_dir)
+            elif tune.preprocessing=='2':
+                print("Using preprocessing v2")
+                data_backend_config, resolution = create_data_config_v2(tune, output_dir)
+            else:
+                print("Using preprocessing v1")
+                data_backend_config, resolution = create_data_config_v1(tune, output_dir)
 
+        payload = [data_backend_config if is_rank0() else None,
+                resolution          if is_rank0() else None]
+
+        dist.broadcast_object_list(payload, src=0)   # one line does the trick
+        data_backend_config, resolution = payload    # unpack locally
+        dist.barrier()
 
         # TODO
         resolution = 512
@@ -128,9 +140,9 @@ class Worker:
             train_batch = max(1, (min(min(4, len(tune.orig_images)), 4))) // NUM_GPUS
 
         # Launching
-        # export CUDA_VISIBLE_DEVICES="0"
-        # export NUM_GPUS="1"
-        # TR_STEPS=10 MOCK_SERVER=1 accelerate launch --gpu_ids="$CUDA_VISIBLE_DEVICES" --num_machines=1 --num_processes="$NUM_GPUS" --mixed_precision=no --dynamo_backend="inductor" astria/worker.py
+        # export CUDA_VISIBLE_DEVICES="0,1"
+        # export NUM_GPUS="2"
+        # TR_STEPS=105 MOCK_SERVER=1 accelerate launch --gpu_ids="$CUDA_VISIBLE_DEVICES" --num_machines=1 --num_processes="$NUM_GPUS" --mixed_precision=no astria/worker.py
         args = [
             # 'accelerate',
             # 'launch',
