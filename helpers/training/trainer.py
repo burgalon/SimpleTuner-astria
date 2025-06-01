@@ -158,9 +158,14 @@ diffusers.utils.logging.set_verbosity_warning()
 
 
 class Trainer:
+    has_had_lora_inited = False
     def __init__(
         self, config: dict = None, disable_accelerator: bool = False, job_id: str = None, keep_backbone_loaded: bool = False
     ):
+        # import debugpy
+        # debugpy.listen(('0.0.0.0', 11566))
+        # debugpy.wait_for_client()
+
         self.accelerator = None
         self.job_id = job_id
         StateTracker.set_job_id(job_id)
@@ -181,6 +186,7 @@ class Trainer:
         self.ema_model = None
         self.validation = None
         self.keep_backbone_loaded = keep_backbone_loaded
+        self.text_encoders = []
 
     def _config_to_obj(self, config):
         if not config:
@@ -223,6 +229,11 @@ class Trainer:
         self.init_noise_schedule()
 
     def run(self):
+        # if self.keep_backbone_loaded and self.has_had_lora_inited:
+        #     import debugpy
+        #     debugpy.listen(('0.0.0.0', 11566))
+        #     debugpy.wait_for_client()
+
         try:
             # Initialize essential configurations and schedules
             self.configure_webhook()
@@ -259,6 +270,9 @@ class Trainer:
             self.init_trackers()
 
             # Start the training process
+            if not self.has_had_lora_inited and self.keep_backbone_loaded:
+                self._cache_lora_and_optim_for_fast_reset()
+                self.has_had_lora_inited = True
             self.train()
 
         except Exception as e:
@@ -446,41 +460,43 @@ class Trainer:
             determine_te_path_subfolder(self.config)
         )
 
-    def init_preprocessing_models(self, move_to_accelerator: bool = True):
+    def init_preprocessing_models(self, move_to_accelerator: bool = False):
         # image embeddings
-        self.init_vae(move_to_accelerator=move_to_accelerator)
+        self.init_vae()
         # text embeds
-        self.init_text_encoder(move_to_accelerator=move_to_accelerator)
+        self.init_text_encoder()
 
-    def init_vae(self, move_to_accelerator: bool = True):
+    def init_vae(self):
         logger.info(f"Load VAE: {self.config.vae_path}")
-        self.config.vae_kwargs = {
-            "pretrained_model_name_or_path": self.config.vae_path,
-            "subfolder": "vae",
-            "revision": self.config.revision,
-            "force_upcast": False,
-            "variant": self.config.variant,
-        }
-        try:
-            self.vae = AutoencoderKL.from_pretrained(**self.config.vae_kwargs)
-        except:
-            logger.warning(
-                "Couldn't load VAE with default path. Trying without a subfolder.."
-            )
-            self.config.vae_kwargs["subfolder"] = None
-            self.vae = AutoencoderKL.from_pretrained(**self.config.vae_kwargs)
-            if (
-                self.vae is not None
-                and self.config.vae_enable_tiling
-                and hasattr(self.vae, "enable_tiling")
-            ):
+
+        if self.vae is None:
+            self.config.vae_kwargs = {
+                "pretrained_model_name_or_path": self.config.vae_path,
+                "subfolder": "vae",
+                "revision": self.config.revision,
+                "force_upcast": False,
+                "variant": self.config.variant,
+            }
+            try:
+                self.vae = AutoencoderKL.from_pretrained(**self.config.vae_kwargs)
+            except:
                 logger.warning(
-                    "Enabling VAE tiling for greatly reduced memory consumption due to --vae_enable_tiling which may result in VAE tiling artifacts in encoded latents."
+                    "Couldn't load VAE with default path. Trying without a subfolder.."
                 )
-                self.vae.enable_tiling()
-        if not move_to_accelerator:
-            logger.debug("Not moving VAE to accelerator.")
-            return
+                self.config.vae_kwargs["subfolder"] = None
+                self.vae = AutoencoderKL.from_pretrained(**self.config.vae_kwargs)
+                if (
+                    self.vae is not None
+                    and self.config.vae_enable_tiling
+                    and hasattr(self.vae, "enable_tiling")
+                ):
+                    logger.warning(
+                        "Enabling VAE tiling for greatly reduced memory consumption due to --vae_enable_tiling which may result in VAE tiling artifacts in encoded latents."
+                    )
+                    self.vae.enable_tiling()
+            # if not move_to_accelerator:
+            #     logger.debug("Not moving VAE to accelerator.")
+            #     return
         if self.vae is not None:
             # The VAE is in bfloat16 to avoid NaN losses.
             _vae_dtype = torch.bfloat16
@@ -513,9 +529,10 @@ class Trainer:
         )
         self.tokenizers = [self.tokenizer_1, self.tokenizer_2, self.tokenizer_3]
 
-    def init_text_encoder(self, move_to_accelerator: bool = True):
+    def init_text_encoder(self):
         self.init_text_tokenizer()
-        self.text_encoder_1, self.text_encoder_2, self.text_encoder_3 = None, None, None
+        if len(self.text_encoders) == 0:
+            self.text_encoder_1, self.text_encoder_2, self.text_encoder_3 = None, None, None
         self.text_encoder_cls_1, self.text_encoder_cls_2, self.text_encoder_cls_3 = (
             None,
             None,
@@ -542,29 +559,34 @@ class Trainer:
                 self.config,
                 subfolder="text_encoder_3",
             )
-        with ContextManagers(deepspeed_zero_init_disabled_context_manager()):
-            tokenizers = [self.tokenizer_1, self.tokenizer_2, self.tokenizer_3]
-            text_encoder_classes = [
-                self.text_encoder_cls_1,
-                self.text_encoder_cls_2,
-                self.text_encoder_cls_3,
-            ]
-            (
-                text_encoder_variant,
-                self.text_encoder_1,
-                self.text_encoder_2,
-                self.text_encoder_3,
-            ) = load_tes(
-                args=self.config,
-                text_encoder_classes=text_encoder_classes,
-                weight_dtype=self.config.weight_dtype,
-                tokenizers=tokenizers,
-                text_encoder_path=self.config.text_encoder_path,
-                text_encoder_subfolder=self.config.text_encoder_subfolder,
-            )
-        if not move_to_accelerator:
-            logger.debug("Not moving text encoders to accelerator.")
-            return
+
+        # If the text encoders are already loaded, don't reload them.
+        if len(self.text_encoders) == 0:
+            logger.info('Initializing text encoders...')
+            with ContextManagers(deepspeed_zero_init_disabled_context_manager()):
+                tokenizers = [self.tokenizer_1, self.tokenizer_2, self.tokenizer_3]
+                text_encoder_classes = [
+                    self.text_encoder_cls_1,
+                    self.text_encoder_cls_2,
+                    self.text_encoder_cls_3,
+                ]
+                (
+                    text_encoder_variant,
+                    self.text_encoder_1,
+                    self.text_encoder_2,
+                    self.text_encoder_3,
+                ) = load_tes(
+                    args=self.config,
+                    text_encoder_classes=text_encoder_classes,
+                    weight_dtype=self.config.weight_dtype,
+                    tokenizers=tokenizers,
+                    text_encoder_path=self.config.text_encoder_path,
+                    text_encoder_subfolder=self.config.text_encoder_subfolder,
+                )
+            # if not move_to_accelerator:
+            #     logger.debug("Not moving text encoders to accelerator.")
+            #     return
+
         self.text_encoders = []
         self.tokenizers = []
         if self.tokenizer_1 is not None:
@@ -590,6 +612,8 @@ class Trainer:
             self.text_encoders.append(self.text_encoder_3)
 
     def init_freeze_models(self):
+        torch.set_grad_enabled(True)
+
         # Freeze vae and text_encoders
         if self.vae is not None:
             self.vae.requires_grad_(False)
@@ -599,11 +623,11 @@ class Trainer:
             self.text_encoder_2.requires_grad_(False)
         if self.text_encoder_3 is not None:
             self.text_encoder_3.requires_grad_(False)
-        if "lora" in self.config.model_type or self.config.controlnet:
-            if self.transformer is not None:
-                self.transformer.requires_grad_(False)
-            if self.unet is not None:
-                self.unet.requires_grad_(False)
+        if ("lora" in self.config.model_type or self.config.controlnet) and not(
+            self.has_had_lora_inited and self.keep_backbone_loaded
+        ):
+            tgt = self.transformer or self.unet 
+            tgt.requires_grad_(False)
         self.accelerator.wait_for_everyone()
 
     def init_load_base_model(self):
@@ -622,6 +646,13 @@ class Trainer:
                 self.config, self.config.weight_dtype
             )
 
+        if self.transformer is not None and self.keep_backbone_loaded:
+            self.transformer = torch.compile(
+                self.transformer,
+                backend="inductor",
+                fullgraph=True,
+            )
+
         self.accelerator.wait_for_everyone()
         self._send_webhook_raw(
             structured_data={"message": "Base model has loaded."},
@@ -629,6 +660,8 @@ class Trainer:
         )
 
     def init_data_backend(self):
+        if len(self.text_encoders) == 0:
+            raise Exception('No text encoders were loaded')
         try:
             self.init_clear_backend_cache()
             self._send_webhook_msg(
@@ -747,9 +780,11 @@ class Trainer:
             self.text_encoder_2 = self.text_encoder_2.to("cpu")
         if self.text_encoder_3 is not None:
             self.text_encoder_3 = self.text_encoder_3.to("cpu")
-        del self.text_encoder_1, self.text_encoder_2, self.text_encoder_3
-        self.text_encoder_1, self.text_encoder_2, self.text_encoder_3 = None, None, None
-        self.text_encoders = []
+
+        if not self.keep_backbone_loaded:
+            del self.text_encoder_1, self.text_encoder_2, self.text_encoder_3
+            self.text_encoder_1, self.text_encoder_2, self.text_encoder_3 = None, None, None
+            self.text_encoders = []
         for backend_id, backend in StateTracker.get_data_backends().items():
             if "text_embed_cache" in backend:
                 backend["text_embed_cache"].text_encoders = None
@@ -862,6 +897,9 @@ class Trainer:
         self.accelerator.wait_for_everyone()
 
     def init_trainable_peft_adapter(self):
+        if self.keep_backbone_loaded and self.has_had_lora_inited:
+            return
+
         if "lora" not in self.config.model_type:
             return
         if self.config.controlnet:
@@ -1128,6 +1166,15 @@ class Trainer:
 
     def init_optimizer(self):
         logger.info(f"Learning rate: {self.config.learning_rate}")
+
+        # Already accelerator wrapped
+        if (
+            hasattr(self, 'optimizer') and
+            self.optimizer is not None and
+            hasattr(self.optimizer, 'optimizer')
+        ):
+            return self.optimizer.optimizer
+
         extra_optimizer_args = {"lr": self.config.learning_rate}
         # Initialize the optimizer
         optimizer_args_from_config, optimizer_class = (
@@ -1139,6 +1186,10 @@ class Trainer:
             )
         )
         extra_optimizer_args.update(optimizer_args_from_config)
+
+        # The optimizer should have already been reset, just return.
+        if self.has_had_lora_inited and self.keep_backbone_loaded:
+            return
 
         self.params_to_optimize = determine_params_to_optimize(
             args=self.config,
@@ -1215,7 +1266,7 @@ class Trainer:
             )
             lr_scheduler = get_lr_scheduler(
                 self.config,
-                self.optimizer,
+                self.optimizer if not(self.has_had_lora_inited and self.keep_backbone_loaded) else self.optimizer.optimizer,
                 self.accelerator,
                 logger,
                 use_deepspeed_scheduler=False,
@@ -1344,8 +1395,10 @@ class Trainer:
                 self.unet.set_attention_slice("auto")
             if self.transformer is not None:
                 self.transformer.set_attention_slice("auto")
+
         self.lr_scheduler = results[1]
         self.optimizer = results[2]
+
         # The rest of the entries are dataloaders:
         self.train_dataloaders = [results[3:]]
         if self.config.use_ema and self.ema_model is not None:
@@ -1400,8 +1453,10 @@ class Trainer:
             return
         memory_before_unload = self.stats_memory_used()
         self.vae = self.vae.to("cpu")
-        del self.vae
-        self.vae = None
+
+        if not self.keep_backbone_loaded:
+            del self.vae
+            self.vae = None
         for _, backend in StateTracker.get_data_backends().items():
             if "vaecache" in backend:
                 backend["vaecache"].vae = None
@@ -1795,6 +1850,7 @@ class Trainer:
         initial_msg += f"\n-  Total train batch size (w. parallel, distributed & accumulation) = {self.config.total_batch_size}"
         initial_msg += f"\n  - Instantaneous batch size per device = {self.config.train_batch_size}"
         initial_msg += f"\n  - Gradient Accumulation steps = {self.config.gradient_accumulation_steps}"
+        initial_msg += f"\n- - Gradient Checkpointing = {'ON' if self.config.gradient_checkpointing else 'OFF'}"
         initial_msg += f"\n-  Total optimization steps = {self.config.max_train_steps}"
         if self.state["global_step"] > 1:
             initial_msg += f"\n  - Steps completed: {self.state['global_step']}"
@@ -1870,23 +1926,57 @@ class Trainer:
             )
             raise StopIteration("Training run received abort signal.")
 
-    def cleanup_for_next_lora(self):
+    def _cache_lora_and_optim_for_fast_reset(trainer):
+        tgt = trainer.transformer or trainer.unet        # whichever hosts the adapter
+        trainer._lora_init = {
+            n: p.detach().clone()          # shallow copy to CPU if you prefer .clone().cpu()
+            for n, p in get_peft_model_state_dict(
+                tgt
+            ).items()
+            if "lora_" in n or "lokr_" in n               # pick your adapter prefix
+        }
+        # Optimiser: deep-copy *tensors* in its state dict
+        s = trainer.optimizer.state_dict()
+        trainer._optim_init = {                       # tensor-aware copy
+            k: {kk: vv.detach().clone() if torch.is_tensor(vv) else vv
+                for kk, vv in v.items()}
+            for k, v in s['state'].items()
+        }
+        trainer._optim_groups = [
+            {k:v for k, v in g.items() if k != 'params'}   # hyper-params only
+            for g in s['param_groups']
+        ]
+
+    def _fast_reset(self, new_lr=None):
+        tgt = self.transformer or self.unet
+
+        for n, p in get_peft_model_state_dict(
+            tgt
+        ).items():
+            if n in self._lora_init:
+                p.data.copy_(self._lora_init[n])
+
+        opt = self.optimizer.optimizer
+        opt.state.clear()
+        for g, cfg in zip(opt.param_groups, self._optim_groups):
+            g.update(cfg)
+            g['params'] = self._get_trainable_parameters()
+        if new_lr is not None:
+            for g in opt.param_groups:
+                g['lr'] = new_lr
+        self.accelerator.wait_for_everyone()
+
+    def cleanup_for_next_lora(self, new_lr=None):
         """
         Reset *everything except the backbone(s)* so that another call
         to `run()` can build a brand-new LoRA on top of the same model.
         """
-        # 1) Remove any *residual* LoRA / LyCORIS networks
-        if getattr(self, "transformer", None) is not None:
-            for name in getattr(self.transformer, "peft_config", {}).keys():
-                self.transformer.delete_adapter(name)
-        if getattr(self.accelerator, "_lycoris_wrapped_network", None):
-            self.accelerator._lycoris_wrapped_network.restore()   # re-attach weights
-            self.accelerator._lycoris_wrapped_network.remove()    # then drop
-            self.accelerator._lycoris_wrapped_network = None
+        # 1) Reset any *residual* LoRA / LyCORIS networks
+        self._fast_reset(new_lr=new_lr)
 
         # 2) Nuke every runtime object that will be re-created in parse_arguments() / resume_and_prepare()
         for attr in (
-            "optimizer", "lr_scheduler", "ema_model", "validation",
+            "lr_scheduler", "ema_model", "validation",
             "webhook_handler", "guidance_values_table", "train_dataloaders",
         ):
             setattr(self, attr, None)
@@ -1899,9 +1989,14 @@ class Trainer:
             "first_epoch": 1,
         }
         # also wipe the global tracker
+
+        if self.lr_scheduler is not None:
+            self.lr_scheduler.last_epoch = -1            # PyTorch idiom 
+        self.state.update(global_step=0, first_epoch=1, current_epoch=1)
         StateTracker.set_global_step(0)
         StateTracker.set_global_resume_step(-1)
         StateTracker.set_epoch(1)
+        StateTracker.reset_image_files()
 
         # 3) Clear caches
         torch.cuda.empty_cache()
@@ -1915,7 +2010,7 @@ class Trainer:
 
         self._misc_init()
 
-        logger.info("Trainer state cleared; backbone left in memory for the next LoRA.")
+        logger.info("Trainer state cleared; backbone, optim, and LoRA left in memory for the next LoRA.")
 
     def abort(self):
         logger.info("Aborting training run.")
@@ -3061,11 +3156,11 @@ class Trainer:
                         text_encoder_2_lora_layers=text_encoder_2_lora_layers,
                     )
 
-                if self.keep_backbone_loaded:
-                    for m in filter(None, [self.transformer, self.unet]):
-                        m.delete_adapters(list(m.peft_config.keys()))
-                    torch.cuda.empty_cache()
-                else:
+                # if self.keep_backbone_loaded:
+                #     for m in filter(None, [self.transformer, self.unet]):
+                #         m.delete_adapters(list(m.peft_config.keys()))
+                #     torch.cuda.empty_cache()
+                if not self.keep_backbone_loaded:
                     del self.unet
                     del self.transformer
                     torch.cuda.empty_cache()
@@ -3351,4 +3446,5 @@ class Trainer:
 
             if self.config.push_to_hub and self.accelerator.is_main_process:
                 self.hub_manager.upload_model(validation_images, self.webhook_handler)
+
         self.accelerator.end_training()

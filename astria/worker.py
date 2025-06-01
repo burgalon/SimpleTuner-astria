@@ -1,8 +1,10 @@
 import json
+import re
 import os
 import shutil
 import time
 import sys
+import time
 
 import torch
 
@@ -21,6 +23,37 @@ GPU_MEMORY_GB = torch.cuda.get_device_properties(0).total_memory / 1024**3
 
 
 
+def extract_learning_rate(job_json: str) -> float|None:
+    """
+    Pull the `learning_rate` value from a job-spec JSON string.
+
+    Parameters
+    ----------
+    job_json : str
+        The raw JSON text shown in your example.
+
+    Returns
+    -------
+    float | None
+        The numeric learning-rate if it was present, otherwise ``None``.
+    """
+    # 1) Parse the JSON text into a Python dict
+    job: dict = json.loads(job_json)
+
+    # 2) Grab the free-form "args" field, if any
+    args: str | None = job.get("args")
+    if not args:
+        return None
+
+    # 3) Look for  learning_rate=...  (supports scientific notation, e.g. 5e-4)
+    m = re.search(r"\blearning_rate\s*=\s*([0-9]*\.?[0-9]+(?:[eE][-+]?\d+)?)", args)
+    if not m:
+        return None
+
+    # 4) Convert to float and return
+    return float(m.group(1))
+
+
 class Worker:
     def __init__(self):
         # load config/warmup.json
@@ -29,6 +62,8 @@ class Worker:
         self.trainer = Trainer(keep_backbone_loaded=True)
         os.environ['SIMPLETUNER_CONFIG_BACKEND'] = 'cmd'
         os.environ['SIMPLETUNER_ENVIRONMENT'] = ''
+        os.environ['TORCHINDUCTOR_CACHE_DIR'] = '/data/cache/torchinductor_cache'
+        os.environ['TORCH_COMPILE_DEBUG'] = "1"
 
     def setup_trainer(self, job: str):
         tune =  json.loads(job, object_hook=lambda d: JsonObj(**d))
@@ -52,7 +87,8 @@ class Worker:
         # 16.6s/it 3k steps 13:40 hours memory
 
         # if tune.user_id == 2:
-        #     tune.report_to = "wandb"
+        if os.environ.get('TRAIN_WANDB'):
+            tune.report_to = "wandb"
 
         parse_env_args(tune)
         if os.environ.get('TR_DISABLE_FACE_CROP'):
@@ -79,7 +115,7 @@ class Worker:
 
 
         # TODO
-        # resolution = 512
+        resolution = 512
         # data_backend_config = multidatabackend_config = f"{output_dir}/multidatabackend.json"
         steps = min(5000, int(tune.steps) if tune.steps else 2000)
 
@@ -91,11 +127,16 @@ class Worker:
         else:
             train_batch = max(1, (min(min(4, len(tune.orig_images)), 4))) // NUM_GPUS
 
+        # Launching
+        # export CUDA_VISIBLE_DEVICES="0"
+        # export NUM_GPUS="1"
+        # TR_STEPS=10 MOCK_SERVER=1 accelerate launch --gpu_ids="$CUDA_VISIBLE_DEVICES" --num_machines=1 --num_processes="$NUM_GPUS" --mixed_precision=no --dynamo_backend="inductor" astria/worker.py
         args = [
             # 'accelerate',
             # 'launch',
             # '--gpu_ids', CUDA_VISIBLE_DEVICES,
-            # # '--mixed_precision=no',
+            # '--mixed_precision=no',
+            # '--multi_gpu',
             # # *([f'--multi_gpu'] if NUM_GPUS > 1 else []),
             # # f'--num_processes={NUM_GPUS}',
             # '--num_machines=1',
@@ -106,7 +147,7 @@ class Worker:
             # # 1 GPU
             # # 1.04s/it dynamo_backend=no
             # # 1.80it/s dynamo_backend=inductor
-            # '--dynamo_backend', 'inductor' if NUM_GPUS > 1 else 'none',
+            # '--dynamo_backend', 'inductor',
             # 'train.py',
             # '--base_model_default_dtype=fp32',
             '--model_type=lora',
@@ -116,8 +157,6 @@ class Worker:
                   '--pretrained_transformer_model_name_or_path', download_dev2pro(),
                   '--pretrained_transformer_subfolder', 'none',
               ] if tune.dev2pro else []),
-            '--enable_xformers_memory_efficient_attention', # ?
-            *(['--gradient_checkpointing'] if GPU_MEMORY_GB <= 50 or tune.gradient_checkpointing else []), # avoid OOM but slows training
             '--peft_model_precision=bf16', # or bf16; when using adamw_bf16 this should be bf16
             '--set_grads_to_none', # ?
             '--gradient_accumulation_steps', str(tune.gradient_accumulation_steps or 1),
@@ -177,16 +216,16 @@ class Worker:
             '--resolution_type=pixel_area',
             '--checkpointing_steps', str(tune.checkpointing_steps or 1000),
             '--checkpoints_total_limit=10',
-            '--validation_steps', str(tune.validation_steps) if tune.validation_steps else '5000',
+            '--validation_steps=100', # str(tune.validation_steps) if tune.validation_steps else '5000',
             f'--tracker_run_name={tune.id}-{tune.branch}-{os.environ.get("TRACKER_NAME", timestamp)} {tune.title} {tune.args}',
             *(['--evaluation_type=face'] if tune.report_to and tune.face_crop else []),
             '--tracker_project_name=flux-lora',
             '--validation_guidance=3.5',
             '--validation_guidance_rescale=0.0',
             '--disable_benchmark',
-            *(['--flux_schedule_auto_shift'] if tune.flux_schedule_auto_shift else []),
-            '--flux_schedule_shift', str(tune.flux_schedule_shift if tune.flux_schedule_shift is not None else 0),
-            '--skip_file_discovery=aspect,metadata',
+            '--flux_schedule_auto_shift',
+            '--flux_schedule_shift=0',
+            # '--skip_file_discovery=aspect,metadata',
             *(['--prepend_instance_prompt'] if caption_strategy == "textfile" else []),
                             ]
         old_config = self.trainer.config
@@ -205,11 +244,12 @@ class Worker:
 # PYTHONPATH=$PWD accelerate launch --gpu_ids 0 --mixed_precision=no --num_processes=1 --num_machines=1 --dynamo_backend=no  astria/worker.py
 if __name__ == "__main__":
     print('hello')
-    job_str = '{"id":2002368,"name":"man","created_at":"2025-01-05T08:58:31.696Z","updated_at":"2025-05-25T14:26:26.521Z","user_id":2,"trained_at":"2025-01-05T09:09:14.690Z","started_training_at":"2025-05-25T14:26:26.520Z","steps":300,"title":"Alon portrait","branch":"flux1","callback":null,"process_ip":"akash-wqtj5-2,3","trials":31,"num_prompts":0,"is_api":false,"base_tune_id":1504944,"token":"ohwx","args":"preset=flux-lora-portrait learning_rate=5e-4 lora_rank=16 lora_alpha=16 train_batch=4 preprocessing=2 lr_scheduler=polynomial flux_lora_target=portrait segmentation=1 only_face=true","cost":null,"expires_at":"2025-06-04T09:09:14.690Z","emailed_notice":false,"public_at":null,"face_crop":true,"checkpoint_deleted":false,"checkpoint_deleted_at":null,"failed_at":null,"model_type":"lora","sha256":null,"model_url":null,"description_url":null,"cost_mc":216000,"training_face_correct":false,"eta":"2025-01-05T09:08:36.253Z","base_pack_id":260,"characteristics":{"age":"30 yo","ethnicity":"hispanic","eye_color":"brown eyes","facial_hair":"","glasses":"","hair_color":"black hair","hair_length":"short hair","hair_style":"bald","headcover":"","is_bald":"bald","name":"man"},"prompts_callback":null,"auto_extend":false,"orig_images":["https://sdbooth2-production.s3.amazonaws.com/ygesi07jlrw2nk31pq3tfu5vztgf","https://sdbooth2-production.s3.amazonaws.com/viatl4d53mu1ohsyymfu3hb6y74z","https://sdbooth2-production.s3.amazonaws.com/2mkj9khd3n2gm6usn0ppcnxxnyw6","https://sdbooth2-production.s3.amazonaws.com/2o99s9pxtny5ohrx0s1zp2wakha3","https://sdbooth2-production.s3.amazonaws.com/kjn9jgzchm4sl3uj1mo2zh2zv72f","https://sdbooth2-production.s3.amazonaws.com/3xfxajtel9jwq1al1fe8mey5rh17","https://sdbooth2-production.s3.amazonaws.com/4bp5gnc52qzbo2pj2nzwondpekui"],"file_names":[{"filename":"2xuxve6e6bh50w6sh97avcurxkeb.jpeg","url":"https://sdbooth2-production.s3.amazonaws.com/ygesi07jlrw2nk31pq3tfu5vztgf"},{"filename":"AA991103-E7DE-47C1-ABAB-82E794C150BF.jpeg","url":"https://sdbooth2-production.s3.amazonaws.com/viatl4d53mu1ohsyymfu3hb6y74z"},{"filename":"66gr44co9wa17nis5l5dnt3mg7gl.jpeg","url":"https://sdbooth2-production.s3.amazonaws.com/2mkj9khd3n2gm6usn0ppcnxxnyw6"},{"filename":"AA991103-E7DE-47C1-ABAB-82E794C150BF.jpeg","url":"https://sdbooth2-production.s3.amazonaws.com/2o99s9pxtny5ohrx0s1zp2wakha3"},{"filename":"IMG_8003.jpeg","url":"https://sdbooth2-production.s3.amazonaws.com/kjn9jgzchm4sl3uj1mo2zh2zv72f"},{"filename":"IMG_7988.jpeg","url":"https://sdbooth2-production.s3.amazonaws.com/3xfxajtel9jwq1al1fe8mey5rh17"},{"filename":"IMG_7659.jpeg","url":"https://sdbooth2-production.s3.amazonaws.com/4bp5gnc52qzbo2pj2nzwondpekui"}],"resolution":null,"user":{"create_ckpt":false,"backend_version":null},"prompts":[]}'
+    job_str = '{"id":2002368,"name":"man","created_at":"2025-01-05T08:58:31.696Z","updated_at":"2025-05-25T14:26:26.521Z","user_id":2,"trained_at":"2025-01-05T09:09:14.690Z","started_training_at":"2025-05-25T14:26:26.520Z","steps":405,"title":"Alon portrait","branch":"flux1","callback":null,"process_ip":"akash-wqtj5-2,3","trials":31,"num_prompts":0,"is_api":false,"base_tune_id":1504944,"token":"ohwx","args":"preset=flux-lora-portrait learning_rate=5e-4 lora_rank=16 lora_alpha=16 train_batch=4 preprocessing=2 lr_scheduler=polynomial flux_lora_target=portrait segmentation=1 only_face=true","cost":null,"expires_at":"2025-06-04T09:09:14.690Z","emailed_notice":false,"public_at":null,"face_crop":true,"checkpoint_deleted":false,"checkpoint_deleted_at":null,"failed_at":null,"model_type":"lora","sha256":null,"model_url":null,"description_url":null,"cost_mc":216000,"training_face_correct":false,"eta":"2025-01-05T09:08:36.253Z","base_pack_id":260,"characteristics":{"age":"30 yo","ethnicity":"hispanic","eye_color":"brown eyes","facial_hair":"","glasses":"","hair_color":"black hair","hair_length":"short hair","hair_style":"bald","headcover":"","is_bald":"bald","name":"man"},"prompts_callback":null,"auto_extend":false,"orig_images":["https://sdbooth2-production.s3.amazonaws.com/ygesi07jlrw2nk31pq3tfu5vztgf","https://sdbooth2-production.s3.amazonaws.com/viatl4d53mu1ohsyymfu3hb6y74z","https://sdbooth2-production.s3.amazonaws.com/2mkj9khd3n2gm6usn0ppcnxxnyw6","https://sdbooth2-production.s3.amazonaws.com/2o99s9pxtny5ohrx0s1zp2wakha3","https://sdbooth2-production.s3.amazonaws.com/kjn9jgzchm4sl3uj1mo2zh2zv72f","https://sdbooth2-production.s3.amazonaws.com/3xfxajtel9jwq1al1fe8mey5rh17","https://sdbooth2-production.s3.amazonaws.com/4bp5gnc52qzbo2pj2nzwondpekui"],"file_names":[{"filename":"2xuxve6e6bh50w6sh97avcurxkeb.jpeg","url":"https://sdbooth2-production.s3.amazonaws.com/ygesi07jlrw2nk31pq3tfu5vztgf"},{"filename":"AA991103-E7DE-47C1-ABAB-82E794C150BF.jpeg","url":"https://sdbooth2-production.s3.amazonaws.com/viatl4d53mu1ohsyymfu3hb6y74z"},{"filename":"66gr44co9wa17nis5l5dnt3mg7gl.jpeg","url":"https://sdbooth2-production.s3.amazonaws.com/2mkj9khd3n2gm6usn0ppcnxxnyw6"},{"filename":"AA991103-E7DE-47C1-ABAB-82E794C150BF.jpeg","url":"https://sdbooth2-production.s3.amazonaws.com/2o99s9pxtny5ohrx0s1zp2wakha3"},{"filename":"IMG_8003.jpeg","url":"https://sdbooth2-production.s3.amazonaws.com/kjn9jgzchm4sl3uj1mo2zh2zv72f"},{"filename":"IMG_7988.jpeg","url":"https://sdbooth2-production.s3.amazonaws.com/3xfxajtel9jwq1al1fe8mey5rh17"},{"filename":"IMG_7659.jpeg","url":"https://sdbooth2-production.s3.amazonaws.com/4bp5gnc52qzbo2pj2nzwondpekui"}],"resolution":null,"user":{"create_ckpt":false,"backend_version":null},"prompts":[]}'
     worker = Worker()
+    start = time.time()
     worker.setup_trainer(job_str)
     worker.run()
-    worker.trainer.cleanup_for_next_lora()
+    print('Ran training loop 1 in ', time.time() - start)
 
     job_str = json.dumps({
         "id": 1858416,
@@ -229,7 +269,7 @@ if __name__ == "__main__":
         "is_api": False,
         "base_tune_id": 1504944,
         "token": "ohwx",
-        "args": "preset=flux-lora-fast learning_rate=5e-4 lora_rank=16 lora_alpha=16 train_batch=4 preprocessing=2",
+        "args": "preset=flux-lora-portrait learning_rate=5e-4 lora_rank=16 lora_alpha=16 train_batch=4 preprocessing=2 lr_scheduler=polynomial flux_lora_target=portrait segmentation=1 only_face=true",
         "cost": None,
         "expires_at": "2025-01-05T09:36:00.000Z",
         "emailed_notice": False,
@@ -334,5 +374,8 @@ if __name__ == "__main__":
         },
         "prompts": []
     })
+    start = time.time()
+    worker.trainer.cleanup_for_next_lora(new_lr=extract_learning_rate(job_str))
     worker.setup_trainer(job_str)
     worker.run()
+    print('Ran training loop 2 in ', time.time() - start)

@@ -2043,6 +2043,9 @@ def parse_cmdline_args(input_args=None):
         try:
             args = parser.parse_args(input_args)
         except:
+            # import debugpy
+            # debugpy.listen(('0.0.0.0', 11566))
+            # debugpy.wait_for_client()
             logger.error(f"Could not parse input: {input_args}")
             import traceback
 

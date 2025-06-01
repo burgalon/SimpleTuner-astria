@@ -159,6 +159,12 @@ class StateTracker:
         return cls.parquet_databases.get(data_backend_id, (None, None, None, None))
 
     @classmethod
+    def reset_image_files(cls):
+        cls.all_image_files = {}
+        cls.all_vae_cache_files = {}
+        cls.all_text_cache_files = {}
+
+    @classmethod
     def set_image_files(cls, raw_file_list: list, data_backend_id: str):
         if cls.all_image_files[data_backend_id] is not None:
             cls.all_image_files[data_backend_id].clear()
