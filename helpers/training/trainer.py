@@ -165,6 +165,7 @@ class Trainer:
         disable_accelerator: bool = False,
         job_id: str = None,
         keep_backbone_loaded: bool = False,
+        torch_compile_transformer: bool = False,
     ):
         self.accelerator = None
         self.job_id = job_id
@@ -186,6 +187,7 @@ class Trainer:
         self.ema_model = None
         self.validation = None
         self.keep_backbone_loaded = keep_backbone_loaded
+        self.torch_compile_transformer = torch_compile_transformer
         self.text_encoders = []
 
     def _config_to_obj(self, config):
@@ -647,7 +649,11 @@ class Trainer:
                 self.config, self.config.weight_dtype
             )
 
-        if self.transformer is not None and self.keep_backbone_loaded:
+        if (
+            self.transformer is not None
+            and self.keep_backbone_loaded
+            and self.torch_compile_transformer
+        ):
             self.transformer = torch.compile(
                 self.transformer,
                 backend="inductor",
@@ -2150,6 +2156,9 @@ class Trainer:
                     transformer_config = self.transformer.module.config
                 elif hasattr(self.transformer, "config"):
                     transformer_config = self.transformer.config
+                elif hasattr(self.accelerator.unwrap_model(self.transformer), "config"):
+                    transformer_config = self.accelerator.unwrap_model(self.transformer).config
+
                 if transformer_config is not None and getattr(
                     transformer_config, "guidance_embeds", False
                 ):

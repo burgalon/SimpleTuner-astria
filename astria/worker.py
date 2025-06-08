@@ -64,7 +64,10 @@ class Worker:
         # load config/warmup.json
         os.environ['SIMPLETUNER_CONFIG_BACKEND'] = 'json'
         os.environ['SIMPLETUNER_ENVIRONMENT'] = 'warmup'
-        self.trainer = Trainer(keep_backbone_loaded=True)
+        self.trainer = Trainer(
+            keep_backbone_loaded=True,
+            torch_compile_transformer=os.environ.get('TORCH_COMPILE_TRANSFORMER', False),
+        )
         os.environ['SIMPLETUNER_CONFIG_BACKEND'] = 'cmd'
         os.environ['SIMPLETUNER_ENVIRONMENT'] = ''
         os.environ['TORCHINDUCTOR_CACHE_DIR'] = '/data/cache/torchinductor_cache'
@@ -119,16 +122,9 @@ class Worker:
                 print("Using preprocessing v1")
                 data_backend_config, resolution = create_data_config_v1(tune, output_dir)
 
-        payload = [data_backend_config if is_rank0() else None,
-                resolution          if is_rank0() else None]
-
-        dist.broadcast_object_list(payload, src=0)   # one line does the trick
-        data_backend_config, resolution = payload    # unpack locally
-        dist.barrier()
-
         # TODO
         resolution = 512
-        # data_backend_config = multidatabackend_config = f"{output_dir}/multidatabackend.json"
+        data_backend_config = f"{output_dir}/multidatabackend.json"
         steps = min(5000, int(tune.steps) if tune.steps else 2000)
 
 
