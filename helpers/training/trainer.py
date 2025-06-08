@@ -159,6 +159,7 @@ diffusers.utils.logging.set_verbosity_warning()
 
 class Trainer:
     has_had_lora_inited = False
+
     def __init__(
         self,
         config: dict = None,
@@ -653,6 +654,7 @@ class Trainer:
             self.transformer is not None
             and self.keep_backbone_loaded
             and self.torch_compile_transformer
+            and not self.has_had_lora_inited
         ):
             self.transformer = torch.compile(
                 self.transformer,
@@ -1082,30 +1084,23 @@ class Trainer:
                 ).gradient_checkpointing_enable()
 
     def _get_trainable_parameters(self):
+        tgt = self.transformer or self.unet
+        tgt = self.accelerator.unwrap_model(tgt)
+
         # Return just a list of the currently trainable parameters.
         if self.config.model_type == "lora":
             if self.config.lora_type == "lycoris":
-                return self.lycoris_wrapped_network.parameters()
-            elif self.unet is not None:
-                return [
-                    param for _, param in self.unet.named_parameters()
-                    if param.requires_grad
-                ]
+                self._trainable_parameters = self.lycoris_wrapped_network.parameters()
             elif self.transformer is not None:
-                return [
-                    param for _, param in self.transformer.named_parameters()
+                self._trainable_parameters = [
+                    param for _, param in tgt.named_parameters()
                     if param.requires_grad
                 ]
-        if self.config.controlnet:
-            return [
+        elif self.config.controlnet:
+            self._trainable_parameters = [
                 param for param in self.controlnet.parameters() if param.requires_grad
             ]
-        if self.unet is not None:
-            return [param for param in self.unet.parameters() if param.requires_grad]
-        if self.transformer is not None:
-            return [
-                param for param in self.transformer.parameters() if param.requires_grad
-            ]
+        return self._trainable_parameters
 
     def _recalculate_training_steps(self):
         # Scheduler and math around the number of training steps.
@@ -1178,12 +1173,12 @@ class Trainer:
         logger.info(f"Learning rate: {self.config.learning_rate}")
 
         # Already accelerator wrapped
-        if (
-            hasattr(self, 'optimizer') and
-            self.optimizer is not None and
-            hasattr(self.optimizer, 'optimizer')
-        ):
-            return self.optimizer.optimizer
+        # if (
+        #     hasattr(self, 'optimizer') and
+        #     self.optimizer is not None and
+        #     hasattr(self.optimizer, 'optimizer')
+        # ):
+        #     return self.optimizer.optimizer
 
         extra_optimizer_args = {"lr": self.config.learning_rate}
         # Initialize the optimizer
@@ -1198,19 +1193,22 @@ class Trainer:
         extra_optimizer_args.update(optimizer_args_from_config)
 
         # The optimizer should have already been reset, just return.
-        if self.has_had_lora_inited and self.keep_backbone_loaded:
-            return
+        # if self.has_had_lora_inited and self.keep_backbone_loaded:
+        #     return
 
-        self.params_to_optimize = determine_params_to_optimize(
-            args=self.config,
-            controlnet=self.controlnet,
-            unet=self.unet,
-            transformer=self.transformer,
-            text_encoder_1=self.text_encoder_1,
-            text_encoder_2=self.text_encoder_2,
-            model_type_label=self.config.model_type_label,
-            lycoris_wrapped_network=self.lycoris_wrapped_network,
-        )
+        if not (self.keep_backbone_loaded and self.has_had_lora_inited):
+            self.params_to_optimize = determine_params_to_optimize(
+                args=self.config,
+                controlnet=self.controlnet,
+                unet=self.unet,
+                transformer=self.transformer,
+                text_encoder_1=self.text_encoder_1,
+                text_encoder_2=self.text_encoder_2,
+                model_type_label=self.config.model_type_label,
+                lycoris_wrapped_network=self.lycoris_wrapped_network,
+            )
+        else:
+            self.params_to_optimize = self._trainable_parameters
 
         if self.config.use_deepspeed_optimizer:
             logger.info(
@@ -1276,7 +1274,7 @@ class Trainer:
             )
             lr_scheduler = get_lr_scheduler(
                 self.config,
-                self.optimizer if not(self.has_had_lora_inited and self.keep_backbone_loaded) else self.optimizer.optimizer,
+                self.optimizer,
                 self.accelerator,
                 logger,
                 use_deepspeed_scheduler=False,
@@ -1386,6 +1384,8 @@ class Trainer:
         primary_model = self.unet if self.unet is not None else self.transformer
         if self.config.controlnet:
             primary_model = self.controlnet
+
+        # if not(self.has_had_lora_inited and self.keep_backbone_loaded):
         results = self.accelerator.prepare(
             primary_model, lr_scheduler, self.optimizer, self.train_dataloaders[0]
         )
@@ -1434,13 +1434,17 @@ class Trainer:
                         message_type="error",
                     )
                     logger.error(f"Failed to pin EMA model to CPU: {e}")
+        # else:
+        #     self.optimizer = self.accelerator.prepare_optimizer(self.optimizer)
+        #     self.lr_scheduler = self.accelerator.prepare_scheduler(lr_scheduler)
+        #     self.train_dataloaders = self.accelerator.prepare_data_loader(self.train_dataloaders[0])
 
         idx_count = 0
         for _, backend in StateTracker.get_data_backends().items():
             if idx_count == 0 or "train_dataloader" not in backend:
                 continue
             self.train_dataloaders.append(
-                self.accelerator.prepare(backend["train_dataloader"])
+                self.accelerator.prepare_data_loader(backend["train_dataloader"])
             )
         idx_count = 0
 
@@ -1741,7 +1745,7 @@ class Trainer:
                 self.unet.to(target_device)
             else:
                 self.unet.to(target_device, dtype=self.config.weight_dtype)
-        if self.transformer is not None:
+        if self.transformer is not None and not (self.keep_backbone_loaded and self.has_had_lora_inited):
             if self.config.is_quantized:
                 self.transformer.to(target_device)
             else:
@@ -1966,19 +1970,8 @@ class Trainer:
             ).items()
             if "lora_" in n or "lokr_" in n               # pick your adapter prefix
         }
-        # Optimiser: deep-copy *tensors* in its state dict
-        s = trainer.optimizer.state_dict()
-        trainer._optim_init = {                       # tensor-aware copy
-            k: {kk: vv.detach().clone() if torch.is_tensor(vv) else vv
-                for kk, vv in v.items()}
-            for k, v in s['state'].items()
-        }
-        trainer._optim_groups = [
-            {k:v for k, v in g.items() if k != 'params'}   # hyper-params only
-            for g in s['param_groups']
-        ]
 
-    def _fast_reset(self, new_lr=None):
+    def _fast_reset(self):
         # if self.accelerator.is_main_process:
         tgt = self.accelerator.unwrap_model(self.transformer or self.unet)
 
@@ -1988,31 +1981,24 @@ class Trainer:
             if n in self._lora_init:
                 p.data.copy_(self._lora_init[n])
 
-        opt = self.optimizer.optimizer
-        opt.state.clear()
-        for g, cfg in zip(opt.param_groups, self._optim_groups):
-            g.update(cfg)
-            g['params'] = self._get_trainable_parameters()
-        if new_lr is not None:
-            for g in opt.param_groups:
-                g['lr'] = new_lr
-
         self.accelerator.wait_for_everyone()
 
-    def cleanup_for_next_lora(self, new_lr=None):
+    def cleanup_for_next_lora(self):
         """
         Reset *everything except the backbone(s)* so that another call
         to `run()` can build a brand-new LoRA on top of the same model.
         """
         # 1) Reset any *residual* LoRA / LyCORIS networks
-        self._fast_reset(new_lr=new_lr)
+        self._fast_reset()
 
         # 2) Nuke every runtime object that will be re-created in parse_arguments() / resume_and_prepare()
         for attr in (
-            "lr_scheduler", "ema_model", "validation",
+            "lr_scheduler", "ema_model", "validation", "optimizer",
             "webhook_handler", "guidance_values_table", "train_dataloaders",
         ):
             setattr(self, attr, None)
+
+        self.transformer = self.accelerator.unwrap_model(self.transformer)
 
         # plus the global state
         self.state = {
@@ -2036,10 +2022,10 @@ class Trainer:
         reclaim_memory()
 
         # 4) Bring the backbone(s) back to training mode, just in case
-        if getattr(self, "transformer", None):
-            self.transformer.train()
-        if getattr(self, "unet", None):
-            self.unet.train()
+        # if getattr(self, "transformer", None):
+        #     self.transformer.train()
+        # if getattr(self, "unet", None):
+        #     self.unet.train()
 
         self._misc_init()
 
@@ -2356,12 +2342,17 @@ class Trainer:
             if self.config.controlnet:
                 self.controlnet.train()
                 training_models = [self.controlnet]
-            else:
+            elif not (self.keep_backbone_loaded and self.has_had_lora_inited):
                 if self.unet is not None:
                     self.unet.train()
                     training_models = [self.unet]
                 if self.transformer is not None:
                     self.transformer.train()
+                    training_models = [self.transformer]
+            elif self.keep_backbone_loaded and self.has_had_lora_inited:
+                if self.unet is not None:
+                    training_models = [self.unet]
+                if self.transformer is not None:
                     training_models = [self.transformer]
             if (
                 "lora" in self.config.model_type
