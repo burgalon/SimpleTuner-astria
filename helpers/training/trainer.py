@@ -167,12 +167,11 @@ class Trainer:
         job_id: str = None,
         keep_backbone_loaded: bool = False,
         torch_compile_transformer: bool = False,
+        report_to: str|None = None,
     ):
         self.accelerator = None
+        self.report_to = report_to
         self.job_id = job_id
-        StateTracker.set_job_id(job_id)
-        self.parse_arguments(args=config, disable_accelerator=disable_accelerator)
-        self._misc_init()
         self.lycoris_wrapped_network = None
         self.lycoris_config = None
         self.lr_scheduler = None
@@ -190,6 +189,9 @@ class Trainer:
         self.keep_backbone_loaded = keep_backbone_loaded
         self.torch_compile_transformer = torch_compile_transformer
         self.text_encoders = []
+        StateTracker.set_job_id(job_id)
+        self.parse_arguments(args=config, disable_accelerator=disable_accelerator)
+        self._misc_init()
 
     def _config_to_obj(self, config):
         if not config:
@@ -201,6 +203,8 @@ class Trainer:
         report_to = (
             None if self.config.report_to.lower() == "none" else self.config.report_to
         )
+        if report_to is None:
+            report_to = self.report_to
         if not disable_accelerator and self.accelerator is None:
             self.accelerator = Accelerator(
                 gradient_accumulation_steps=self.config.gradient_accumulation_steps,
@@ -2320,8 +2324,7 @@ class Trainer:
             range(0, self.config.max_train_steps),
             disable=not show_progress_bar,
             initial=self.state["global_step"],
-            desc=f"Epoch {self.state['first_epoch']}/{self.config.num_train_epochs} Steps",
-            ncols=125,
+            ncols=80,
         )
         self.accelerator.wait_for_everyone()
 
@@ -2416,8 +2419,8 @@ class Trainer:
                     self.extra_lr_scheduler_kwargs["step"] = self.state["global_step"]
 
                 if self.accelerator.is_main_process:
-                    progress_bar.set_description(
-                        f"Epoch {self.state['current_epoch']}/{self.config.num_train_epochs}, Steps"
+                    progress_bar.set_postfix_str(
+                        f"e={self.state['current_epoch']}/{self.config.num_train_epochs}"
                     )
 
                 # If we receive a False from the enumerator, we know we reached the next epoch.
@@ -3042,7 +3045,7 @@ class Trainer:
                 if "mean_cfg" in wandb_logs:
                     logs["mean_cfg"] = wandb_logs["mean_cfg"]
 
-                progress_bar.set_postfix(**logs)
+                # progress_bar.set_postfix(**logs)
                 self.mark_optimizer_eval()
                 if self.validation is not None:
                     self.validation.run_validations(

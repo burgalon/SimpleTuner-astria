@@ -68,6 +68,7 @@ class Worker:
         os.environ['SIMPLETUNER_ENVIRONMENT'] = 'warmup'
         self.trainer = Trainer(
             keep_backbone_loaded=True,
+            report_to='wandb' if os.environ.get('TRAIN_WANDB', False) else None,
             torch_compile_transformer=os.environ.get('TORCH_COMPILE_TRANSFORMER', False),
         )
         os.environ['SIMPLETUNER_CONFIG_BACKEND'] = 'cmd'
