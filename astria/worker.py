@@ -131,13 +131,15 @@ class Worker:
         data_backend_config = f"{output_dir}/multidatabackend.json"
         steps = min(5000, int(tune.steps) if tune.steps else 2000)
 
-
         if tune.train_batch:
             train_batch = int(tune.train_batch) // NUM_GPUS
             if train_batch > len(tune.orig_images):
                 train_batch = len(tune.orig_images)
         else:
             train_batch = max(1, (min(min(4, len(tune.orig_images)), 4))) // NUM_GPUS
+
+        print('Training with per GPU batch size of:', train_batch)
+        print('Effective batch size:', train_batch * NUM_GPUS)
 
         # Launching
         # export CUDA_VISIBLE_DEVICES="0,1"

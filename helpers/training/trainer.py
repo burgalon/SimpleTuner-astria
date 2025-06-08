@@ -3480,5 +3480,6 @@ class Trainer:
         if not self.keep_backbone_loaded:
             self.accelerator.end_training()
         else:
-            for tracker in self.accelerator.trackers:
-                tracker.finish()
+            if self.accelerator.is_main_process:
+                for tracker in self.accelerator.trackers:
+                    tracker.finish()
