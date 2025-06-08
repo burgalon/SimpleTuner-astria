@@ -254,17 +254,8 @@ class Worker:
     def run(self):
         self.trainer.run()
 
-
-# PYTHONPATH=$PWD accelerate launch --gpu_ids 0 --mixed_precision=no --num_processes=1 --num_machines=1 --dynamo_backend=no  astria/worker.py
-if __name__ == "__main__":
-    job_str = '{"id":2002368,"name":"man","created_at":"2025-01-05T08:58:31.696Z","updated_at":"2025-05-25T14:26:26.521Z","user_id":2,"trained_at":"2025-01-05T09:09:14.690Z","started_training_at":"2025-05-25T14:26:26.520Z","steps":405,"title":"Alon portrait","branch":"flux1","callback":null,"process_ip":"akash-wqtj5-2,3","trials":31,"num_prompts":0,"is_api":false,"base_tune_id":1504944,"token":"ohwx","args":"preset=flux-lora-portrait learning_rate=5e-4 lora_rank=16 lora_alpha=16 train_batch=4 preprocessing=2 lr_scheduler=polynomial flux_lora_target=portrait segmentation=1 only_face=true","cost":null,"expires_at":"2025-06-04T09:09:14.690Z","emailed_notice":false,"public_at":null,"face_crop":true,"checkpoint_deleted":false,"checkpoint_deleted_at":null,"failed_at":null,"model_type":"lora","sha256":null,"model_url":null,"description_url":null,"cost_mc":216000,"training_face_correct":false,"eta":"2025-01-05T09:08:36.253Z","base_pack_id":260,"characteristics":{"age":"30 yo","ethnicity":"hispanic","eye_color":"brown eyes","facial_hair":"","glasses":"","hair_color":"black hair","hair_length":"short hair","hair_style":"bald","headcover":"","is_bald":"bald","name":"man"},"prompts_callback":null,"auto_extend":false,"orig_images":["https://sdbooth2-production.s3.amazonaws.com/ygesi07jlrw2nk31pq3tfu5vztgf","https://sdbooth2-production.s3.amazonaws.com/viatl4d53mu1ohsyymfu3hb6y74z","https://sdbooth2-production.s3.amazonaws.com/2mkj9khd3n2gm6usn0ppcnxxnyw6","https://sdbooth2-production.s3.amazonaws.com/2o99s9pxtny5ohrx0s1zp2wakha3","https://sdbooth2-production.s3.amazonaws.com/kjn9jgzchm4sl3uj1mo2zh2zv72f","https://sdbooth2-production.s3.amazonaws.com/3xfxajtel9jwq1al1fe8mey5rh17","https://sdbooth2-production.s3.amazonaws.com/4bp5gnc52qzbo2pj2nzwondpekui"],"file_names":[{"filename":"2xuxve6e6bh50w6sh97avcurxkeb.jpeg","url":"https://sdbooth2-production.s3.amazonaws.com/ygesi07jlrw2nk31pq3tfu5vztgf"},{"filename":"AA991103-E7DE-47C1-ABAB-82E794C150BF.jpeg","url":"https://sdbooth2-production.s3.amazonaws.com/viatl4d53mu1ohsyymfu3hb6y74z"},{"filename":"66gr44co9wa17nis5l5dnt3mg7gl.jpeg","url":"https://sdbooth2-production.s3.amazonaws.com/2mkj9khd3n2gm6usn0ppcnxxnyw6"},{"filename":"AA991103-E7DE-47C1-ABAB-82E794C150BF.jpeg","url":"https://sdbooth2-production.s3.amazonaws.com/2o99s9pxtny5ohrx0s1zp2wakha3"},{"filename":"IMG_8003.jpeg","url":"https://sdbooth2-production.s3.amazonaws.com/kjn9jgzchm4sl3uj1mo2zh2zv72f"},{"filename":"IMG_7988.jpeg","url":"https://sdbooth2-production.s3.amazonaws.com/3xfxajtel9jwq1al1fe8mey5rh17"},{"filename":"IMG_7659.jpeg","url":"https://sdbooth2-production.s3.amazonaws.com/4bp5gnc52qzbo2pj2nzwondpekui"}],"resolution":null,"user":{"create_ckpt":false,"backend_version":null},"prompts":[]}'
-    worker = Worker()
-    start = time.time()
-    worker.setup_trainer(job_str)
-    worker.run()
-    print('Ran training loop 1 in ', time.time() - start)
-
-    job_str = json.dumps({
+JOB_STR_1 = '{"id":2002368,"name":"man","created_at":"2025-01-05T08:58:31.696Z","updated_at":"2025-05-25T14:26:26.521Z","user_id":2,"trained_at":"2025-01-05T09:09:14.690Z","started_training_at":"2025-05-25T14:26:26.520Z","steps":405,"title":"Alon portrait","branch":"flux1","callback":null,"process_ip":"akash-wqtj5-2,3","trials":31,"num_prompts":0,"is_api":false,"base_tune_id":1504944,"token":"ohwx","args":"preset=flux-lora-portrait learning_rate=5e-4 lora_rank=16 lora_alpha=16 train_batch=4 preprocessing=2 lr_scheduler=polynomial flux_lora_target=portrait segmentation=1 only_face=true","cost":null,"expires_at":"2025-06-04T09:09:14.690Z","emailed_notice":false,"public_at":null,"face_crop":true,"checkpoint_deleted":false,"checkpoint_deleted_at":null,"failed_at":null,"model_type":"lora","sha256":null,"model_url":null,"description_url":null,"cost_mc":216000,"training_face_correct":false,"eta":"2025-01-05T09:08:36.253Z","base_pack_id":260,"characteristics":{"age":"30 yo","ethnicity":"hispanic","eye_color":"brown eyes","facial_hair":"","glasses":"","hair_color":"black hair","hair_length":"short hair","hair_style":"bald","headcover":"","is_bald":"bald","name":"man"},"prompts_callback":null,"auto_extend":false,"orig_images":["https://sdbooth2-production.s3.amazonaws.com/ygesi07jlrw2nk31pq3tfu5vztgf","https://sdbooth2-production.s3.amazonaws.com/viatl4d53mu1ohsyymfu3hb6y74z","https://sdbooth2-production.s3.amazonaws.com/2mkj9khd3n2gm6usn0ppcnxxnyw6","https://sdbooth2-production.s3.amazonaws.com/2o99s9pxtny5ohrx0s1zp2wakha3","https://sdbooth2-production.s3.amazonaws.com/kjn9jgzchm4sl3uj1mo2zh2zv72f","https://sdbooth2-production.s3.amazonaws.com/3xfxajtel9jwq1al1fe8mey5rh17","https://sdbooth2-production.s3.amazonaws.com/4bp5gnc52qzbo2pj2nzwondpekui"],"file_names":[{"filename":"2xuxve6e6bh50w6sh97avcurxkeb.jpeg","url":"https://sdbooth2-production.s3.amazonaws.com/ygesi07jlrw2nk31pq3tfu5vztgf"},{"filename":"AA991103-E7DE-47C1-ABAB-82E794C150BF.jpeg","url":"https://sdbooth2-production.s3.amazonaws.com/viatl4d53mu1ohsyymfu3hb6y74z"},{"filename":"66gr44co9wa17nis5l5dnt3mg7gl.jpeg","url":"https://sdbooth2-production.s3.amazonaws.com/2mkj9khd3n2gm6usn0ppcnxxnyw6"},{"filename":"AA991103-E7DE-47C1-ABAB-82E794C150BF.jpeg","url":"https://sdbooth2-production.s3.amazonaws.com/2o99s9pxtny5ohrx0s1zp2wakha3"},{"filename":"IMG_8003.jpeg","url":"https://sdbooth2-production.s3.amazonaws.com/kjn9jgzchm4sl3uj1mo2zh2zv72f"},{"filename":"IMG_7988.jpeg","url":"https://sdbooth2-production.s3.amazonaws.com/3xfxajtel9jwq1al1fe8mey5rh17"},{"filename":"IMG_7659.jpeg","url":"https://sdbooth2-production.s3.amazonaws.com/4bp5gnc52qzbo2pj2nzwondpekui"}],"resolution":null,"user":{"create_ckpt":false,"backend_version":null},"prompts":[]}'
+JOB_STR_2 = json.dumps({
         "id": 1858416,
         "name": "woman",
         "created_at": "2024-12-03T08:40:18.994Z",
@@ -387,8 +378,17 @@ if __name__ == "__main__":
         },
         "prompts": []
     })
+
+# PYTHONPATH=$PWD accelerate launch --gpu_ids 0 --mixed_precision=no --num_processes=1 --num_machines=1 --dynamo_backend=no  astria/worker.py
+if __name__ == "__main__":
+    worker = Worker()
+    start = time.time()
+    worker.setup_trainer(JOB_STR_1)
+    worker.run()
+    print('Ran training loop 1 in ', time.time() - start)
+
     start = time.time()
     worker.trainer.cleanup_for_next_lora()
-    worker.setup_trainer(job_str)
+    worker.setup_trainer(JOB_STR_2)
     worker.run()
     print('Ran training loop 2 in ', time.time() - start)

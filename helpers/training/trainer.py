@@ -3,6 +3,7 @@ from helpers.training.default_settings.safety_check import safety_check
 from helpers.publishing.huggingface import HubManager
 from configure import model_labels
 import shutil
+import contextlib
 import hashlib
 import json
 import copy
@@ -59,6 +60,7 @@ from helpers.training.peft_init import init_lokr_network_with_perturbed_normal
 from accelerate.logging import get_logger
 from diffusers.models.embeddings import get_2d_rotary_pos_embed
 from helpers.models.smoldit import get_resize_crop_region_for_grid
+import torch.distributed as dist
 
 logger = get_logger(
     "SimpleTuner", log_level=os.environ.get("SIMPLETUNER_LOG_LEVEL", "INFO")
@@ -87,6 +89,7 @@ from accelerate import Accelerator
 from accelerate.utils import set_seed
 from configure import model_classes
 from torch.distributions import Beta
+from torch.profiler import profile, record_function, ProfilerActivity
 
 try:
     from lycoris import LycorisNetwork
@@ -120,6 +123,7 @@ from diffusers.utils import (
 )
 from diffusers.utils.import_utils import is_xformers_available
 from transformers.utils import ContextManagers
+from torch._dynamo.testing import CompileCounter
 
 from helpers.models.flux import (
     prepare_latent_image_ids,
@@ -160,6 +164,7 @@ diffusers.utils.logging.set_verbosity_warning()
 class Trainer:
     n_runs = 0
     has_had_lora_inited = False
+    _torch_compiled_transformer_ref = None
 
     def __init__(
         self,
@@ -667,6 +672,7 @@ class Trainer:
                 backend="inductor",
                 fullgraph=True,
             )
+            self._torch_compiled_transformer_ref = self.transformer
 
         self.accelerator.wait_for_everyone()
         self._send_webhook_raw(
@@ -1391,59 +1397,60 @@ class Trainer:
         if self.config.controlnet:
             primary_model = self.controlnet
 
-        # if not(self.has_had_lora_inited and self.keep_backbone_loaded):
-        results = self.accelerator.prepare(
-            primary_model, lr_scheduler, self.optimizer, self.train_dataloaders[0]
-        )
-        if self.config.controlnet:
-            self.controlnet = results[0]
-        elif self.unet is not None:
-            self.unet = results[0]
-        elif self.transformer is not None:
-            self.transformer = results[0]
-
-        if self.config.unet_attention_slice:
-            if torch.backends.mps.is_available():
-                logger.warning(
-                    "Using attention slicing when training SDXL on MPS can result in NaN errors on the first backward pass. If you run into issues, disable this option and reduce your batch size instead to reduce memory consumption."
-                )
-            if self.unet is not None:
-                self.unet.set_attention_slice("auto")
-            if self.transformer is not None:
-                self.transformer.set_attention_slice("auto")
-
-        self.lr_scheduler = results[1]
-        self.optimizer = results[2]
-
-        # The rest of the entries are dataloaders:
-        self.train_dataloaders = [results[3:]]
-        if self.config.use_ema and self.ema_model is not None:
-            if self.config.ema_device == "accelerator":
-                logger.info("Moving EMA model weights to accelerator...")
-            print(f"EMA model: {self.ema_model}")
-            self.ema_model.to(
-                (
-                    self.accelerator.device
-                    if self.config.ema_device == "accelerator"
-                    else "cpu"
-                ),
-                dtype=self.config.weight_dtype,
+        if not(self.has_had_lora_inited and self.keep_backbone_loaded):
+            results = self.accelerator.prepare(
+                primary_model, lr_scheduler, self.optimizer, self.train_dataloaders[0]
             )
+            if self.config.controlnet:
+                self.controlnet = results[0]
+            elif self.unet is not None:
+                self.unet = results[0]
+            elif self.transformer is not None:
+                self.transformer = results[0]
 
-            if self.config.ema_device == "cpu" and not self.config.ema_cpu_only:
-                logger.info("Pinning EMA model weights to CPU...")
-                try:
-                    self.ema_model.pin_memory()
-                except Exception as e:
-                    self._send_webhook_raw(
-                        structured_data={"message": f"Failed to pin EMA to CPU: {e}"},
-                        message_type="error",
+            if self.config.unet_attention_slice:
+                if torch.backends.mps.is_available():
+                    logger.warning(
+                        "Using attention slicing when training SDXL on MPS can result in NaN errors on the first backward pass. If you run into issues, disable this option and reduce your batch size instead to reduce memory consumption."
                     )
-                    logger.error(f"Failed to pin EMA model to CPU: {e}")
-        # else:
-        #     self.optimizer = self.accelerator.prepare_optimizer(self.optimizer)
-        #     self.lr_scheduler = self.accelerator.prepare_scheduler(lr_scheduler)
-        #     self.train_dataloaders = self.accelerator.prepare_data_loader(self.train_dataloaders[0])
+                if self.unet is not None:
+                    self.unet.set_attention_slice("auto")
+                if self.transformer is not None:
+                    self.transformer.set_attention_slice("auto")
+
+            self.lr_scheduler = results[1]
+            self.optimizer = results[2]
+
+            # The rest of the entries are dataloaders:
+            self.train_dataloaders = [results[3:]]
+            if self.config.use_ema and self.ema_model is not None:
+                if self.config.ema_device == "accelerator":
+                    logger.info("Moving EMA model weights to accelerator...")
+                print(f"EMA model: {self.ema_model}")
+                self.ema_model.to(
+                    (
+                        self.accelerator.device
+                        if self.config.ema_device == "accelerator"
+                        else "cpu"
+                    ),
+                    dtype=self.config.weight_dtype,
+                )
+
+                if self.config.ema_device == "cpu" and not self.config.ema_cpu_only:
+                    logger.info("Pinning EMA model weights to CPU...")
+                    try:
+                        self.ema_model.pin_memory()
+                    except Exception as e:
+                        self._send_webhook_raw(
+                            structured_data={"message": f"Failed to pin EMA to CPU: {e}"},
+                            message_type="error",
+                        )
+                        logger.error(f"Failed to pin EMA model to CPU: {e}")
+        else:
+            self.transformer = self.accelerator.prepare_model(self.transformer)
+            self.optimizer = self.accelerator.prepare_optimizer(self.optimizer)
+            self.lr_scheduler = self.accelerator.prepare_scheduler(lr_scheduler)
+            self.train_dataloaders = self.accelerator.prepare_data_loader(self.train_dataloaders[0])
 
         idx_count = 0
         for _, backend in StateTracker.get_data_backends().items():
@@ -1977,13 +1984,16 @@ class Trainer:
             if "lora_" in n or "lokr_" in n               # pick your adapter prefix
         }
 
+    @torch.no_grad()
     def _fast_reset(self):
         # if self.accelerator.is_main_process:
         tgt = self.accelerator.unwrap_model(self.transformer or self.unet)
+        sd = get_peft_model_state_dict(
+            tgt,
+            state_dict=tgt.state_dict(keep_vars=True),
+        )
 
-        for n, p in get_peft_model_state_dict(
-            tgt
-        ).items():
+        for n, p in sd.items():
             if n in self._lora_init:
                 p.data.copy_(self._lora_init[n])
 
@@ -2004,7 +2014,11 @@ class Trainer:
         ):
             setattr(self, attr, None)
 
-        self.transformer = self.accelerator.unwrap_model(self.transformer)
+        # self.transformer = self.accelerator.unwrap_model(
+        #     self.transformer,
+        # )
+        if self.torch_compile_transformer:
+            self.transformer = self._torch_compiled_transformer_ref
 
         # plus the global state
         self.state = {
@@ -2067,17 +2081,17 @@ class Trainer:
         add_text_embeds,
         timesteps,
     ):
-        if self.config.controlnet:
-            training_logger.debug(
-                f"Extra conditioning dtype: {batch['conditioning_pixel_values'].dtype}"
-            )
+        # if self.config.controlnet:
+        #     training_logger.debug(
+        #         f"Extra conditioning dtype: {batch['conditioning_pixel_values'].dtype}"
+        #     )
         if not self.config.disable_accelerator:
             if self.config.controlnet:
                 # ControlNet conditioning.
                 controlnet_image = batch["conditioning_pixel_values"].to(
                     dtype=self.config.weight_dtype
                 )
-                training_logger.debug(f"Image shape: {controlnet_image.shape}")
+                # training_logger.debug(f"Image shape: {controlnet_image.shape}")
                 down_block_res_samples, mid_block_res_sample = self.controlnet(
                     noisy_latents,
                     timesteps,
@@ -2180,14 +2194,14 @@ class Trainer:
                     device=self.accelerator.device,
                     dtype=self.config.base_weight_dtype,
                 )
-                training_logger.debug(
-                    "DTypes:"
-                    f"\n-> Text IDs shape: {text_ids.shape if hasattr(text_ids, 'shape') else None}, dtype: {text_ids.dtype if hasattr(text_ids, 'dtype') else None}"
-                    f"\n-> Image IDs shape: {img_ids.shape if hasattr(img_ids, 'shape') else None}, dtype: {img_ids.dtype if hasattr(img_ids, 'dtype') else None}"
-                    f"\n-> Timesteps shape: {timesteps.shape if hasattr(timesteps, 'shape') else None}, dtype: {timesteps.dtype if hasattr(timesteps, 'dtype') else None}"
-                    f"\n-> Guidance: {guidance}"
-                    f"\n-> Packed Noisy Latents shape: {packed_noisy_latents.shape if hasattr(packed_noisy_latents, 'shape') else None}, dtype: {packed_noisy_latents.dtype if hasattr(packed_noisy_latents, 'dtype') else None}"
-                )
+                # training_logger.debug(
+                #     "DTypes:"
+                #     f"\n-> Text IDs shape: {text_ids.shape if hasattr(text_ids, 'shape') else None}, dtype: {text_ids.dtype if hasattr(text_ids, 'dtype') else None}"
+                #     f"\n-> Image IDs shape: {img_ids.shape if hasattr(img_ids, 'shape') else None}, dtype: {img_ids.dtype if hasattr(img_ids, 'dtype') else None}"
+                #     f"\n-> Timesteps shape: {timesteps.shape if hasattr(timesteps, 'shape') else None}, dtype: {timesteps.dtype if hasattr(timesteps, 'dtype') else None}"
+                #     f"\n-> Guidance: {guidance}"
+                #     f"\n-> Packed Noisy Latents shape: {packed_noisy_latents.shape if hasattr(packed_noisy_latents, 'shape') else None}, dtype: {packed_noisy_latents.dtype if hasattr(packed_noisy_latents, 'dtype') else None}"
+                # )
 
                 flux_transformer_kwargs = {
                     "hidden_states": packed_noisy_latents,
@@ -2305,7 +2319,291 @@ class Trainer:
 
         return model_pred
 
+    def _train_step(
+        self,
+        batch,
+        before_forward_event,
+        after_forward_event,
+    ):
+        if os.environ.get('TORCH_PROFILE', None):
+            before_forward_event.record()
+        # training_logger.debug("Sending latent batch to GPU.")
+        latents = batch["latent_batch"].to(
+            self.accelerator.device, dtype=self.config.weight_dtype
+        )
+
+        # Sample noise that we'll add to the latents - self.config.noise_offset might need to be set to 0.1 by default.
+        noise = torch.randn_like(latents)
+        if not self.config.flow_matching:
+            if self.config.offset_noise:
+                if (
+                    self.config.noise_offset_probability == 1.0
+                    or random.random()
+                    < self.config.noise_offset_probability
+                ):
+                    noise = noise + self.config.noise_offset * torch.randn(
+                        latents.shape[0],
+                        latents.shape[1],
+                        1,
+                        1,
+                        device=latents.device,
+                    )
+
+        bsz = latents.shape[0]
+        # if int(bsz) != int(self.config.train_batch_size):
+        #     logger.error(
+        #         f"Received {bsz} latents, but expected {self.config.train_batch_size}. Processing short batch."
+        #     )
+        # training_logger.debug(f"Working on batch size: {bsz}")
+        if self.config.flow_matching:
+            if not self.config.flux_fast_schedule and not any(
+                [
+                    self.config.flux_use_beta_schedule,
+                    self.config.flux_use_uniform_schedule,
+                ]
+            ):
+                # imported from cloneofsimo's minRF trainer: https://github.com/cloneofsimo/minRF
+                # also used by: https://github.com/XLabs-AI/x-flux/tree/main
+                # and: https://github.com/kohya-ss/sd-scripts/commit/8a0f12dde812994ec3facdcdb7c08b362dbceb0f
+                sigmas = torch.sigmoid(
+                    self.config.flow_matching_sigmoid_scale
+                    * torch.randn((bsz,), device=self.accelerator.device)
+                )
+                sigmas = apply_flux_schedule_shift(
+                    self.config, self.noise_scheduler, sigmas, noise
+                )
+            elif self.config.flux_use_uniform_schedule:
+                sigmas = torch.rand((bsz,), device=self.accelerator.device)
+                sigmas = apply_flux_schedule_shift(
+                    self.config, self.noise_scheduler, sigmas, noise
+                )
+            elif self.config.flux_use_beta_schedule:
+                alpha = self.config.flux_beta_schedule_alpha
+                beta = self.config.flux_beta_schedule_beta
+
+                # Create a Beta distribution instance
+                beta_dist = Beta(alpha, beta)
+
+                # Sample from the Beta distribution
+                sigmas = beta_dist.sample((bsz,)).to(
+                    device=self.accelerator.device
+                )
+
+                sigmas = apply_flux_schedule_shift(
+                    self.config, self.noise_scheduler, sigmas, noise
+                )
+            else:
+                # fast schedule can only use these sigmas, and they can be sampled up to batch size times
+                available_sigmas = [
+                    1.0,
+                    1.0,
+                    1.0,
+                    1.0,
+                    1.0,
+                    1.0,
+                    1.0,
+                    0.75,
+                    0.5,
+                    0.25,
+                ]
+                sigmas = torch.tensor(
+                    random.choices(available_sigmas, k=bsz),
+                    device=self.accelerator.device,
+                )
+            timesteps = sigmas * 1000.0
+            sigmas = sigmas.view(-1, 1, 1, 1)
+        else:
+            # Sample a random timestep for each image, potentially biased by the timestep weights.
+            # Biasing the timestep weights allows us to spend less time training irrelevant timesteps.
+            weights = generate_timestep_weights(
+                self.config, self.noise_scheduler.config.num_train_timesteps
+            ).to(self.accelerator.device)
+            # Instead of uniformly sampling the timestep range, we'll split our weights and schedule into bsz number of segments.
+            # This enables more broad sampling and potentially more effective training.
+            if (
+                bsz > 1
+                and not self.config.disable_segmented_timestep_sampling
+            ):
+                timesteps = segmented_timestep_selection(
+                    actual_num_timesteps=self.noise_scheduler.config.num_train_timesteps,
+                    bsz=bsz,
+                    weights=weights,
+                    use_refiner_range=StateTracker.is_sdxl_refiner()
+                    and not StateTracker.get_args().sdxl_refiner_uses_full_range,
+                ).to(self.accelerator.device)
+            else:
+                timesteps = torch.multinomial(
+                    weights, bsz, replacement=True
+                ).long()
+
+        # Prepare the data for the scatter plot
+        # for timestep in timesteps.tolist():
+        #     self.timesteps_buffer.append(
+        #         (self.state["global_step"], timestep)
+        #     )
+
+        if self.config.input_perturbation != 0 and (
+            not self.config.input_perturbation_steps
+            or self.state["global_step"]
+            < self.config.input_perturbation_steps
+        ):
+            input_perturbation = self.config.input_perturbation
+            if self.config.input_perturbation_steps:
+                input_perturbation *= 1.0 - (
+                    self.state["global_step"]
+                    / self.config.input_perturbation_steps
+                )
+            input_noise = noise + input_perturbation * torch.randn_like(
+                latents
+            )
+        else:
+            input_noise = noise
+
+        if self.config.flow_matching:
+            noisy_latents = (1 - sigmas) * latents + sigmas * input_noise
+        else:
+            # Add noise to the latents according to the noise magnitude at each timestep
+            # (this is the forward diffusion process)
+            noisy_latents = self.noise_scheduler.add_noise(
+                latents.float(), input_noise.float(), timesteps
+            ).to(
+                device=self.accelerator.device,
+                dtype=self.config.weight_dtype,
+            )
+
+        encoder_hidden_states = batch["prompt_embeds"].to(
+            dtype=self.config.weight_dtype, device=self.accelerator.device
+        ).contiguous()
+        # training_logger.debug(
+        #     f"Encoder hidden states: {encoder_hidden_states.shape}"
+        # )
+
+        add_text_embeds = batch["add_text_embeds"]
+        # training_logger.debug(
+        #     f"Pooled embeds: {add_text_embeds.shape if add_text_embeds is not None else None}"
+        # )
+        # Get the target for loss depending on the prediction type
+        if self.config.flow_matching:
+            # This is the flow-matching target for vanilla SD3.
+            # If self.config.flow_matching_loss == "diffusion", we will instead use v_prediction (see below)
+            if self.config.flow_matching_loss == "diffusers":
+                target = latents
+            elif self.config.flow_matching_loss == "compatible":
+                target = noise - latents
+            elif self.config.flow_matching_loss == "sd35":
+                sigma_reshaped = sigmas.view(
+                    -1, 1, 1, 1
+                )  # Ensure sigma has the correct shape
+                target = (noisy_latents - latents) / sigma_reshaped
+
+        elif self.noise_scheduler.config.prediction_type == "epsilon":
+            target = noise
+        elif (
+            self.noise_scheduler.config.prediction_type == "v_prediction"
+            or (
+                self.config.flow_matching
+                and self.config.flow_matching_loss == "diffusion"
+            )
+        ):
+            # When not using flow-matching, train on velocity prediction objective.
+            target = self.noise_scheduler.get_velocity(
+                latents, noise, timesteps
+            )
+        elif self.noise_scheduler.config.prediction_type == "sample":
+            # We set the target to latents here, but the model_pred will return the noise sample prediction.
+            # We will have to subtract the noise residual from the prediction to get the target sample.
+            target = latents
+        else:
+            raise ValueError(
+                f"Unknown prediction type {self.noise_scheduler.config.prediction_type}"
+                "Supported types are 'epsilon', `sample`, and 'v_prediction'."
+            )
+        latents = latents.contiguous()
+        noisy_latents = noisy_latents.contiguous()
+
+        added_cond_kwargs = None
+        # Predict the noise residual and compute loss
+        if (
+            StateTracker.get_model_family() == "sdxl"
+            or self.config.model_family == "kolors"
+        ):
+            added_cond_kwargs = {
+                "text_embeds": add_text_embeds.to(
+                    device=self.accelerator.device,
+                    dtype=self.config.weight_dtype,
+                ).contiguous(),
+                "time_ids": batch["batch_time_ids"].to(
+                    device=self.accelerator.device,
+                    dtype=self.config.weight_dtype,
+                ).contiguous(),
+            }
+        elif (
+            self.config.model_family == "pixart_sigma"
+            or self.config.model_family == "smoldit"
+        ):
+            # pixart requires an input of {"resolution": .., "aspect_ratio": ..}
+            if "batch_time_ids" in batch:
+                added_cond_kwargs = batch["batch_time_ids"].contiguous()
+
+            batch["encoder_attention_mask"] = batch[
+                "encoder_attention_mask"
+            ].to(
+                device=self.accelerator.device,
+                dtype=self.config.weight_dtype,
+            ).contiguous()
+
+        # a marker to know whether we had a model capable of regularised data training.
+        handled_regularisation = False
+        is_regularisation_data = batch.get("is_regularisation_data", False)
+        if is_regularisation_data and self.config.model_type == "lora":
+            # training_logger.debug("Predicting parent model residual.")
+            handled_regularisation = True
+            with torch.no_grad():
+                if self.config.lora_type.lower() == "lycoris":
+                    # training_logger.debug(
+                    #     "Detaching LyCORIS adapter for parent prediction."
+                    # )
+                    self.accelerator._lycoris_wrapped_network.restore()
+                else:
+                    raise ValueError(
+                        f"Cannot train parent-student networks on {self.config.lora_type} model. Only LyCORIS is supported."
+                    )
+                target = self.model_predict(
+                    batch=batch,
+                    latents=latents,
+                    noisy_latents=noisy_latents,
+                    encoder_hidden_states=encoder_hidden_states,
+                    added_cond_kwargs=added_cond_kwargs,
+                    add_text_embeds=add_text_embeds,
+                    timesteps=timesteps,
+                )
+                if self.config.lora_type.lower() == "lycoris":
+                    # training_logger.debug(
+                    #     "Attaching LyCORIS adapter for student prediction."
+                    # )
+                    self.accelerator._lycoris_wrapped_network.apply_to()
+
+        # training_logger.debug("Predicting noise residual.")
+        model_pred = self.model_predict(
+            batch=batch,
+            latents=latents,
+            noisy_latents=noisy_latents,
+            encoder_hidden_states=encoder_hidden_states,
+            added_cond_kwargs=added_cond_kwargs,
+            add_text_embeds=add_text_embeds,
+            timesteps=timesteps,
+        )
+        if os.environ.get('TORCH_PROFILE', None):
+            after_forward_event.record()
+
+        return model_pred, noise, target, timesteps
+
     def train(self):
+        # if self.n_runs > 0 and get_rank() == 1:
+        #     import debugpy
+        #     debugpy.listen(('0.0.0.0', 11566))
+        #     debugpy.wait_for_client()
+
         self.init_trackers()
         self._train_initial_msg()
 
@@ -2407,702 +2705,481 @@ class Trainer:
 
             pr = None
             if os.environ.get('PROFILE_TRAINING_LOOP', None) is not None:
-                import cProfile, pstats, io
-                from pstats import SortKey
-                pr = cProfile.Profile()
-                pr.enable()
+                try:
+                    import cProfile, pstats, io
+                    from pstats import SortKey
+                    pr = cProfile.Profile()
+                    pr.enable()
+                except ValueError:
+                    pass
 
-            while True:
-                self._exit_on_signal()
-                step += 1
-                batch = iterator_fn(step, *iterator_args)
-                training_logger.debug(f"Iterator: {iterator_fn}")
-                if self.config.lr_scheduler == "cosine_with_restarts":
-                    self.extra_lr_scheduler_kwargs["step"] = self.state["global_step"]
+            before_forward_event = torch.cuda.Event(enable_timing=True)
+            after_forward_event = torch.cuda.Event(enable_timing=True)
+            before_backward_event = torch.cuda.Event(enable_timing=True)
+            after_backward_event = torch.cuda.Event(enable_timing=True)
+            after_step_event = torch.cuda.Event(enable_timing=True)
+            after_zero_grad_event = torch.cuda.Event(enable_timing=True)
 
-                if self.accelerator.is_main_process:
-                    progress_bar.set_postfix_str(
-                        f"e={self.state['current_epoch']}/{self.config.num_train_epochs}"
-                    )
+            with self.accelerator.accumulate(training_models), profile(
+                activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],
+                record_shapes=False,
+                with_stack=False,
+                with_flops=False,
+            ) if os.environ.get('TORCH_PROFILE', None) else contextlib.nullcontext() as prof:
+                while True:
+                    self._exit_on_signal()
+                    step += 1
+                    batch = iterator_fn(step, *iterator_args)
+                    training_logger.debug(f"Iterator: {iterator_fn}")
+                    if self.config.lr_scheduler == "cosine_with_restarts":
+                        self.extra_lr_scheduler_kwargs["step"] = self.state["global_step"]
 
-                # If we receive a False from the enumerator, we know we reached the next epoch.
-                if batch is False:
-                    logger.debug(f"Reached the end of epoch {epoch}")
-                    break
-
-                if batch is None:
-                    import traceback
-
-                    raise ValueError(
-                        f"Received a None batch, which is not a good thing. Traceback: {traceback.format_exc()}"
-                    )
-
-                # Add the current batch of training data's avg luminance to a list.
-                if "batch_luminance" in batch:
-                    training_luminance_values.append(batch["batch_luminance"])
-
-                with self.accelerator.accumulate(training_models):
-                    training_logger.debug("Sending latent batch to GPU.")
-                    latents = batch["latent_batch"].to(
-                        self.accelerator.device, dtype=self.config.weight_dtype
-                    )
-
-                    # Sample noise that we'll add to the latents - self.config.noise_offset might need to be set to 0.1 by default.
-                    noise = torch.randn_like(latents)
-                    if not self.config.flow_matching:
-                        if self.config.offset_noise:
-                            if (
-                                self.config.noise_offset_probability == 1.0
-                                or random.random()
-                                < self.config.noise_offset_probability
-                            ):
-                                noise = noise + self.config.noise_offset * torch.randn(
-                                    latents.shape[0],
-                                    latents.shape[1],
-                                    1,
-                                    1,
-                                    device=latents.device,
-                                )
-
-                    bsz = latents.shape[0]
-                    if int(bsz) != int(self.config.train_batch_size):
-                        logger.error(
-                            f"Received {bsz} latents, but expected {self.config.train_batch_size}. Processing short batch."
-                        )
-                    training_logger.debug(f"Working on batch size: {bsz}")
-                    if self.config.flow_matching:
-                        if not self.config.flux_fast_schedule and not any(
-                            [
-                                self.config.flux_use_beta_schedule,
-                                self.config.flux_use_uniform_schedule,
-                            ]
-                        ):
-                            # imported from cloneofsimo's minRF trainer: https://github.com/cloneofsimo/minRF
-                            # also used by: https://github.com/XLabs-AI/x-flux/tree/main
-                            # and: https://github.com/kohya-ss/sd-scripts/commit/8a0f12dde812994ec3facdcdb7c08b362dbceb0f
-                            sigmas = torch.sigmoid(
-                                self.config.flow_matching_sigmoid_scale
-                                * torch.randn((bsz,), device=self.accelerator.device)
-                            )
-                            sigmas = apply_flux_schedule_shift(
-                                self.config, self.noise_scheduler, sigmas, noise
-                            )
-                        elif self.config.flux_use_uniform_schedule:
-                            sigmas = torch.rand((bsz,), device=self.accelerator.device)
-                            sigmas = apply_flux_schedule_shift(
-                                self.config, self.noise_scheduler, sigmas, noise
-                            )
-                        elif self.config.flux_use_beta_schedule:
-                            alpha = self.config.flux_beta_schedule_alpha
-                            beta = self.config.flux_beta_schedule_beta
-
-                            # Create a Beta distribution instance
-                            beta_dist = Beta(alpha, beta)
-
-                            # Sample from the Beta distribution
-                            sigmas = beta_dist.sample((bsz,)).to(
-                                device=self.accelerator.device
-                            )
-
-                            sigmas = apply_flux_schedule_shift(
-                                self.config, self.noise_scheduler, sigmas, noise
-                            )
-                        else:
-                            # fast schedule can only use these sigmas, and they can be sampled up to batch size times
-                            available_sigmas = [
-                                1.0,
-                                1.0,
-                                1.0,
-                                1.0,
-                                1.0,
-                                1.0,
-                                1.0,
-                                0.75,
-                                0.5,
-                                0.25,
-                            ]
-                            sigmas = torch.tensor(
-                                random.choices(available_sigmas, k=bsz),
-                                device=self.accelerator.device,
-                            )
-                        timesteps = sigmas * 1000.0
-                        sigmas = sigmas.view(-1, 1, 1, 1)
-                    else:
-                        # Sample a random timestep for each image, potentially biased by the timestep weights.
-                        # Biasing the timestep weights allows us to spend less time training irrelevant timesteps.
-                        weights = generate_timestep_weights(
-                            self.config, self.noise_scheduler.config.num_train_timesteps
-                        ).to(self.accelerator.device)
-                        # Instead of uniformly sampling the timestep range, we'll split our weights and schedule into bsz number of segments.
-                        # This enables more broad sampling and potentially more effective training.
-                        if (
-                            bsz > 1
-                            and not self.config.disable_segmented_timestep_sampling
-                        ):
-                            timesteps = segmented_timestep_selection(
-                                actual_num_timesteps=self.noise_scheduler.config.num_train_timesteps,
-                                bsz=bsz,
-                                weights=weights,
-                                use_refiner_range=StateTracker.is_sdxl_refiner()
-                                and not StateTracker.get_args().sdxl_refiner_uses_full_range,
-                            ).to(self.accelerator.device)
-                        else:
-                            timesteps = torch.multinomial(
-                                weights, bsz, replacement=True
-                            ).long()
-
-                    # Prepare the data for the scatter plot
-                    for timestep in timesteps.tolist():
-                        self.timesteps_buffer.append(
-                            (self.state["global_step"], timestep)
+                    if self.accelerator.is_main_process:
+                        progress_bar.set_postfix_str(
+                            f"e={self.state['current_epoch']}/{self.config.num_train_epochs}"
                         )
 
-                    if self.config.input_perturbation != 0 and (
-                        not self.config.input_perturbation_steps
-                        or self.state["global_step"]
-                        < self.config.input_perturbation_steps
-                    ):
-                        input_perturbation = self.config.input_perturbation
-                        if self.config.input_perturbation_steps:
-                            input_perturbation *= 1.0 - (
-                                self.state["global_step"]
-                                / self.config.input_perturbation_steps
-                            )
-                        input_noise = noise + input_perturbation * torch.randn_like(
-                            latents
-                        )
-                    else:
-                        input_noise = noise
+                    # If we receive a False from the enumerator, we know we reached the next epoch.
+                    if batch is False:
+                        logger.debug(f"Reached the end of epoch {epoch}")
+                        break
 
-                    if self.config.flow_matching:
-                        noisy_latents = (1 - sigmas) * latents + sigmas * input_noise
-                    else:
-                        # Add noise to the latents according to the noise magnitude at each timestep
-                        # (this is the forward diffusion process)
-                        noisy_latents = self.noise_scheduler.add_noise(
-                            latents.float(), input_noise.float(), timesteps
-                        ).to(
-                            device=self.accelerator.device,
-                            dtype=self.config.weight_dtype,
-                        )
+                    if batch is None:
+                        import traceback
 
-                    encoder_hidden_states = batch["prompt_embeds"].to(
-                        dtype=self.config.weight_dtype, device=self.accelerator.device
-                    )
-                    training_logger.debug(
-                        f"Encoder hidden states: {encoder_hidden_states.shape}"
-                    )
-
-                    add_text_embeds = batch["add_text_embeds"]
-                    training_logger.debug(
-                        f"Pooled embeds: {add_text_embeds.shape if add_text_embeds is not None else None}"
-                    )
-                    # Get the target for loss depending on the prediction type
-                    if self.config.flow_matching:
-                        # This is the flow-matching target for vanilla SD3.
-                        # If self.config.flow_matching_loss == "diffusion", we will instead use v_prediction (see below)
-                        if self.config.flow_matching_loss == "diffusers":
-                            target = latents
-                        elif self.config.flow_matching_loss == "compatible":
-                            target = noise - latents
-                        elif self.config.flow_matching_loss == "sd35":
-                            sigma_reshaped = sigmas.view(
-                                -1, 1, 1, 1
-                            )  # Ensure sigma has the correct shape
-                            target = (noisy_latents - latents) / sigma_reshaped
-
-                    elif self.noise_scheduler.config.prediction_type == "epsilon":
-                        target = noise
-                    elif (
-                        self.noise_scheduler.config.prediction_type == "v_prediction"
-                        or (
-                            self.config.flow_matching
-                            and self.config.flow_matching_loss == "diffusion"
-                        )
-                    ):
-                        # When not using flow-matching, train on velocity prediction objective.
-                        target = self.noise_scheduler.get_velocity(
-                            latents, noise, timesteps
-                        )
-                    elif self.noise_scheduler.config.prediction_type == "sample":
-                        # We set the target to latents here, but the model_pred will return the noise sample prediction.
-                        # We will have to subtract the noise residual from the prediction to get the target sample.
-                        target = latents
-                    else:
                         raise ValueError(
-                            f"Unknown prediction type {self.noise_scheduler.config.prediction_type}"
-                            "Supported types are 'epsilon', `sample`, and 'v_prediction'."
+                            f"Received a None batch, which is not a good thing. Traceback: {traceback.format_exc()}"
                         )
 
-                    added_cond_kwargs = None
-                    # Predict the noise residual and compute loss
-                    if (
-                        StateTracker.get_model_family() == "sdxl"
-                        or self.config.model_family == "kolors"
-                    ):
-                        added_cond_kwargs = {
-                            "text_embeds": add_text_embeds.to(
-                                device=self.accelerator.device,
-                                dtype=self.config.weight_dtype,
-                            ),
-                            "time_ids": batch["batch_time_ids"].to(
-                                device=self.accelerator.device,
-                                dtype=self.config.weight_dtype,
-                            ),
-                        }
-                    elif (
-                        self.config.model_family == "pixart_sigma"
-                        or self.config.model_family == "smoldit"
-                    ):
-                        # pixart requires an input of {"resolution": .., "aspect_ratio": ..}
-                        if "batch_time_ids" in batch:
-                            added_cond_kwargs = batch["batch_time_ids"]
-                        batch["encoder_attention_mask"] = batch[
-                            "encoder_attention_mask"
-                        ].to(
-                            device=self.accelerator.device,
-                            dtype=self.config.weight_dtype,
-                        )
-
-                    # a marker to know whether we had a model capable of regularised data training.
-                    handled_regularisation = False
-                    is_regularisation_data = batch.get("is_regularisation_data", False)
-                    if is_regularisation_data and self.config.model_type == "lora":
-                        training_logger.debug("Predicting parent model residual.")
-                        handled_regularisation = True
-                        with torch.no_grad():
-                            if self.config.lora_type.lower() == "lycoris":
-                                training_logger.debug(
-                                    "Detaching LyCORIS adapter for parent prediction."
-                                )
-                                self.accelerator._lycoris_wrapped_network.restore()
-                            else:
-                                raise ValueError(
-                                    f"Cannot train parent-student networks on {self.config.lora_type} model. Only LyCORIS is supported."
-                                )
-                            target = self.model_predict(
-                                batch=batch,
-                                latents=latents,
-                                noisy_latents=noisy_latents,
-                                encoder_hidden_states=encoder_hidden_states,
-                                added_cond_kwargs=added_cond_kwargs,
-                                add_text_embeds=add_text_embeds,
-                                timesteps=timesteps,
-                            )
-                            if self.config.lora_type.lower() == "lycoris":
-                                training_logger.debug(
-                                    "Attaching LyCORIS adapter for student prediction."
-                                )
-                                self.accelerator._lycoris_wrapped_network.apply_to()
-
-                    training_logger.debug("Predicting noise residual.")
-                    model_pred = self.model_predict(
-                        batch=batch,
-                        latents=latents,
-                        noisy_latents=noisy_latents,
-                        encoder_hidden_states=encoder_hidden_states,
-                        added_cond_kwargs=added_cond_kwargs,
-                        add_text_embeds=add_text_embeds,
-                        timesteps=timesteps,
+                    model_pred, noise, target, timesteps = self._train_step(
+                        batch,
+                        before_forward_event,
+                        after_forward_event,
                     )
 
-                    # x-prediction requires that we now subtract the noise residual from the prediction to get the target sample.
-                    if (
-                        hasattr(self.noise_scheduler, "config")
-                        and hasattr(self.noise_scheduler.config, "prediction_type")
-                        and self.noise_scheduler.config.prediction_type == "sample"
-                    ):
-                        model_pred = model_pred - noise
+                    # Add the current batch of training data's avg luminance to a list.
+                    if "batch_luminance" in batch:
+                        training_luminance_values.append(batch["batch_luminance"])
 
-                    parent_loss = None
-
-                    # Compute the per-pixel loss without reducing over spatial dimensions
-                    if self.config.flow_matching:
-                        # For flow matching, compute the per-pixel squared differences
-                        loss = (
-                            model_pred.float() - target.float()
-                        ) ** 2  # Shape: (batch_size, C, H, W)
-                    elif self.config.snr_gamma is None or self.config.snr_gamma == 0:
-                        training_logger.debug("Calculating loss")
-                        loss = self.config.snr_weight * F.mse_loss(
-                            model_pred.float(), target.float(), reduction="none"
-                        )  # Shape: (batch_size, C, H, W)
-                    else:
-                        # Compute loss-weights as per Section 3.4 of https://arxiv.org/abs/2303.09556.
-                        # Since we predict the noise instead of x_0, the original formulation is slightly changed.
-                        # This is discussed in Section 4.2 of the same paper.
-                        training_logger.debug("Using min-SNR loss")
-                        snr = compute_snr(timesteps, self.noise_scheduler)
-                        snr_divisor = snr
+                        # x-prediction requires that we now subtract the noise residual from the prediction to get the target sample.
                         if (
-                            self.noise_scheduler.config.prediction_type
-                            == "v_prediction"
-                            or (
-                                self.config.flow_matching
-                                and self.config.flow_matching_loss == "diffusion"
-                            )
+                            hasattr(self.noise_scheduler, "config")
+                            and hasattr(self.noise_scheduler.config, "prediction_type")
+                            and self.noise_scheduler.config.prediction_type == "sample"
                         ):
-                            snr_divisor = snr + 1
+                            model_pred = model_pred - noise
 
-                        training_logger.debug(
-                            "Calculating MSE loss weights using SNR as divisor"
-                        )
-                        mse_loss_weights = (
-                            torch.stack(
-                                [
-                                    snr,
-                                    self.config.snr_gamma * torch.ones_like(timesteps),
-                                ],
-                                dim=1,
-                            ).min(dim=1)[0]
-                            / snr_divisor
+                        parent_loss = None
+
+                        # Compute the per-pixel loss without reducing over spatial dimensions
+                        if self.config.flow_matching:
+                            # For flow matching, compute the per-pixel squared differences
+                            loss = (
+                                model_pred.float() - target.float()
+                            ) ** 2  # Shape: (batch_size, C, H, W)
+                        elif self.config.snr_gamma is None or self.config.snr_gamma == 0:
+                            training_logger.debug("Calculating loss")
+                            loss = self.config.snr_weight * F.mse_loss(
+                                model_pred.float(), target.float(), reduction="none"
+                            )  # Shape: (batch_size, C, H, W)
+                        else:
+                            # Compute loss-weights as per Section 3.4 of https://arxiv.org/abs/2303.09556.
+                            # Since we predict the noise instead of x_0, the original formulation is slightly changed.
+                            # This is discussed in Section 4.2 of the same paper.
+                            training_logger.debug("Using min-SNR loss")
+                            snr = compute_snr(timesteps, self.noise_scheduler)
+                            snr_divisor = snr
+                            if (
+                                self.noise_scheduler.config.prediction_type
+                                == "v_prediction"
+                                or (
+                                    self.config.flow_matching
+                                    and self.config.flow_matching_loss == "diffusion"
+                                )
+                            ):
+                                snr_divisor = snr + 1
+
+                            training_logger.debug(
+                                "Calculating MSE loss weights using SNR as divisor"
+                            )
+                            mse_loss_weights = (
+                                torch.stack(
+                                    [
+                                        snr,
+                                        self.config.snr_gamma * torch.ones_like(timesteps),
+                                    ],
+                                    dim=1,
+                                ).min(dim=1)[0]
+                                / snr_divisor
+                            )  # Shape: (batch_size,)
+
+                            # Compute the per-pixel MSE loss without reduction
+                            loss = F.mse_loss(
+                                model_pred.float(), target.float(), reduction="none"
+                            )  # Shape: (batch_size, C, H, W)
+
+                            # Reshape mse_loss_weights for broadcasting and apply to loss
+                            mse_loss_weights = mse_loss_weights.view(
+                                -1, 1, 1, 1
+                            )  # Shape: (batch_size, 1, 1, 1)
+                            loss = loss * mse_loss_weights  # Shape: (batch_size, C, H, W)
+
+                        # Mask the loss using any conditioning data
+                        conditioning_type = batch.get("conditioning_type")
+                        if conditioning_type == "mask":
+                            # Adapted from:
+                            # https://github.com/kohya-ss/sd-scripts/blob/main/library/custom_train_functions.py#L482
+                            mask_image = None
+                            with torch.no_grad():
+                                mask_image = (
+                                    batch["conditioning_pixel_values"]
+                                    .to(dtype=loss.dtype, device=loss.device)[:, 0]
+                                    .unsqueeze(1)
+                                )  # Shape: (batch_size, 1, H', W')
+                                mask_image = torch.nn.functional.interpolate(
+                                    mask_image, size=loss.shape[2:], mode="area"
+                                )  # Resize to match loss spatial dimensions
+                                mask_image = mask_image / 2 + 0.5  # Normalize to [0,1]
+                            loss = loss * mask_image  # Element-wise multiplication
+
+                        # Reduce the loss by averaging over channels and spatial dimensions
+                        loss = loss.mean(
+                            dim=list(range(1, len(loss.shape)))
                         )  # Shape: (batch_size,)
 
-                        # Compute the per-pixel MSE loss without reduction
-                        loss = F.mse_loss(
-                            model_pred.float(), target.float(), reduction="none"
-                        )  # Shape: (batch_size, C, H, W)
+                        # Further reduce the loss by averaging over the batch dimension
+                        loss = loss.mean()  # Scalar value
 
-                        # Reshape mse_loss_weights for broadcasting and apply to loss
-                        mse_loss_weights = mse_loss_weights.view(
-                            -1, 1, 1, 1
-                        )  # Shape: (batch_size, 1, 1, 1)
-                        loss = loss * mse_loss_weights  # Shape: (batch_size, C, H, W)
+                        if batch.get("is_regularisation_data", False):
+                            parent_loss = loss
 
-                    # Mask the loss using any conditioning data
-                    conditioning_type = batch.get("conditioning_type")
-                    if conditioning_type == "mask":
-                        # Adapted from:
-                        # https://github.com/kohya-ss/sd-scripts/blob/main/library/custom_train_functions.py#L482
-                        mask_image = None
-                        with torch.no_grad():
-                            mask_image = (
-                                batch["conditioning_pixel_values"]
-                                .to(dtype=loss.dtype, device=loss.device)[:, 0]
-                                .unsqueeze(1)
-                            )  # Shape: (batch_size, 1, H', W')
-                            mask_image = torch.nn.functional.interpolate(
-                                mask_image, size=loss.shape[2:], mode="area"
-                            )  # Resize to match loss spatial dimensions
-                            mask_image = mask_image / 2 + 0.5  # Normalize to [0,1]
-                        loss = loss * mask_image  # Element-wise multiplication
-
-                    # Reduce the loss by averaging over channels and spatial dimensions
-                    loss = loss.mean(
-                        dim=list(range(1, len(loss.shape)))
-                    )  # Shape: (batch_size,)
-
-                    # Further reduce the loss by averaging over the batch dimension
-                    loss = loss.mean()  # Scalar value
-
-                    if is_regularisation_data:
-                        parent_loss = loss
-
-                    # Gather the losses across all processes for logging (if using distributed training)
-                    avg_loss = self.accelerator.gather(
-                        loss.repeat(self.config.train_batch_size)
-                    ).mean()
-                    self.train_loss += (
-                        avg_loss.item() / self.config.gradient_accumulation_steps
-                    )
-
-                    # Backpropagate
-                    grad_norm = None
-                    if not self.config.disable_accelerator:
-                        training_logger.debug("Backwards pass.")
-                        self.accelerator.backward(loss)
-
-                        if (
-                            self.config.optimizer != "adam_bfloat16"
-                            and self.config.gradient_precision == "fp32"
-                        ):
-                            # After backward, convert gradients to fp32 for stable accumulation
-                            for param in self.params_to_optimize:
-                                if param.grad is not None:
-                                    param.grad.data = param.grad.data.to(torch.float32)
-
-                        if (
-                            self.accelerator.sync_gradients
-                            and self.config.optimizer != "optimi-stableadamw"
-                            and self.config.max_grad_norm > 0
-                        ):
-                            # StableAdamW does not need clipping, similar to Adafactor.
-                            grad_norm = self.accelerator.clip_grad_norm_(
-                                self.params_to_optimize, self.config.max_grad_norm
-                            )
-                        training_logger.debug("Stepping components forward.")
-                        if self.config.optimizer_release_gradients:
-                            step_offset = 0  # simpletuner indexes steps from 1.
-                            should_not_release_gradients = (
-                                step + step_offset
-                            ) % self.config.gradient_accumulation_steps != 0
-                            training_logger.debug(
-                                f"step: {step}, should_not_release_gradients: {should_not_release_gradients}, self.config.optimizer_release_gradients: {self.config.optimizer_release_gradients}"
-                            )
-                            self.optimizer.optimizer_accumulation = (
-                                should_not_release_gradients
-                            )
-                        else:
-                            self.optimizer.step()
-                        self.optimizer.zero_grad(
-                            set_to_none=self.config.set_grads_to_none
+                        # Gather the losses across all processes for logging (if using distributed training)
+                        avg_loss = self.accelerator.gather(
+                            loss.repeat(self.config.train_batch_size)
+                        ).mean()
+                        self.train_loss += (
+                            avg_loss.item() / self.config.gradient_accumulation_steps
                         )
 
-                # Checks if the accelerator has performed an optimization step behind the scenes
-                wandb_logs = {}
-                if self.accelerator.sync_gradients:
-                    try:
-                        if self.config.is_schedulefree:
-                            # hackjob method of retrieving LR from accelerated optims
-                            self.lr = StateTracker.get_last_lr()
-                        else:
-                            self.lr_scheduler.step(**self.extra_lr_scheduler_kwargs)
-                            self.lr = self.lr_scheduler.get_last_lr()[0]
-                    except Exception as e:
-                        logger.error(
-                            f"Failed to get the last learning rate from the scheduler. Error: {e}"
-                        )
-                    wandb_logs = {
-                        "train_loss": self.train_loss,
-                        "optimization_loss": loss,
-                        "learning_rate": self.lr,
-                        "epoch": epoch,
-                    }
-                    if parent_loss is not None:
-                        wandb_logs["regularisation_loss"] = parent_loss
-                    if self.config.model_family == "flux" and self.guidance_values_list:
-                        # avg the values
-                        guidance_values = torch.tensor(self.guidance_values_list).mean()
-                        wandb_logs["mean_cfg"] = guidance_values.item()
-                        self.guidance_values_list = []
-                    if grad_norm is not None:
-                        wandb_logs["grad_norm"] = grad_norm
-                    if self.validation is not None and hasattr(
-                        self.validation, "evaluation_result"
-                    ):
-                        eval_result = self.validation.get_eval_result()
-                        if eval_result is not None and type(eval_result) == dict:
-                            # add the dict to wandb_logs
-                            self.validation.clear_eval_result()
-                            wandb_logs.update(eval_result)
+                        # Backpropagate
+                        if os.environ.get('TORCH_PROFILE', None):
+                            before_backward_event.record()
+                        grad_norm = None
+                        if not self.config.disable_accelerator:
+                            training_logger.debug("Backwards pass.")
+                            self.accelerator.backward(loss)
+                            if os.environ.get('TORCH_PROFILE', None):
+                                after_backward_event.record()
 
-                    progress_bar.update(1)
-                    self.state["global_step"] += 1
-                    current_epoch_step += 1
-                    StateTracker.set_global_step(self.state["global_step"])
+                            if (
+                                self.config.optimizer != "adam_bfloat16"
+                                and self.config.gradient_precision == "fp32"
+                            ):
+                                # After backward, convert gradients to fp32 for stable accumulation
+                                for param in self.params_to_optimize:
+                                    if param.grad is not None:
+                                        param.grad.data = param.grad.data.to(torch.float32)
 
-                    ema_decay_value = "None (EMA not in use)"
-                    if self.config.use_ema:
-                        if self.ema_model is not None:
-                            self.ema_model.step(
-                                parameters=self._get_trainable_parameters(),
-                                global_step=self.state["global_step"],
-                            )
-                            wandb_logs["ema_decay_value"] = self.ema_model.get_decay()
-                            ema_decay_value = wandb_logs["ema_decay_value"]
-                        self.accelerator.wait_for_everyone()
-
-                    # Log scatter plot to wandb
-                    if (
-                        self.config.report_to == "wandb"
-                        and self.accelerator.is_main_process
-                    ):
-                        # Prepare the data for the scatter plot
-                        data = [
-                            [iteration, timestep]
-                            for iteration, timestep in self.timesteps_buffer
-                        ]
-                        table = wandb.Table(
-                            data=data, columns=["global_step", "timestep"]
-                        )
-                        wandb_logs["timesteps_scatter"] = wandb.plot.scatter(
-                            table,
-                            "global_step",
-                            "timestep",
-                            title="Timestep distribution by step",
-                        )
-
-                    # Clear buffers
-                    self.timesteps_buffer = []
-
-                    # Average out the luminance values of each batch, so that we can store that in this step.
-                    avg_training_data_luminance = sum(training_luminance_values) / len(
-                        training_luminance_values
-                    )
-                    wandb_logs["train_luminance"] = avg_training_data_luminance
-
-                    logger.debug(
-                        f"Step {self.state['global_step']} of {self.config.max_train_steps}: loss {loss.item()}, lr {self.lr}, epoch {epoch}/{self.config.num_train_epochs}, ema_decay_value {ema_decay_value}, train_loss {self.train_loss}"
-                    )
-                    self.accelerator.log(
-                        wandb_logs,
-                        step=self.state["global_step"],
-                    )
-                    webhook_pending_msg = f"Step {self.state['global_step']} of {self.config.max_train_steps}: loss {round(loss.item(), 4)}, lr {self.lr}, epoch {epoch}/{self.config.num_train_epochs}, ema_decay_value {ema_decay_value}, train_loss {round(self.train_loss, 4)}"
-
-                    # Reset some values for the next go.
-                    training_luminance_values = []
-                    self.train_loss = 0.0
-
-                    if (
-                        self.config.webhook_reporting_interval is not None
-                        and self.state["global_step"]
-                        % self.config.webhook_reporting_interval
-                        == 0
-                    ):
-                        structured_data = {
-                            "state": self.state,
-                            "loss": round(self.train_loss, 4),
-                            "parent_loss": parent_loss,
-                            "learning_rate": self.lr,
-                            "epoch": epoch,
-                            "final_epoch": self.config.num_train_epochs,
-                        }
-                        self._send_webhook_raw(
-                            structured_data=structured_data, message_type="train"
-                        )
-                    if self.state["global_step"] % self.config.checkpointing_steps == 0:
-                        self._send_webhook_msg(
-                            message=f"Checkpoint: `{webhook_pending_msg}`",
-                            message_level="info",
-                        )
-                        if self.accelerator.is_main_process:
-                            # _before_ saving state, check if this save would set us over the `checkpoints_total_limit`
-                            if self.config.checkpoints_total_limit is not None:
-                                checkpoints = os.listdir(self.config.output_dir)
-                                checkpoints = [
-                                    d for d in checkpoints if d.startswith("checkpoint")
-                                ]
-                                checkpoints = sorted(
-                                    checkpoints, key=lambda x: int(x.split("-")[1])
+                            if (
+                                self.accelerator.sync_gradients
+                                and self.config.optimizer != "optimi-stableadamw"
+                                and self.config.max_grad_norm > 0
+                            ):
+                                # StableAdamW does not need clipping, similar to Adafactor.
+                                grad_norm = self.accelerator.clip_grad_norm_(
+                                    self.params_to_optimize, self.config.max_grad_norm
                                 )
-
-                                # before we save the new checkpoint, we need to have at _most_ `checkpoints_total_limit - 1` checkpoints
-                                if (
-                                    len(checkpoints)
-                                    >= self.config.checkpoints_total_limit
-                                ):
-                                    num_to_remove = (
-                                        len(checkpoints)
-                                        - self.config.checkpoints_total_limit
-                                        + 1
-                                    )
-                                    removing_checkpoints = checkpoints[0:num_to_remove]
-                                    logger.debug(
-                                        f"{len(checkpoints)} checkpoints already exist, removing {len(removing_checkpoints)} checkpoints"
-                                    )
-                                    logger.debug(
-                                        f"removing checkpoints: {', '.join(removing_checkpoints)}"
-                                    )
-
-                                    for removing_checkpoint in removing_checkpoints:
-                                        removing_checkpoint = os.path.join(
-                                            self.config.output_dir, removing_checkpoint
-                                        )
-                                        try:
-                                            shutil.rmtree(
-                                                removing_checkpoint, ignore_errors=True
-                                            )
-                                        except Exception as e:
-                                            logger.error(
-                                                f"Failed to remove directory: {removing_checkpoint}"
-                                            )
-                                            print(e)
-
-                        if (
-                            self.accelerator.is_main_process
-                            or self.config.use_deepspeed_optimizer
-                        ):
-                            save_path = os.path.join(
-                                self.config.output_dir,
-                                f"checkpoint-{self.state['global_step']}",
+                            training_logger.debug("Stepping components forward.")
+                            if self.config.optimizer_release_gradients:
+                                step_offset = 0  # simpletuner indexes steps from 1.
+                                should_not_release_gradients = (
+                                    step + step_offset
+                                ) % self.config.gradient_accumulation_steps != 0
+                                training_logger.debug(
+                                    f"step: {step}, should_not_release_gradients: {should_not_release_gradients}, self.config.optimizer_release_gradients: {self.config.optimizer_release_gradients}"
+                                )
+                                self.optimizer.optimizer_accumulation = (
+                                    should_not_release_gradients
+                                )
+                            else:
+                                self.optimizer.step()
+                            if os.environ.get('TORCH_PROFILE', None):
+                                after_step_event.record()
+                            self.optimizer.zero_grad(
+                                set_to_none=self.config.set_grads_to_none
                             )
-                            print("\n")
-                            # schedulefree optim needs the optimizer to be in eval mode to save the state (and then back to train after)
-                            self.mark_optimizer_eval()
-                            self.accelerator.save_state(save_path)
-                            self.mark_optimizer_train()
-                            for _, backend in StateTracker.get_data_backends().items():
-                                if "sampler" in backend:
-                                    logger.debug(f"Backend: {backend}")
-                                    backend["sampler"].save_state(
-                                        state_path=os.path.join(
-                                            save_path,
-                                            self.model_hooks.training_state_path,
-                                        ),
-                                    )
+                            if os.environ.get('TORCH_PROFILE', None):
+                                after_zero_grad_event.record()
+                    if os.environ.get('TORCH_PROFILE', None):
+                        torch.cuda.synchronize()
 
-                    if (
-                        self.config.accelerator_cache_clear_interval is not None
-                        and self.state["global_step"]
-                        % self.config.accelerator_cache_clear_interval
-                        == 0
-                    ):
-                        reclaim_memory()
-
-                logs = {
-                    "step_loss": loss.detach().item(),
-                    "lr": float(self.lr),
-                }
-                if "mean_cfg" in wandb_logs:
-                    logs["mean_cfg"] = wandb_logs["mean_cfg"]
-
-                # progress_bar.set_postfix(**logs)
-                self.mark_optimizer_eval()
-                if self.validation is not None:
-                    self.validation.run_validations(
-                        validation_type="intermediary", step=step
-                    )
-                self.mark_optimizer_train()
-                if (
-                    self.config.push_to_hub
-                    and self.config.push_checkpoints_to_hub
-                    and self.state["global_step"] % self.config.checkpointing_steps == 0
-                    and step % self.config.gradient_accumulation_steps == 0
-                    and self.state["global_step"] > self.state["global_resume_step"]
-                ):
-                    if self.accelerator.is_main_process:
+                    # Checks if the accelerator has performed an optimization step behind the scenes
+                    wandb_logs = {}
+                    if self.accelerator.sync_gradients:
                         try:
-                            self.hub_manager.upload_latest_checkpoint(
-                                validation_images=(
-                                    getattr(self.validation, "validation_images")
-                                    if self.validation is not None
-                                    else None
-                                ),
-                                webhook_handler=self.webhook_handler,
-                            )
+                            if self.config.is_schedulefree:
+                                # hackjob method of retrieving LR from accelerated optims
+                                self.lr = StateTracker.get_last_lr()
+                            else:
+                                self.lr_scheduler.step(**self.extra_lr_scheduler_kwargs)
+                                self.lr = self.lr_scheduler.get_last_lr()[0]
                         except Exception as e:
                             logger.error(
-                                f"Error uploading to hub: {e}, continuing training."
+                                f"Failed to get the last learning rate from the scheduler. Error: {e}"
                             )
-                self.accelerator.wait_for_everyone()
+                        wandb_logs = {
+                            "train_loss": self.train_loss,
+                            "optimization_loss": loss,
+                            "learning_rate": self.lr,
+                            "epoch": epoch,
+                        }
+                        if os.environ.get('TORCH_PROFILE', None):
+                            total_latency = before_forward_event.elapsed_time(after_zero_grad_event) / 1000
+                            forward_time = before_forward_event.elapsed_time(after_forward_event) / 1000
+                            backward_time = before_backward_event.elapsed_time(after_backward_event) / 1000
+                            step_time = after_backward_event.elapsed_time(after_step_event) / 1000
+                            zero_grad_time = after_step_event.elapsed_time(after_zero_grad_event) / 1000
+                            wandb_logs['total_latency'] = total_latency
+                            wandb_logs['forward_time'] = forward_time
+                            wandb_logs['backward_time'] = backward_time
+                            wandb_logs['step_time'] = step_time
+                            wandb_logs['zero_grad_time'] = zero_grad_time
 
-                if (
-                    self.state["global_step"] >= self.config.max_train_steps
-                    or epoch > self.config.num_train_epochs
-                ):
-                    logger.info(
-                        f"Training has completed."
-                        f"\n -> global_step = {self.state['global_step']}, max_train_steps = {self.config.max_train_steps}, epoch = {epoch}, num_train_epochs = {self.config.num_train_epochs}",
-                    )
-                    break
+                        if parent_loss is not None:
+                            wandb_logs["regularisation_loss"] = parent_loss
+                        if self.config.model_family == "flux" and self.guidance_values_list:
+                            # avg the values
+                            guidance_values = torch.tensor(self.guidance_values_list).mean()
+                            wandb_logs["mean_cfg"] = guidance_values.item()
+                            self.guidance_values_list = []
+                        if grad_norm is not None:
+                            wandb_logs["grad_norm"] = grad_norm
+                        if self.validation is not None and hasattr(
+                            self.validation, "evaluation_result"
+                        ):
+                            eval_result = self.validation.get_eval_result()
+                            if eval_result is not None and type(eval_result) == dict:
+                                # add the dict to wandb_logs
+                                self.validation.clear_eval_result()
+                                wandb_logs.update(eval_result)
+
+                        progress_bar.update(1)
+                        self.state["global_step"] += 1
+                        current_epoch_step += 1
+                        StateTracker.set_global_step(self.state["global_step"])
+
+                        ema_decay_value = "None (EMA not in use)"
+                        if self.config.use_ema:
+                            if self.ema_model is not None:
+                                self.ema_model.step(
+                                    parameters=self._get_trainable_parameters(),
+                                    global_step=self.state["global_step"],
+                                )
+                                wandb_logs["ema_decay_value"] = self.ema_model.get_decay()
+                                ema_decay_value = wandb_logs["ema_decay_value"]
+                            self.accelerator.wait_for_everyone()
+
+                        # Log scatter plot to wandb
+                        if (
+                            self.config.report_to == "wandb"
+                            and self.accelerator.is_main_process
+                        ):
+                            # Prepare the data for the scatter plot
+                            data = [
+                                [iteration, timestep]
+                                for iteration, timestep in self.timesteps_buffer
+                            ]
+                            table = wandb.Table(
+                                data=data, columns=["global_step", "timestep"]
+                            )
+                            wandb_logs["timesteps_scatter"] = wandb.plot.scatter(
+                                table,
+                                "global_step",
+                                "timestep",
+                                title="Timestep distribution by step",
+                            )
+
+                        # Clear buffers
+                        self.timesteps_buffer = []
+
+                        # Average out the luminance values of each batch, so that we can store that in this step.
+                        avg_training_data_luminance = sum(training_luminance_values) / len(
+                            training_luminance_values
+                        )
+                        wandb_logs["train_luminance"] = avg_training_data_luminance
+
+                        logger.debug(
+                            f"Step {self.state['global_step']} of {self.config.max_train_steps}: loss {loss.item()}, lr {self.lr}, epoch {epoch}/{self.config.num_train_epochs}, ema_decay_value {ema_decay_value}, train_loss {self.train_loss}"
+                        )
+                        self.accelerator.log(
+                            wandb_logs,
+                            step=self.state["global_step"],
+                        )
+                        webhook_pending_msg = f"Step {self.state['global_step']} of {self.config.max_train_steps}: loss {round(loss.item(), 4)}, lr {self.lr}, epoch {epoch}/{self.config.num_train_epochs}, ema_decay_value {ema_decay_value}, train_loss {round(self.train_loss, 4)}"
+
+                        # Reset some values for the next go.
+                        training_luminance_values = []
+                        self.train_loss = 0.0
+
+                        if (
+                            self.config.webhook_reporting_interval is not None
+                            and self.state["global_step"]
+                            % self.config.webhook_reporting_interval
+                            == 0
+                        ):
+                            structured_data = {
+                                "state": self.state,
+                                "loss": round(self.train_loss, 4),
+                                "parent_loss": parent_loss,
+                                "learning_rate": self.lr,
+                                "epoch": epoch,
+                                "final_epoch": self.config.num_train_epochs,
+                            }
+                            self._send_webhook_raw(
+                                structured_data=structured_data, message_type="train"
+                            )
+                        if self.state["global_step"] % self.config.checkpointing_steps == 0:
+                            self._send_webhook_msg(
+                                message=f"Checkpoint: `{webhook_pending_msg}`",
+                                message_level="info",
+                            )
+                            if self.accelerator.is_main_process:
+                                # _before_ saving state, check if this save would set us over the `checkpoints_total_limit`
+                                if self.config.checkpoints_total_limit is not None:
+                                    checkpoints = os.listdir(self.config.output_dir)
+                                    checkpoints = [
+                                        d for d in checkpoints if d.startswith("checkpoint")
+                                    ]
+                                    checkpoints = sorted(
+                                        checkpoints, key=lambda x: int(x.split("-")[1])
+                                    )
+
+                                    # before we save the new checkpoint, we need to have at _most_ `checkpoints_total_limit - 1` checkpoints
+                                    if (
+                                        len(checkpoints)
+                                        >= self.config.checkpoints_total_limit
+                                    ):
+                                        num_to_remove = (
+                                            len(checkpoints)
+                                            - self.config.checkpoints_total_limit
+                                            + 1
+                                        )
+                                        removing_checkpoints = checkpoints[0:num_to_remove]
+                                        logger.debug(
+                                            f"{len(checkpoints)} checkpoints already exist, removing {len(removing_checkpoints)} checkpoints"
+                                        )
+                                        logger.debug(
+                                            f"removing checkpoints: {', '.join(removing_checkpoints)}"
+                                        )
+
+                                        for removing_checkpoint in removing_checkpoints:
+                                            removing_checkpoint = os.path.join(
+                                                self.config.output_dir, removing_checkpoint
+                                            )
+                                            try:
+                                                shutil.rmtree(
+                                                    removing_checkpoint, ignore_errors=True
+                                                )
+                                            except Exception as e:
+                                                logger.error(
+                                                    f"Failed to remove directory: {removing_checkpoint}"
+                                                )
+                                                print(e)
+
+                            if (
+                                self.accelerator.is_main_process
+                                or self.config.use_deepspeed_optimizer
+                            ):
+                                save_path = os.path.join(
+                                    self.config.output_dir,
+                                    f"checkpoint-{self.state['global_step']}",
+                                )
+                                print("\n")
+                                # schedulefree optim needs the optimizer to be in eval mode to save the state (and then back to train after)
+                                self.mark_optimizer_eval()
+                                self.accelerator.save_state(save_path)
+                                self.mark_optimizer_train()
+                                for _, backend in StateTracker.get_data_backends().items():
+                                    if "sampler" in backend:
+                                        logger.debug(f"Backend: {backend}")
+                                        backend["sampler"].save_state(
+                                            state_path=os.path.join(
+                                                save_path,
+                                                self.model_hooks.training_state_path,
+                                            ),
+                                        )
+
+                        if (
+                            self.config.accelerator_cache_clear_interval is not None
+                            and self.state["global_step"]
+                            % self.config.accelerator_cache_clear_interval
+                            == 0
+                        ):
+                            reclaim_memory()
+
+                    logs = {
+                        "step_loss": loss.detach().item(),
+                        "lr": float(self.lr),
+                    }
+                    if "mean_cfg" in wandb_logs:
+                        logs["mean_cfg"] = wandb_logs["mean_cfg"]
+
+                    # progress_bar.set_postfix(**logs)
+                    self.mark_optimizer_eval()
+                    if self.validation is not None:
+                        self.validation.run_validations(
+                            validation_type="intermediary", step=step
+                        )
+                    self.mark_optimizer_train()
+                    if (
+                        self.config.push_to_hub
+                        and self.config.push_checkpoints_to_hub
+                        and self.state["global_step"] % self.config.checkpointing_steps == 0
+                        and step % self.config.gradient_accumulation_steps == 0
+                        and self.state["global_step"] > self.state["global_resume_step"]
+                    ):
+                        if self.accelerator.is_main_process:
+                            try:
+                                self.hub_manager.upload_latest_checkpoint(
+                                    validation_images=(
+                                        getattr(self.validation, "validation_images")
+                                        if self.validation is not None
+                                        else None
+                                    ),
+                                    webhook_handler=self.webhook_handler,
+                                )
+                            except Exception as e:
+                                logger.error(
+                                    f"Error uploading to hub: {e}, continuing training."
+                                )
+                    self.accelerator.wait_for_everyone()
+
+                    if (
+                        self.state["global_step"] >= self.config.max_train_steps
+                        or epoch > self.config.num_train_epochs
+                    ):
+                        logger.info(
+                            f"Training has completed."
+                            f"\n -> global_step = {self.state['global_step']}, max_train_steps = {self.config.max_train_steps}, epoch = {epoch}, num_train_epochs = {self.config.num_train_epochs}",
+                        )
+                        break
             if (
                 self.state["global_step"] >= self.config.max_train_steps
                 or epoch > self.config.num_train_epochs
             ):
                 if os.environ.get('PROFILE_TRAINING_LOOP', None) is not None and pr is not None:
-                    name = os.environ.get('PROFILE_TRAINING_LOOP', '')
+                    name = f'{get_rank()}-{self.n_runs}'
                     pr.disable()
                     s = io.StringIO()
                     sortby = SortKey.CUMULATIVE
                     ps = pstats.Stats(pr, stream=s).sort_stats(sortby)
                     ps.print_stats()
-                    with open(f'v1_profile_{name}.txt', 'w') as f:
+                    with open(f'v1_profile_cum_{name}.txt', 'w') as f:
                         f.write(s.getvalue())
                     sortby = SortKey.TIME
                     ps = pstats.Stats(pr, stream=s).sort_stats(sortby)
                     ps.print_stats()
-                    with open(f'v1_profile_{name}.txt', 'w') as f:
+                    with open(f'v1_profile_time_{name}.txt', 'w') as f:
                         f.write(s.getvalue())
 
                 logger.info(
@@ -3122,10 +3199,12 @@ class Trainer:
                     force_evaluation=True,
                     skip_execution=True,
                 ).validation_images
+
             if self.unet is not None:
                 self.unet = unwrap_model(self.accelerator, self.unet)
             if self.transformer is not None:
                 self.transformer = unwrap_model(self.accelerator, self.transformer)
+
             if (
                 "lora" in self.config.model_type
                 and "standard" == self.config.lora_type.lower()
