@@ -158,6 +158,7 @@ diffusers.utils.logging.set_verbosity_warning()
 
 
 class Trainer:
+    n_runs = 0
     has_had_lora_inited = False
 
     def __init__(
@@ -282,6 +283,7 @@ class Trainer:
                 self._cache_lora_and_optim_for_fast_reset()
                 self.has_had_lora_inited = True
             self.train()
+            self.n_runs += 1
 
         except Exception as e:
             import traceback
@@ -1717,8 +1719,8 @@ class Trainer:
                 config=vars(public_args),
                 init_kwargs={
                     "wandb": {
-                        "name": tracker_run_name,
-                        "id": f"{public_args_hash}",
+                        "name": f"{tracker_run_name}-{self.n_runs}",
+                        "id": f"{public_args_hash}-{self.n_runs}",
                         "resume": "allow",
                         "allow_val_change": True,
                     }
@@ -3483,3 +3485,4 @@ class Trainer:
             if self.accelerator.is_main_process:
                 for tracker in self.accelerator.trackers:
                     tracker.finish()
+                setattr(self.accelerator, 'trackers', [])
