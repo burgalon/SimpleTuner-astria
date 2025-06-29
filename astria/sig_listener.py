@@ -17,6 +17,9 @@ current_tune = None
 global current_train_tune
 current_train_tune = None
 
+global trainer_instance
+trainer_instance = None
+
 class TerminateException(Exception):
     pass
 
@@ -34,6 +37,10 @@ def handle_sigterm(signum, frame):
             if prompt.trained_at is None or True:
                 report_infer_job_failure(prompt, "TerminateException")
 
+    if trainer_instance:
+        print("Aborting trainer instance")
+        trainer_instance.abort()
+
 def is_terminated():
     global terminate
     return terminate
@@ -46,6 +53,19 @@ def set_current_train_tune(tune):
     global current_train_tune
     current_train_tune = tune
 
+def set_trainer_instance(trainer):
+    global trainer_instance
+    trainer_instance = trainer
+
 signal.signal(signal.SIGTERM, handle_sigterm)
+signal.signal(signal.SIGHUP, handle_sigterm)
+
 if not os.environ.get('DEBUG', None):
     signal.signal(signal.SIGINT, handle_sigterm)
+
+if __name__ == "__main__":
+    # Test the signal handling
+    import time
+    print("Running... Press Ctrl+C or send SIGTERM to terminate.")
+    time.sleep(1200)
+
