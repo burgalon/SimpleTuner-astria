@@ -2019,6 +2019,8 @@ class Trainer:
         # )
         if self.torch_compile_transformer:
             self.transformer = self._torch_compiled_transformer_ref
+        else:
+            self.transformer = self.accelerator.unwrap_model(self.transformer)
 
         # plus the global state
         self.state = {
