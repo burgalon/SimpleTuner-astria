@@ -173,6 +173,7 @@ class Trainer:
         job_id: str = None,
         keep_backbone_loaded: bool = False,
         torch_compile_transformer: bool = False,
+        skip_unload_supporting_models: bool = False,
         report_to: str|None = None,
     ):
         self.accelerator = None
@@ -194,6 +195,7 @@ class Trainer:
         self.validation = None
         self.keep_backbone_loaded = keep_backbone_loaded
         self.torch_compile_transformer = torch_compile_transformer
+        self.skip_unload_supporting_models = skip_unload_supporting_models
         self.text_encoders = []
         StateTracker.set_job_id(job_id)
         self.parse_arguments(args=config, disable_accelerator=disable_accelerator)
@@ -794,6 +796,9 @@ class Trainer:
 
     def init_unload_text_encoder(self):
         if self.config.model_type != "full" and self.config.train_text_encoder:
+            return
+        if self.skip_unload_supporting_models is True:
+            logger.info('Skipping unloading the text encoders...')
             return
         memory_before_unload = self.stats_memory_used()
         if self.accelerator.is_main_process:
@@ -1477,6 +1482,9 @@ class Trainer:
 
     def init_unload_vae(self):
         if self.config.keep_vae_loaded or self.config.vae_cache_ondemand:
+            return
+        if self.skip_unload_supporting_models is True:
+            logger.info('Skipping unloading the VAE...')
             return
         memory_before_unload = self.stats_memory_used()
         self.vae = self.vae.to("cpu")

@@ -71,6 +71,7 @@ class Worker:
         self.trainer = Trainer(
             keep_backbone_loaded=True,
             report_to='wandb' if os.environ.get('TRAIN_WANDB', False) else None,
+            skip_unload_supporting_models=True,
             torch_compile_transformer=os.environ.get('TORCH_COMPILE_TRANSFORMER', False),
         )
         set_trainer_instance(self.trainer)
