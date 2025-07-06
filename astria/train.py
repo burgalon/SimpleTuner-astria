@@ -254,7 +254,7 @@ def train_no_catch(tune: JsonObj):
             '--num_train_epochs=0',
             # '--fuse_qkv_projections',
             f'--max_train_steps={steps}',
-            '--fuse_qkv_projections',
+            # '--fuse_qkv_projections',
             # '--metadata_update_interval=65', # ?
             # https://wandb.ai/astria/lora-training/runs/b94a195701ed0a7d7b53e6c9771c4388?nw=nwuserburgalonastria
             *([f'--max_grad_norm={tune.max_grad_norm}'] if tune.max_grad_norm else []),

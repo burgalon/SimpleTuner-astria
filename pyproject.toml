@@ -17,7 +17,7 @@ dependencies = [
     "pillow>=11.0.0,<12",
     "opencv-python>=4.10.0.84,<5",
     "deepspeed>=0.15.1,<0.16",
-    "accelerate>=0.34.2,<0.35",
+    "accelerate",
     "safetensors>=0.4.5,<0.5",
     "compel>=2.0.1,<3",
     "clip-interrogator>=0.6.0,<0.7",
@@ -65,7 +65,7 @@ dependencies = [
     "groundingdino-py>=0.4.0",
     "atomicwrites>=1.4.1",
     "prodigy-plus-schedule-free>=1.9.2",
-    "flashattn-hopper",
+    "flash-attn",
 ]
 
 [dependency-groups]
@@ -90,7 +90,7 @@ optimum-quanto = { git = "https://github.com/huggingface/optimum-quanto" }
 lycoris-lora = { git = "https://github.com/kohakublueleaf/lycoris", rev = "dev" }
 diffsynth = { git = "https://github.com/modelscope/DiffSynth-Studio.git", rev = "39890f023f64bdf2a71c09ae32b242784b8a6dbf" }
 easy-dwpose = { git = "https://github.com/carpedm20/easy_dwpose.git", rev = "3eccc2bbdb1db1f01c9b867be92fce23d54c5558" }
-flashattn-hopper = { path = "wheels/flashattn_hopper-3.0.0b1-cp312-cp312-linux_x86_64.whl" }
+flash-attn = { path = "wheels/flash_attn-2.8.0-cp312-cp312-linux_x86_64.whl" }
 
 [build-system]
 requires = ["hatchling"]

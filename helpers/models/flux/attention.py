@@ -226,10 +226,15 @@ class FluxFusedFlashAttnProcessor3(object):
 
             self.flash_attn_qkvpacked_func = flash_attn_qkvpacked_func
         except ImportError:
-            raise ImportError(
-                "FluxFusedFlashAttnProcessor3 requires flash-attn library. "
-                "Install with: pip install flash-attn --no-build-isolation"
-            )
+            try:
+                from flash_attn import flash_attn_qkvpacked_func
+
+                self.flash_attn_qkvpacked_func = flash_attn_qkvpacked_func
+            except ImportError:
+                raise ImportError(
+                    "FluxFusedFlashAttnProcessor3 requires flash-attn library. "
+                    "Install with: pip install flash-attn --no-build-isolation"
+                )
 
     def __call__(
         self,
