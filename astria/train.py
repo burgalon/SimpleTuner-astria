@@ -10,7 +10,7 @@ from pathlib import Path
 import torch
 
 from astria_utils import run, run_with_output, MODELS_DIR, EPHEMERAL_MODELS_DIR, \
-    download_model_from_server, JsonObj, cleanup_models, CUDA_VISIBLE_DEVICES, upload_to_sync
+    download_model_from_server, JsonObj, cleanup_models, CUDA_VISIBLE_DEVICES
 
 if os.environ.get('MOCK_SERVER') or os.environ.get('DEBUG') == 'test':
     from astria_mock_server import request_tune_job_from_server, server_tune_done, report_tune_job_failure
@@ -22,6 +22,8 @@ from sig_listener import is_terminated
 from download_training_v1 import create_data_config_v1
 from download_training_v2 import create_data_config_v2
 from download_training_v3 import create_data_config_v3
+
+GPU_MEMORY_GB = torch.cuda.get_device_properties(0).total_memory / 1024**3
 
 
 def poll_train() -> int:
@@ -224,7 +226,13 @@ def train_no_catch(tune: JsonObj):
             # *([f'--multi_gpu'] if num_gpus > 1 else []),
             # f'--num_processes={num_gpus}',
             '--num_machines=1',
-            '--dynamo_backend=no',
+            # 2 GPUs
+            # 1.77it/s dynamo_backend=no
+            # 2.8it/s dynamo_backend=inductor
+            # 1 GPU
+            # 1.04s/it dynamo_backend=no 300 steps => 4:45
+            # 1.80it/s dynamo_backend=inductor 300 steps => 23s tracing + (300/1.8) = 23 + 166 = 189s => 3:09 but in reality took 4:06
+            '--dynamo_backend', 'inductor' if not tune.disable_inductor else 'no',
             'train.py',
             # '--base_model_default_dtype=fp32',
             '--model_type=lora',
@@ -234,9 +242,9 @@ def train_no_catch(tune: JsonObj):
                 '--pretrained_transformer_model_name_or_path', download_dev2pro(),
                 '--pretrained_transformer_subfolder', 'none',
             ] if tune.dev2pro else []),
-            '--enable_xformers_memory_efficient_attention', # ?
-            '--gradient_checkpointing', # avoid OOM
-            '--peft_model_precision=fp32', # or bf16; when using adamw_bf16 this should be bf16
+            # '--enable_xformers_memory_efficient_attention', # ?
+            *(['--gradient_checkpointing'] if GPU_MEMORY_GB <= 50 or tune.gradient_checkpointing else []), # avoid OOM but slows training
+            '--peft_model_precision', tune.peft_model_precision or 'bf16', # or bf16; when using adamw_bf16 this should be bf16
             '--set_grads_to_none', # ?
             '--gradient_accumulation_steps', str(tune.gradient_accumulation_steps or 1),
             '--resume_from_checkpoint=latest',
@@ -245,6 +253,7 @@ def train_no_catch(tune: JsonObj):
             '--aspect_bucket_rounding=2',
             '--num_train_epochs=0',
             f'--max_train_steps={steps}',
+            '--fuse_qkv_projections',
             # '--metadata_update_interval=65', # ?
             # https://wandb.ai/astria/lora-training/runs/b94a195701ed0a7d7b53e6c9771c4388?nw=nwuserburgalonastria
             *([f'--max_grad_norm={tune.max_grad_norm}'] if tune.max_grad_norm else []),
@@ -297,13 +306,13 @@ def train_no_catch(tune: JsonObj):
             '--checkpoints_total_limit=10',
             '--validation_steps', str(tune.validation_steps) if tune.validation_steps else '5000',
             f'--tracker_run_name={tune.id}-{tune.branch}-{os.environ.get("TRACKER_NAME", timestamp)} {tune.title} {tune.args}',
-            *(['--evaluation_type=face'] if tune.report_to and tune.face_crop else []),
+            # *(['--evaluation_type=face'] if tune.report_to and tune.face_crop else []),
             '--tracker_project_name=flux-lora',
             '--validation_guidance=3.5',
             '--validation_guidance_rescale=0.0',
             '--disable_benchmark',
-            *(['--flux_schedule_auto_shift'] if tune.flux_schedule_auto_shift else []),
-            '--flux_schedule_shift', str(tune.flux_schedule_shift if tune.flux_schedule_shift is not None else 0),
+            *(['--flow_schedule_shift'] if tune.flux_schedule_auto_shift else []),
+            '--flow_schedule_shift', str(tune.flux_schedule_shift if tune.flux_schedule_shift is not None else 0),
             '--skip_file_discovery=aspect,metadata',
             *(['--prepend_instance_prompt'] if caption_strategy == "textfile" else []),
         ])
@@ -322,7 +331,7 @@ def train_no_catch(tune: JsonObj):
             '--model_type=lora',
             '--pretrained_model_name_or_path', model_path,
             '--enable_xformers_memory_efficient_attention',
-            '--gradient_checkpointing',
+            *(['--gradient_checkpointing'] if GPU_MEMORY_GB <= 50 or tune.gradient_checkpointing else []), # avoid OOM but slows training
             '--set_grads_to_none',
             '--gradient_accumulation_steps=1',
             '--resume_from_checkpoint=latest',
@@ -392,8 +401,25 @@ def train_no_catch(tune: JsonObj):
         f"{output_dir}/pytorch_lora_weights.safetensors",
         f"{MODELS_DIR}/{tune.id}.safetensors",
     )
-    upload_to_sync(f"{tune.id}.safetensors")
-    if not os.environ.get('MOCK_SERVER'):
+    if not os.environ.get('MOCK_SERVER') and os.environ.get('R2_ACCESS_KEY_ID'):
+        endpoint, key, secret = os.environ.get('AWS_ENDPOINT_URL_S3'), os.environ.get('AWS_ACCESS_KEY_ID'), os.environ.get('AWS_SECRET_ACCESS_KEY')
+        os.environ['AWS_ENDPOINT_URL_S3'] = os.environ['R2_ENDPOINT_URL_S3']
+        os.environ['AWS_ACCESS_KEY_ID'] = os.environ['R2_ACCESS_KEY_ID']
+        os.environ['AWS_SECRET_ACCESS_KEY'] = os.environ['R2_SECRET_ACCESS_KEY']
+        run([
+            "aws", "s3", "cp",
+            f'{output_dir}/pytorch_lora_weights.safetensors',
+            f"s3://sdbooth2-production/models/{tune.id}.safetensors",
+            '--checksum-algorithm=CRC32',
+        ])
+        if endpoint: os.environ['AWS_ENDPOINT_URL_S3'] = endpoint
+        else: del os.environ['AWS_ENDPOINT_URL_S3']
+        if key: os.environ['AWS_ACCESS_KEY_ID'] = key
+        else: del os.environ['AWS_ACCESS_KEY_ID']
+        if secret: os.environ['AWS_SECRET_ACCESS_KEY'] = secret
+        else: del os.environ['AWS_SECRET_ACCESS_KEY']
+
+    if not os.environ.get('MOCK_SERVER') and os.environ.get('AWS_ACCESS_KEY_ID'):
         run([
             "aws", "s3", "cp",
             f'{output_dir}/pytorch_lora_weights.safetensors',
