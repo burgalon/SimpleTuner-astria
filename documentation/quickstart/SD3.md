@@ -4,7 +4,7 @@ In this example, we'll be training a Stable Diffusion 3 model using the SimpleTu
 
 ### Prerequisites
 
-Make sure that you have python installed; SimpleTuner does well with 3.10 or 3.11. **Python 3.12 should not be used**.
+Make sure that you have python installed; SimpleTuner does well with 3.10 through 3.12.
 
 You can check this by running:
 
@@ -12,15 +12,15 @@ You can check this by running:
 python --version
 ```
 
-If you don't have python 3.11 installed on Ubuntu, you can try the following:
+If you don't have python 3.12 installed on Ubuntu, you can try the following:
 
 ```bash
-apt -y install python3.11 python3.11-venv
+apt -y install python3.12 python3.12-venv
 ```
 
 #### Container image dependencies
 
-For Vast, RunPod, and TensorDock (among others), the following will work on a CUDA 12.2-12.4 image:
+For Vast, RunPod, and TensorDock (among others), the following will work on a CUDA 12.2-12.8 image:
 
 ```bash
 apt -y install nvidia-cuda-toolkit libgl1-mesa-glx
@@ -50,11 +50,11 @@ poetry config virtualenvs.create false
 Depending on your system, you will run one of 3 commands:
 
 ```bash
+# Linux with NVIDIA
+poetry install
+
 # MacOS
 poetry install -C install/apple
-
-# Linux
-poetry install
 
 # Linux with ROCM
 poetry install -C install/rocm
@@ -141,11 +141,7 @@ There are a few more if using a Mac M-series machine:
 
 Tested on Apple and NVIDIA systems, Hugging Face Optimum-Quanto can be used to reduce the precision and VRAM requirements well below the requirements of base SDXL training.
 
-Inside your SimpleTuner venv:
 
-```bash
-pip install optimum-quanto
-```
 
 > ⚠️ If using a JSON config file, be sure to use this format in `config.json` instead of `config.env`:
 
@@ -195,12 +191,12 @@ In your `/home/user/simpletuner/config` directory, create a multidatabackend.jso
     "crop": true,
     "crop_aspect": "square",
     "crop_style": "center",
-    "resolution": 1.0,
+    "resolution": 1024,
     "minimum_image_size": 0,
-    "maximum_image_size": 1.0,
-    "target_downsample_size": 1.0,
-    "resolution_type": "area",
-    "cache_dir_vae": "cache/vae/sd3/pseudo-camera-10k",
+    "maximum_image_size": 1024,
+    "target_downsample_size": 1024,
+    "resolution_type": "pixel_area",
+    "cache_dir_vae": "/home/user/simpletuner/output/cache/vae/sd3/pseudo-camera-10k",
     "instance_data_dir": "/home/user/simpletuner/datasets/pseudo-camera-10k",
     "disabled": false,
     "skip_file_discovery": "",
@@ -277,8 +273,8 @@ The following values are recommended for `config.json`:
   "--validation_guidance_skip_layers_stop": 0.2,
   "--validation_guidance_skip_scale": 2.8,
   "--validation_guidance": 4.0,
-  "--flux_use_uniform_schedule": true,
-  "--flux_schedule_auto_shift": true
+  "--flow_use_uniform_schedule": true,
+  "--flow_schedule_auto_shift": true
 }
 ```
 
@@ -309,17 +305,17 @@ Some changes were made to SimpleTuner's SD3.5 support:
 - No longer zeroing T5 padding space by default (`--t5_padding`)
 - Offering a switch (`--sd3_clip_uncond_behaviour` and `--sd3_t5_uncond_behaviour`) to use empty encoded blank captions for unconditional predictions (`empty_string`, **default**) or zeros (`zero`), not a recommended setting to tweak.
 - SD3.5 training loss function was updated to match that found in the upstream StabilityAI/SD3.5 repository
-- Updated default `--flux_schedule_shift` value to 3 to match the static 1024px value for SD3
-  - StabilityAI followed-up with documentation to use `--flux_schedule_shift=1` with `--flux_use_uniform_schedule`
-  - Community members have reported that `--flux_schedule_auto_shift` works better when using mult-aspect or multi-resolution training
-- Updated the hard-coded tokeniser sequence length limit to **256** with the option to revert it to **77** tokens to save disk space or compute at the cost of output quality degradation
+- Updated default `--flow_schedule_shift` value to 3 to match the static 1024px value for SD3
+  - StabilityAI followed-up with documentation to use `--flow_schedule_shift=1` with `--flow_use_uniform_schedule`
+  - Community members have reported that `--flow_schedule_auto_shift` works better when using mult-aspect or multi-resolution training
+- Updated the hard-coded tokeniser sequence length limit to **154** with the option to revert it to **77** tokens to save disk space or compute at the cost of output quality degradation
 
 
 #### Stable configuration values
 
 These options have been known to keep SD3.5 in-tact for as long as possible:
 - optimizer=adamw_bf16
-- flux_schedule_shift=1
+- flow_schedule_shift=1
 - learning_rate=1e-4
 - batch_size=4 * 3 GPUs
 - max_grad_norm=0.1
@@ -332,12 +328,18 @@ These options have been known to keep SD3.5 in-tact for as long as possible:
 - OS: Ubuntu Linux 24
 - GPU: A single NVIDIA CUDA device (10G, 12G)
 - System memory: 50G of system memory approximately
-- Base model precision: `bnb-nf4`
+- Base model precision: `nf4-bnb`
 - Optimiser: Lion 8Bit Paged, `bnb-lion8bit-paged`
 - Resolution: 512px
 - Batch size: 1, zero gradient accumulation steps
 - DeepSpeed: disabled / unconfigured
 - PyTorch: 2.5
+
+### SageAttention
+
+When using `--attention_mechanism=sageattention`, inference can be sped-up at validation time.
+
+**Note**: This isn't compatible with _every_ model configuration, but it's worth trying.
 
 ### Masked loss
 
@@ -354,3 +356,7 @@ See [this section](/documentation/DREAMBOOTH.md#quantised-model-training-loralyc
 ### CLIP score tracking
 
 If you wish to enable evaluations to score the model's performance, see [this document](/documentation/evaluation/CLIP_SCORES.md) for information on configuring and interpreting CLIP scores.
+
+# Stable evaluation loss
+
+If you wish to use stable MSE loss to score the model's performance, see [this document](/documentation/evaluation/EVAL_LOSS.md) for information on configuring and interpreting evaluation loss.

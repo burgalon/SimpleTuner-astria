@@ -4,7 +4,7 @@ In this example, we'll be training a PixArt Sigma model using the SimpleTuner to
 
 ### Prerequisites
 
-Make sure that you have python installed; SimpleTuner does well with 3.10 or 3.11. **Python 3.12 should not be used**.
+Make sure that you have python installed; SimpleTuner does well with 3.10 through 3.12.
 
 You can check this by running:
 
@@ -12,15 +12,15 @@ You can check this by running:
 python --version
 ```
 
-If you don't have python 3.11 installed on Ubuntu, you can try the following:
+If you don't have python 3.12 installed on Ubuntu, you can try the following:
 
 ```bash
-apt -y install python3.11 python3.11-venv
+apt -y install python3.12 python3.12-venv
 ```
 
 #### Container image dependencies
 
-For Vast, RunPod, and TensorDock (among others), the following will work on a CUDA 12.2-12.4 image:
+For Vast, RunPod, and TensorDock (among others), the following will work on a CUDA 12.2-12.8 image:
 
 ```bash
 apt -y install nvidia-cuda-toolkit libgl1-mesa-glx
@@ -50,11 +50,11 @@ poetry config virtualenvs.create false
 Depending on your system, you will run one of 3 commands:
 
 ```bash
+# Linux with NVIDIA
+poetry install
+
 # MacOS
 poetry install -C install/apple
-
-# Linux
-poetry install
 
 # Linux with ROCM
 poetry install -C install/rocm
@@ -220,3 +220,13 @@ For more information, see the [dataloader](/documentation/DATALOADER.md) and [tu
 ### CLIP score tracking
 
 If you wish to enable evaluations to score the model's performance, see [this document](/documentation/evaluation/CLIP_SCORES.md) for information on configuring and interpreting CLIP scores.
+
+# Stable evaluation loss
+
+If you wish to use stable MSE loss to score the model's performance, see [this document](/documentation/evaluation/EVAL_LOSS.md) for information on configuring and interpreting evaluation loss.
+
+### SageAttention
+
+When using `--attention_mechanism=sageattention`, inference can be sped-up at validation time.
+
+**Note**: This isn't compatible with _every_ model configuration, but it's worth trying.

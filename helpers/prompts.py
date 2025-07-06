@@ -30,7 +30,6 @@ prompts = {
     "fairy_garden": "Whimsical garden filled with fairies, magical plants, sparkling lights, serene atmosphere, high detail",
     "fantasy_dragon": "Majestic dragon soaring through the sky, detailed scales, dynamic pose, fantasy art, high resolution",
     "floating_islands": "Fantasy world, floating islands in the sky, waterfalls, lush vegetation, detailed landscape, high resolution",
-    "futuristic_cityscape": "Futuristic city skyline at night, neon lights, cyberpunk style, high contrast, sharp focus",
     "galactic_battle": "Space battle scene, starships fighting, laser beams, explosions, cosmic background",
     "haunted_fairground": "Abandoned fairground at night, eerie rides, ghostly figures, fog, dark atmosphere, high detail",
     "haunted_mansion": "Spooky haunted mansion on a hill, dark and eerie, glowing windows, ghostly atmosphere, high detail",
@@ -99,6 +98,10 @@ logger = logging.getLogger("PromptHandler")
 logger.setLevel(os.environ.get("SIMPLETUNER_LOG_LEVEL", "INFO"))
 
 
+class CaptionNotFoundError(Exception):
+    pass
+
+
 class PromptHandler:
     def __init__(
         self,
@@ -106,68 +109,11 @@ class PromptHandler:
         text_encoders: list,
         tokenizers: list,
         accelerator,
-        model_type: str = "sdxl",
+        model_type: str,
     ):
-        if args.disable_compel:
-            raise Exception(
-                "--disable_compel was provided, but the Compel engine was still attempted to be initialised."
-            )
-
-        from compel import Compel, ReturnedEmbeddingsType
-
         self.accelerator = accelerator
         self.encoder_style = model_type
         self.compel = None
-        if model_type in ["sdxl", "legacy"]:
-            if (
-                len(text_encoders) == 2
-                and text_encoders[1] is not None
-                and text_encoders[0] is not None
-            ):
-                # SDXL Refiner and Base can both use the 2nd tokenizer/encoder.
-                logger.debug(
-                    "Initialising Compel prompt manager with dual text encoders."
-                )
-                self.compel = Compel(
-                    tokenizer=tokenizers,
-                    text_encoder=text_encoders,
-                    truncate_long_prompts=False,
-                    returned_embeddings_type=ReturnedEmbeddingsType.PENULTIMATE_HIDDEN_STATES_NON_NORMALIZED,
-                    requires_pooled=[
-                        False,  # CLIP-L does not produce pooled embeds.
-                        True,  # CLIP-G produces pooled embeds.
-                    ],
-                    device=accelerator.device,
-                )
-            elif len(text_encoders) == 2 and text_encoders[0] is None:
-                # SDXL Refiner has ONLY the 2nd tokenizer/encoder, which needs to be the only one in Compel.
-                logger.debug(
-                    "Initialising Compel prompt manager with just the 2nd text encoder."
-                )
-                self.compel = Compel(
-                    tokenizer=tokenizers[1],
-                    text_encoder=text_encoders[1],
-                    truncate_long_prompts=False,
-                    returned_embeddings_type=ReturnedEmbeddingsType.PENULTIMATE_HIDDEN_STATES_NON_NORMALIZED,
-                    requires_pooled=True,
-                    device=accelerator.device,
-                )
-                self.encoder_style = "sdxl-refiner"
-            elif model_type == "legacy":
-                # Any other pipeline uses the first tokenizer/encoder.
-                logger.debug(
-                    "Initialising the Compel prompt manager with a single text encoder."
-                )
-                pipe_tokenizer = tokenizers[0]
-                pipe_text_encoder = text_encoders[0]
-                self.compel = Compel(
-                    tokenizer=pipe_tokenizer,
-                    text_encoder=pipe_text_encoder,
-                    truncate_long_prompts=False,
-                    returned_embeddings_type=ReturnedEmbeddingsType.LAST_HIDDEN_STATES_NORMALIZED,
-                    device=accelerator.device,
-                )
-                self.encoder_style = "legacy"
         self.text_encoders = text_encoders
         self.tokenizers = tokenizers
 
@@ -250,7 +196,7 @@ class PromptHandler:
             image_filename_stem = os.path.splitext(image_filename_stem)[0]
         image_caption = metadata_backend.caption_cache_entry(image_filename_stem)
         if instance_prompt is None and fallback_caption_column and not image_caption:
-            raise ValueError(
+            raise CaptionNotFoundError(
                 f"Could not locate caption for image {image_path} in sampler_backend {sampler_backend_id} with filename column {filename_column}, caption column {caption_column}, and a parquet database with {len(parquet_db)} entries."
             )
         elif (
@@ -258,7 +204,7 @@ class PromptHandler:
             and not fallback_caption_column
             and not image_caption
         ):
-            raise ValueError(
+            raise CaptionNotFoundError(
                 f"Could not locate caption for image {image_path} in sampler_backend {sampler_backend_id} with filename column {filename_column}, caption column {caption_column}, and a parquet database with {len(parquet_db)} entries."
             )
         if type(image_caption) == bytes:
@@ -336,6 +282,73 @@ class PromptHandler:
             logger.error(f"Could not read caption file {caption_file}: {e}")
 
     @staticmethod
+    def prepare_instance_prompt_from_huggingface(
+        image_path: str,
+        use_captions: bool,
+        prepend_instance_prompt: bool,
+        data_backend: BaseDataBackend,
+        instance_prompt: str = None,
+        sampler_backend_id: str = None,
+    ) -> str:
+        """
+        Prepare prompt from HuggingFace dataset metadata.
+
+        Args:
+            image_path: Virtual path like "0.jpg"
+            use_captions: Whether to use captions
+            prepend_instance_prompt: Whether to prepend instance prompt
+            data_backend: The data backend
+            instance_prompt: Optional instance prompt
+            sampler_backend_id: Backend ID for metadata lookup
+
+        Returns:
+            str or list: The caption(s) for the image
+        """
+        if not use_captions:
+            if not instance_prompt:
+                raise ValueError(
+                    "Instance prompt is required when instance_prompt_only is enabled."
+                )
+            return instance_prompt
+
+        if sampler_backend_id is None:
+            sampler_backend_id = data_backend.id
+
+        # Get the metadata backend
+        backend_info = StateTracker.get_data_backend(sampler_backend_id)
+        if not backend_info or "metadata_backend" not in backend_info:
+            raise ValueError(
+                f"Could not find metadata backend for {sampler_backend_id}"
+            )
+
+        metadata_backend = backend_info["metadata_backend"]
+
+        # For HuggingFace, the image_path is already the virtual path like "0.jpg"
+        caption = metadata_backend.caption_cache_entry(image_path)
+
+        if caption is None:
+            raise CaptionNotFoundError(
+                f"Could not find caption for {image_path} in HuggingFace dataset"
+            )
+
+        # Process the caption
+        if isinstance(caption, bytes):
+            caption = caption.decode("utf-8")
+        if isinstance(caption, str):
+            caption = caption.strip()
+        if isinstance(caption, (list, tuple, numpy.ndarray, pd.Series)):
+            caption = [str(item).strip() for item in caption if item is not None]
+
+        # Prepend instance prompt if requested
+        if prepend_instance_prompt and instance_prompt:
+            if isinstance(caption, list):
+                caption = [instance_prompt + " " + c for c in caption]
+            else:
+                caption = instance_prompt + " " + caption
+
+        return caption
+
+    @staticmethod
     def magic_prompt(
         image_path: str,
         use_captions: bool,
@@ -385,15 +398,23 @@ class PromptHandler:
                 data_backend=data_backend,
                 sampler_backend_id=sampler_backend_id,
             )
+        elif caption_strategy == "huggingface":
+            instance_prompt = PromptHandler.prepare_instance_prompt_from_huggingface(
+                image_path,
+                use_captions=use_captions,
+                prepend_instance_prompt=prepend_instance_prompt,
+                instance_prompt=instance_prompt,
+                data_backend=data_backend,
+                sampler_backend_id=sampler_backend_id,
+            )
         elif caption_strategy == "instanceprompt":
             return instance_prompt
         elif caption_strategy == "csv":
             return data_backend.get_caption(image_path)
         else:
             raise ValueError(
-                f"Unsupported caption strategy: {caption_strategy}. Supported: 'filename', 'textfile', 'parquet', 'instanceprompt'"
+                f"Unsupported caption strategy: {caption_strategy}. Supported: 'filename', 'textfile', 'parquet', 'instanceprompt', 'csv', 'huggingface'"
             )
-
         return instance_prompt
 
     @staticmethod
@@ -405,7 +426,9 @@ class PromptHandler:
         caption_strategy: str,
         instance_prompt: str = None,
     ) -> list:
+
         captions = []
+        images_missing_captions = []
         all_image_files = StateTracker.get_image_files(
             data_backend_id=data_backend.id
         ) or data_backend.list_files(
@@ -431,38 +454,52 @@ class PromptHandler:
             leave=False,
             ncols=125,
         ):
-            if caption_strategy == "filename":
-                caption = PromptHandler.prepare_instance_prompt_from_filename(
-                    image_path=str(image_path),
-                    use_captions=use_captions,
-                    prepend_instance_prompt=prepend_instance_prompt,
-                    instance_prompt=instance_prompt,
-                )
-            elif caption_strategy == "textfile":
-                caption = PromptHandler.prepare_instance_prompt_from_textfile(
-                    image_path,
-                    use_captions=use_captions,
-                    prepend_instance_prompt=prepend_instance_prompt,
-                    instance_prompt=instance_prompt,
-                    data_backend=data_backend,
-                )
-            elif caption_strategy == "parquet":
-                caption = PromptHandler.prepare_instance_prompt_from_parquet(
-                    image_path,
-                    use_captions=use_captions,
-                    prepend_instance_prompt=prepend_instance_prompt,
-                    instance_prompt=instance_prompt,
-                    data_backend=data_backend,
-                    sampler_backend_id=data_backend.id,
-                )
-            elif caption_strategy == "instanceprompt":
-                return [instance_prompt]
-            elif caption_strategy == "csv":
-                caption = data_backend.get_caption(image_path)
-            else:
-                raise ValueError(
-                    f"Unsupported caption strategy: {caption_strategy}. Supported: 'filename', 'textfile', 'parquet', 'instanceprompt'"
-                )
+            try:
+                if caption_strategy == "filename":
+                    caption = PromptHandler.prepare_instance_prompt_from_filename(
+                        image_path=str(image_path),
+                        use_captions=use_captions,
+                        prepend_instance_prompt=prepend_instance_prompt,
+                        instance_prompt=instance_prompt,
+                    )
+                elif caption_strategy == "textfile":
+                    caption = PromptHandler.prepare_instance_prompt_from_textfile(
+                        image_path,
+                        use_captions=use_captions,
+                        prepend_instance_prompt=prepend_instance_prompt,
+                        instance_prompt=instance_prompt,
+                        data_backend=data_backend,
+                    )
+                elif caption_strategy == "parquet":
+                    caption = PromptHandler.prepare_instance_prompt_from_parquet(
+                        image_path,
+                        use_captions=use_captions,
+                        prepend_instance_prompt=prepend_instance_prompt,
+                        instance_prompt=instance_prompt,
+                        data_backend=data_backend,
+                        sampler_backend_id=data_backend.id,
+                    )
+                elif caption_strategy == "huggingface":
+                    caption = PromptHandler.prepare_instance_prompt_from_huggingface(
+                        image_path,
+                        use_captions=use_captions,
+                        prepend_instance_prompt=prepend_instance_prompt,
+                        instance_prompt=instance_prompt,
+                        data_backend=data_backend,
+                        sampler_backend_id=data_backend.id,
+                    )
+                elif caption_strategy == "instanceprompt":
+                    return [instance_prompt], []
+                elif caption_strategy == "csv":
+                    caption = data_backend.get_caption(image_path)
+                else:
+                    raise ValueError(
+                        f"Unsupported caption strategy: {caption_strategy}. Supported: 'filename', 'textfile', 'parquet', 'instanceprompt', 'csv', 'huggingface'"
+                    )
+            except CaptionNotFoundError as e:
+                logger.error(f"Could not load caption for image {image_path}: {e}")
+                images_missing_captions.append(image_path)
+                continue
 
             if type(caption) not in [tuple, list, dict]:
                 captions.append(caption)
@@ -474,7 +511,7 @@ class PromptHandler:
         # TODO: Investigate why this prevents captions from processing on multigpu systems.
         # captions = list(set(captions))
 
-        return captions
+        return captions, images_missing_captions
 
     @staticmethod
     def filter_caption(data_backend: BaseDataBackend, caption: str) -> str:

@@ -42,6 +42,11 @@ class MetadataBackend:
         delete_unwanted_images: bool = False,
         metadata_update_interval: int = 3600,
         minimum_image_size: int = None,
+        minimum_aspect_ratio: int = None,
+        maximum_aspect_ratio: int = None,
+        num_frames: int = None,
+        minimum_num_frames: int = None,
+        maximum_num_frames: int = None,
         cache_file_suffix: str = None,
         repeats: int = 0,
     ):
@@ -65,6 +70,7 @@ class MetadataBackend:
         self.image_metadata = {}  # Store image metadata
         self.seen_images = {}
         self.config = {}
+        self.dataset_config = StateTracker.get_data_backend_config(self.id)
         self.reload_cache()
         self.resolution = float(resolution)
         self.resolution_type = resolution_type
@@ -74,6 +80,19 @@ class MetadataBackend:
         self.minimum_image_size = (
             float(minimum_image_size) if minimum_image_size else None
         )
+        self.minimum_aspect_ratio = (
+            float(minimum_aspect_ratio) if minimum_aspect_ratio else None
+        )
+        self.maximum_aspect_ratio = (
+            float(maximum_aspect_ratio) if maximum_aspect_ratio else None
+        )
+        self.maximum_num_frames = (
+            float(maximum_num_frames) if maximum_num_frames else None
+        )
+        self.minimum_num_frames = (
+            float(minimum_num_frames) if minimum_num_frames else None
+        )
+        self.num_frames = float(num_frames) if num_frames else None
         self.image_metadata_loaded = False
         self.vae_output_scaling_factor = 8
         self.metadata_semaphor = Semaphore()
@@ -255,7 +274,7 @@ class MetadataBackend:
             desc="Generating aspect bucket cache",
             total=len(new_files),
             leave=False,
-            ncols=100,
+            ncols=125,
             miniters=int(len(new_files) / 100),
         ) as pbar:
             if self.should_abort:
@@ -322,7 +341,9 @@ class MetadataBackend:
         self.save_cache(enforce_constraints=True)
         logger.info("Completed aspect bucket update.")
 
-    def split_buckets_between_processes(self, gradient_accumulation_steps=1):
+    def split_buckets_between_processes(
+        self, gradient_accumulation_steps=1, apply_padding=False
+    ):
         """
         Splits the contents of each bucket in aspect_ratio_bucket_indices between the available processes.
         """
@@ -350,7 +371,7 @@ class MetadataBackend:
                 )
 
             with self.accelerator.split_between_processes(
-                trimmed_images, apply_padding=False
+                trimmed_images, apply_padding=apply_padding
             ) as images_split:
                 # Now images_split contains only the part of the images list that this process should handle
                 new_aspect_ratio_bucket_indices[bucket] = images_split
@@ -448,6 +469,9 @@ class MetadataBackend:
         """
         Remove buckets that have fewer samples than batch_size and enforce minimum image size constraints.
         """
+        if self.minimum_image_size is None:
+            return
+
         logger.info(
             f"Enforcing minimum image size of {self.minimum_image_size}."
             " This could take a while for very-large datasets."
@@ -463,6 +487,50 @@ class MetadataBackend:
                 self._enforce_resolution_constraints(bucket)
                 # We do this twice in case there were any new contenders for being too small.
                 self._prune_small_buckets(bucket)
+
+    def _enforce_min_aspect_ratio(self):
+        """
+        Remove buckets that have an aspect ratio outside the specified range.
+        """
+        if self.minimum_aspect_ratio is None or self.minimum_aspect_ratio == 0.0:
+            return
+
+        logger.info(
+            f"Enforcing minimum aspect ratio of {self.minimum_aspect_ratio}."
+            " This could take a while for very-large datasets."
+        )
+        for bucket in tqdm(
+            list(self.aspect_ratio_bucket_indices.keys()),
+            leave=False,
+            desc="Enforcing minimum aspect ratio",
+        ):  # Safe iteration over keys
+            if float(bucket) < self.minimum_aspect_ratio:
+                logger.info(
+                    f"Removing bucket {bucket} due to aspect ratio being less than {self.minimum_aspect_ratio}."
+                )
+                del self.aspect_ratio_bucket_indices[bucket]
+
+    def _enforce_max_aspect_ratio(self):
+        """
+        Remove buckets that have an aspect ratio outside the specified range.
+        """
+        if self.maximum_aspect_ratio is None or self.maximum_aspect_ratio == 0.0:
+            return
+
+        logger.info(
+            f"Enforcing maximum aspect ratio of {self.maximum_aspect_ratio}."
+            " This could take a while for very-large datasets."
+        )
+        for bucket in tqdm(
+            list(self.aspect_ratio_bucket_indices.keys()),
+            leave=False,
+            desc="Enforcing maximum aspect ratio",
+        ):  # Safe iteration over keys
+            if float(bucket) > self.maximum_aspect_ratio:
+                logger.info(
+                    f"Removing bucket {bucket} due to aspect ratio being greater than {self.maximum_aspect_ratio}."
+                )
+                del self.aspect_ratio_bucket_indices[bucket]
 
     def _prune_small_buckets(self, bucket):
         """
@@ -522,12 +590,33 @@ class MetadataBackend:
         """
         Check if an image meets the resolution requirements.
         """
+        if self.dataset_config.get("dataset_type", None) in ["conditioning"]:
+            # Conditioning datasets do not have resolution requirements.
+            return True
         if image is None and (image_path is not None and image_metadata is None):
             metadata = self.get_metadata_by_filepath(image_path)
             if metadata is None:
                 logger.warning(f"Metadata not found for image {image_path}.")
                 return False
             width, height = metadata["original_size"]
+        elif isinstance(image, np.ndarray):
+            # we have a video
+            width, height = image.shape[2], image.shape[1]
+            logger.debug(f"Checking resolution: {width}x{height}")
+            if self.minimum_num_frames is not None:
+                num_frames = image.shape[0]
+                if num_frames < self.minimum_num_frames:
+                    logger.debug(
+                        f"Video has {num_frames} frames, which is less than the minimum required {self.minimum_num_frames}."
+                    )
+                    return False
+            if self.maximum_num_frames is not None:
+                num_frames = image.shape[0]
+                if num_frames > self.maximum_num_frames:
+                    logger.debug(
+                        f"Video has {num_frames} frames, which is more than the maximum configured {self.maximum_num_frames}."
+                    )
+                    return False
         elif image is not None:
             width, height = image.size
         elif image_metadata is not None:
@@ -705,18 +794,33 @@ class MetadataBackend:
         Returns:
             dict: Metadata for the image. Returns None if not found.
         """
+        if type(filepath) not in [tuple, list]:
+            filepath = [filepath]
         if type(filepath) is tuple or type(filepath) is list:
             for path in filepath:
+                abs_path = self.data_backend.get_abs_path(path)
                 if path in self.image_metadata:
+                    # Maybe we got the correct path at first.
                     result = self.image_metadata.get(path, None)
                     logger.debug(
                         f"Retrieving metadata for path: {filepath}, result: {result}"
                     )
                     if result is not None:
                         return result
+                elif abs_path in self.image_metadata:
+                    # If we got a relative path, we'll try abs path.
+                    filepath = abs_path
+                    result = self.image_metadata.get(filepath, None)
+                    logger.debug(
+                        f"Retrieving metadata for path: {filepath}, result: {result}"
+                    )
+                    if result is not None:
+                        return result
+
             return None
 
-        return self.image_metadata.get(filepath, None)
+        meta = self.image_metadata.get(filepath, None)
+        return meta
 
     def scan_for_metadata(self):
         """
@@ -767,7 +871,7 @@ class MetadataBackend:
             desc="Scanning image metadata",
             total=len(new_files),
             leave=False,
-            ncols=100,
+            ncols=125,
         ) as pbar:
             while any(worker.is_alive() for worker in workers):
                 while not tqdm_queue.empty():

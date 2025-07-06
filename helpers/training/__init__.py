@@ -18,11 +18,26 @@ if torch.cuda.is_available():
         ]
     )
     primary_device = torch.cuda.get_device_properties(0)
-    if primary_device.major >= 9:
+    if primary_device.major >= 8:
         # Hopper! Or blackwell+.
         quantised_precision_levels.append("fp8-torchao")
 
-image_file_extensions = set(["jpg", "jpeg", "png", "webp", "bmp", "tiff", "tif"])
+try:
+    import pillow_jxl
+except ModuleNotFoundError:
+    pass
+from PIL import Image
+
+supported_extensions = Image.registered_extensions()
+image_file_extensions = set(
+    ext.lower().lstrip(".")
+    for ext, img_format in supported_extensions.items()
+    if img_format in Image.OPEN
+)
+
+video_file_extensions = set(["mp4", "avi", "gif", "mov", "webm"])
+# we combine image and video extensions as image extensions because it's a hack that is used to list all files.
+image_file_extensions = image_file_extensions.union(video_file_extensions)
 
 lycoris_defaults = {
     "lora": {
@@ -141,3 +156,26 @@ def steps_remaining_in_epoch(current_step: int, steps_per_epoch: int) -> int:
     """
     remaining_steps = steps_per_epoch - (current_step % steps_per_epoch)
     return remaining_steps
+
+
+def trainable_parameter_count(trainable_parameters):
+    """
+    Convert parameter count to human-readable format.
+
+    Args:
+        num_params (int): Number of trainable parameters
+
+    Returns:
+        str: Formatted string like '1.01M', '2.34B', etc.
+    """
+    num_params = sum(p.numel() for p in trainable_parameters)
+    if num_params < 1000:
+        return str(num_params)
+    elif num_params < 1_000_000:
+        return f"{num_params / 1000:.2f}K".rstrip("0").rstrip(".")
+    elif num_params < 1_000_000_000:
+        return f"{num_params / 1_000_000:.2f}M".rstrip("0").rstrip(".")
+    elif num_params < 1_000_000_000_000:
+        return f"{num_params / 1_000_000_000:.2f}B".rstrip("0").rstrip(".")
+    else:
+        return f"{num_params / 1_000_000_000_000:.2f}T".rstrip("0").rstrip(".")

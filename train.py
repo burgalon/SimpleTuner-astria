@@ -1,8 +1,25 @@
+import logging
+
+# Quiet down, you.
+ds_logger1 = logging.getLogger("DeepSpeed")
+ds_logger2 = logging.getLogger("torch.distributed.elastic.multiprocessing.redirects")
+ds_logger1.setLevel("ERROR")
+ds_logger2.setLevel("ERROR")
+import logging.config
+
+logging.config.dictConfig(
+    {
+        "version": 1,
+        "disable_existing_loggers": True,
+    }
+)
+from os import environ
+
+environ["ACCELERATE_LOG_LEVEL"] = "WARNING"
+
 from helpers.training.trainer import Trainer
 from helpers.training.state_tracker import StateTracker
 from helpers import log_format
-import logging
-from os import environ
 
 logger = logging.getLogger("SimpleTuner")
 logger.setLevel(environ.get("SIMPLETUNER_LOG_LEVEL", "INFO"))
@@ -19,7 +36,9 @@ if __name__ == "__main__":
             f"\nError: {e}"
         )
     try:
-        trainer = Trainer()
+        trainer = Trainer(
+            exit_on_error=True,
+        )
         trainer.configure_webhook()
         trainer.init_noise_schedule()
         trainer.init_seed()
@@ -29,7 +48,7 @@ if __name__ == "__main__":
         trainer.init_preprocessing_models()
         trainer.init_precision(preprocessing_models_only=True)
         trainer.init_data_backend()
-        trainer.init_validation_prompts()
+        # trainer.init_validation_prompts()
         trainer.init_unload_text_encoder()
         trainer.init_unload_vae()
 
@@ -43,8 +62,11 @@ if __name__ == "__main__":
         trainer.init_precision(ema_only=True)
 
         trainer.move_models(destination="accelerator")
+        trainer.init_distillation()
         trainer.init_validations()
+        trainer.enable_sageattention_inference()
         trainer.init_benchmark_base_model()
+        trainer.disable_sageattention_inference()
 
         trainer.resume_and_prepare()
 

@@ -3,6 +3,7 @@ from os import environ
 from diffusers.utils import is_wandb_available
 from helpers.training.multi_process import _get_rank as get_rank
 from helpers.training.state_tracker import StateTracker
+from torch.version import cuda as cuda_version
 
 logger = logging.getLogger(__name__)
 if get_rank() == 0:
@@ -49,13 +50,19 @@ def safety_check(args, accelerator):
     ):
         validate_deepspeed_compat_from_args(accelerator, args)
     if args.controlnet:
-        if args.model_family in ["pixart_sigma", "sd3", "kolors", "flux", "smoldit"]:
+        if args.model_family not in [
+            "sd1x",
+            "sd2x",
+            "sdxl",
+            "flux",
+            "pixart_sigma",
+            "auraflow",
+            "sd3",
+            "hidream",
+        ]:
             raise ValueError(
-                f"ControlNet is not yet supported with {args.model_type} models. Please disable --controlnet, or switch model types."
+                f"ControlNet is not yet supported with {args.model_family} models. Please disable --controlnet, or switch model types."
             )
-    if "lora" in args.model_type and "standard" == args.lora_type.lower():
-        if args.model_family == "pixart_sigma":
-            raise Exception(f"{args.model_type} does not support LoRA model training.")
 
     if "lora" in args.model_type and args.train_text_encoder:
         if args.lora_type.lower() == "lycoris":
@@ -73,6 +80,7 @@ def safety_check(args, accelerator):
         accelerator is not None
         and accelerator.device.type == "cuda"
         and accelerator.is_main_process
+        and cuda_version is not None
     ):
         import subprocess
 
@@ -109,11 +117,46 @@ def safety_check(args, accelerator):
         sys.exit(1)
 
     if (
-        args.flux_schedule_shift is not None
-        and args.flux_schedule_shift > 0
-        and args.flux_schedule_auto_shift
+        args.flow_schedule_shift is not None
+        and args.flow_schedule_shift > 0
+        and args.flow_schedule_auto_shift
     ):
         logger.error(
-            f"--flux_schedule_auto_shift cannot be combined with --flux_schedule_shift. Please set --flux_schedule_shift to 0 if you want to train with --flux_schedule_auto_shift."
+            f"--flow_schedule_auto_shift cannot be combined with --flow_schedule_shift. Please set --flow_schedule_shift to 0 if you want to train with --flow_schedule_auto_shift."
         )
         sys.exit(1)
+
+    if "sageattention" in args.attention_mechanism:
+        if args.sageattention_usage != "inference":
+            logger.error(
+                f"SageAttention usage is set to '{args.sageattention_usage}' instead of 'inference'. This is not an officially supported configuration, please be sure you understand the implications. It is recommended to set this value to 'inference' for safety."
+            )
+        if "nf4" in args.base_model_precision:
+            logger.error(
+                f"{args.base_model_precision} is not supported with SageAttention. Please select from int8 or fp8, or, disable quantisation to use SageAttention."
+            )
+            sys.exit(1)
+
+    gradient_checkpointing_interval_supported_models = ["flux", "sana", "sdxl", "sd3"]
+    if args.gradient_checkpointing_interval is not None:
+        if (
+            args.model_family.lower()
+            not in gradient_checkpointing_interval_supported_models
+        ):
+            logger.error(
+                f"Gradient checkpointing interval is not supported with {args.model_family} models. Please disable --gradient_checkpointing_interval by setting it to None, or remove it from your configuration. Currently supported models: {gradient_checkpointing_interval_supported_models}"
+            )
+            sys.exit(1)
+        if args.gradient_checkpointing_interval == 0:
+            raise ValueError(
+                "Gradient checkpointing interval must be greater than 0. Please set it to a positive integer."
+            )
+
+    if (
+        args.report_to == "none"
+        and args.eval_steps_interval is not None
+        and args.eval_steps_interval > 0
+    ):
+        logger.warning(
+            "Evaluation steps interval is set, but no reporting is enabled. Evaluation will not be logged."
+        )

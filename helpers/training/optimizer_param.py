@@ -19,7 +19,7 @@ except:
     pass
 
 try:
-    from torchao.prototype.low_bit_optim import (
+    from torchao.optim import (
         AdamW8bit as AOAdamW8Bit,
         AdamW4bit as AOAdamW4Bit,
         AdamFp8 as AOAdamFp8,
@@ -51,9 +51,25 @@ try:
     is_bitsandbytes_available = True
 except:
     if torch.cuda.is_available():
-        logger.warning(
+        print(
             "Could not load bitsandbytes library. BnB-specific optimisers and other functionality will be unavailable."
         )
+
+# Some optimizers are not available in multibackend bitsandbytes as of January 2025.
+is_ademamix_available = False
+if is_bitsandbytes_available:
+    if "AdEMAMix" in dir(bitsandbytes.optim):
+        is_ademamix_available = True
+
+is_prodigy_available = False
+try:
+    import prodigyplus
+
+    is_prodigy_available = True
+except:
+    if torch.cuda.is_available():
+        print("Could not load prodigyplus library. Prodigy will not be available.")
+
 
 optimizer_choices = {
     "adamw": {
@@ -117,6 +133,7 @@ optimizer_choices = {
     "adamw_schedulefree": {
         "precision": "any",
         "override_lr_scheduler": True,
+        "is_schedulefree": True,
         "can_warmup": True,
         "default_settings": {
             "betas": (0.9, 0.999),
@@ -128,6 +145,7 @@ optimizer_choices = {
     "adamw_schedulefree+aggressive": {
         "precision": "any",
         "override_lr_scheduler": True,
+        "is_schedulefree": True,
         "can_warmup": True,
         "default_settings": {
             "betas": (0.9, 0.999),
@@ -139,6 +157,7 @@ optimizer_choices = {
     "adamw_schedulefree+no_kahan": {
         "precision": "any",
         "override_lr_scheduler": True,
+        "is_schedulefree": True,
         "can_warmup": True,
         "default_settings": {
             "betas": (0.9, 0.999),
@@ -362,6 +381,48 @@ if is_bitsandbytes_available:
                 },
                 "class": bitsandbytes.optim.PagedAdamW8bit,
             },
+            "bnb-lion": {
+                "precision": "any",
+                "default_settings": {
+                    "betas": (0.9, 0.99),
+                    "weight_decay": 0.0,
+                    "min_8bit_size": 4096,
+                },
+                "class": bitsandbytes.optim.Lion,
+            },
+            "bnb-lion8bit": {
+                "precision": "any",
+                "default_settings": {
+                    "betas": (0.9, 0.99),
+                    "weight_decay": 0.0,
+                    "min_8bit_size": 4096,
+                },
+                "class": bitsandbytes.optim.Lion8bit,
+            },
+            "bnb-lion-paged": {
+                "precision": "any",
+                "default_settings": {
+                    "betas": (0.9, 0.99),
+                    "weight_decay": 0.0,
+                    "min_8bit_size": 4096,
+                },
+                "class": bitsandbytes.optim.PagedLion,
+            },
+            "bnb-lion8bit-paged": {
+                "precision": "any",
+                "default_settings": {
+                    "betas": (0.9, 0.99),
+                    "weight_decay": 0.0,
+                    "min_8bit_size": 4096,
+                },
+                "class": bitsandbytes.optim.PagedLion8bit,
+            },
+        }
+    )
+
+if is_ademamix_available:
+    optimizer_choices.update(
+        {
             "bnb-ademamix": {
                 "precision": "any",
                 "default_settings": {
@@ -414,42 +475,43 @@ if is_bitsandbytes_available:
                 },
                 "class": bitsandbytes.optim.PagedAdEMAMix8bit,
             },
-            "bnb-lion": {
+        }
+    )
+
+if is_prodigy_available:
+    optimizer_choices.update(
+        {
+            "prodigy": {
                 "precision": "any",
+                "override_lr_scheduler": False,
+                "is_schedulefree": True,
+                "can_warmup": False,
                 "default_settings": {
+                    "lr": 1.0,
                     "betas": (0.9, 0.99),
+                    "beta3": None,
                     "weight_decay": 0.0,
-                    "min_8bit_size": 4096,
+                    "weight_decay_by_lr": True,
+                    "use_bias_correction": False,
+                    "d0": 1e-6,
+                    "d_coef": 1,
+                    "prodigy_steps": 0,
+                    "use_speed": False,
+                    "eps": 1e-8,
+                    "split_groups": True,
+                    "split_groups_mean": True,
+                    "factored": True,
+                    "factored_fp32": True,
+                    "fused_back_pass": False,
+                    "use_stableadamw": True,
+                    "use_muon_pp": False,
+                    "use_cautious": False,
+                    "use_grams": False,
+                    "use_adopt": False,
+                    "stochastic_rounding": True,
                 },
-                "class": bitsandbytes.optim.Lion,
-            },
-            "bnb-lion8bit": {
-                "precision": "any",
-                "default_settings": {
-                    "betas": (0.9, 0.99),
-                    "weight_decay": 0.0,
-                    "min_8bit_size": 4096,
-                },
-                "class": bitsandbytes.optim.Lion8bit,
-            },
-            "bnb-lion-paged": {
-                "precision": "any",
-                "default_settings": {
-                    "betas": (0.9, 0.99),
-                    "weight_decay": 0.0,
-                    "min_8bit_size": 4096,
-                },
-                "class": bitsandbytes.optim.PagedLion,
-            },
-            "bnb-lion8bit-paged": {
-                "precision": "any",
-                "default_settings": {
-                    "betas": (0.9, 0.99),
-                    "weight_decay": 0.0,
-                    "min_8bit_size": 4096,
-                },
-                "class": bitsandbytes.optim.PagedLion8bit,
-            },
+                "class": prodigyplus.prodigy_plus_schedulefree.ProdigyPlusScheduleFree,
+            }
         }
     )
 
@@ -462,7 +524,6 @@ args_to_optimizer_mapping = {
 }
 
 deprecated_optimizers = {
-    "prodigy": "Prodigy optimiser has been removed due to issues with precision levels and convergence. Please use adamw_schedulefree instead.",
     "dadaptation": "D-adaptation optimiser has been removed due to issues with precision levels and convergence. Please use adamw_schedulefree instead.",
     "adafactor": "Adafactor optimiser has been removed in favour of optimi-stableadamw, which offers improved memory efficiency and convergence.",
     "adamw8bit": "AdamW8Bit has been removed in favour of optimi-adamw optimiser, which offers better low-precision support. Please use this or adamw_bf16 instead.",
@@ -509,6 +570,13 @@ def optimizer_parameters(optimizer, args):
         if args.optimizer_release_gradients and "optimi-" in optimizer:
             optimizer_params["gradient_release"] = True
         optimizer_details["default_settings"] = optimizer_params
+        if args.optimizer == "prodigy":
+            prodigy_steps = args.prodigy_steps
+            if prodigy_steps and prodigy_steps > 0:
+                optimizer_params["prodigy_steps"] = int(prodigy_steps)
+            print(
+                f"Using Prodigy optimiser with {optimizer_params['prodigy_steps']} steps of learning rate adjustment."
+            )
         return optimizer_class, optimizer_details
     else:
         raise ValueError(f"Optimizer {optimizer} not found.")
@@ -522,6 +590,19 @@ def is_lr_scheduler_disabled(optimizer: str):
             "override_lr_scheduler", False
         )
     return is_disabled
+
+
+def is_lr_schedulefree(optimizer: str):
+    """
+    Check if the optimizer has ScheduleFree logic.
+
+    This is separate from the disabling of LR schedulers, because some optimizers
+    that contain ScheduleFree logic (Prodigy) can use an LR scheduler.
+    """
+    is_schedulefree = False
+    if optimizer in optimizer_choices:
+        is_schedulefree = optimizer_choices.get(optimizer).get("is_schedulefree", False)
+    return is_schedulefree
 
 
 def show_optimizer_defaults(optimizer: str = None):
@@ -595,11 +676,12 @@ def determine_optimizer_class_with_config(
         extra_optimizer_args["weight_decay"] = args.adam_weight_decay
         default_settings = extra_optimizer_args
         optimizer_details = {}
-    elif is_quantized and not enable_adamw_bf16:
+    elif is_quantized and not enable_adamw_bf16 and args.optimizer == "adamw_bf16":
         logger.error(
             f"When --base_model_default_dtype=fp32, AdamWBF16 may not be used. Switching to AdamW."
         )
         optimizer_class, optimizer_details = optimizer_parameters("optimi-adamw", args)
+        default_settings = optimizer_details.get("default_settings")
     else:
         optimizer_class, optimizer_details = optimizer_parameters(args.optimizer, args)
         default_settings = optimizer_details.get("default_settings")
@@ -614,62 +696,135 @@ def determine_optimizer_class_with_config(
 
 def determine_params_to_optimize(
     args,
-    controlnet,
-    unet,
-    transformer,
-    text_encoder_1,
-    text_encoder_2,
+    model,
     model_type_label,
     lycoris_wrapped_network,
 ):
-    if args.model_type == "full":
-        if args.controlnet:
-            params_to_optimize = controlnet.parameters()
-        elif unet is not None:
-            params_to_optimize = list(
-                filter(lambda p: p.requires_grad, unet.parameters())
-            )
-        elif transformer is not None:
-            params_to_optimize = list(
-                filter(lambda p: p.requires_grad, transformer.parameters())
-            )
-        if args.train_text_encoder:
-            raise ValueError(
-                "Full model tuning does not currently support text encoder training."
-            )
-    elif "lora" in args.model_type:
-        if args.controlnet:
-            raise ValueError(
-                "SimpleTuner does not currently support training a ControlNet LoRA."
-            )
-        if unet is not None:
-            params_to_optimize = list(
-                filter(lambda p: p.requires_grad, unet.parameters())
-            )
-        if transformer is not None:
-            params_to_optimize = list(
-                filter(lambda p: p.requires_grad, transformer.parameters())
-            )
-        if args.train_text_encoder:
-            if args.model_family in ["sd3", "pixart_sigma"]:
-                raise ValueError(
-                    f"{model_type_label} does not support finetuning the text encoders, as T5 does not benefit from it."
+    params_to_optimize = list(
+        filter(lambda p: p.requires_grad, model.get_trained_component().parameters())
+    )
+    if args.train_text_encoder:
+        # add the first text encoder's parameters
+        for text_encoder in model.text_encoders:
+            if "t5" in str(text_encoder.__class__).lower():
+                logger.warning(
+                    f"{text_encoder.__class__} does not support finetuning, skipping model."
                 )
-            else:
-                # add the first text encoder's parameters
-                params_to_optimize = params_to_optimize + list(
-                    filter(lambda p: p.requires_grad, text_encoder_1.parameters())
-                )
-                # if text_encoder_2 is not None, add its parameters
-                if text_encoder_2 is None and args.model_family not in ["flux"]:
-                    # but not flux. it has t5 as enc 2.
-                    params_to_optimize = params_to_optimize + list(
-                        filter(lambda p: p.requires_grad, text_encoder_2.parameters())
-                    )
+                continue
+            params_to_optimize = params_to_optimize + list(
+                filter(lambda p: p.requires_grad, text_encoder.parameters())
+            )
 
-        if args.lora_type == "lycoris" and lycoris_wrapped_network is not None:
+    if args.model_type == "lora" and args.lora_type == "lycoris":
+        if lycoris_wrapped_network is not None:
             params_to_optimize = list(
                 filter(lambda p: p.requires_grad, lycoris_wrapped_network.parameters())
             )
+        else:
+            raise Exception(
+                "Lycoris wrapped network is None, cannot optimize parameters."
+            )
 
     return params_to_optimize
+
+
+def create_optimizer_params_with_decay(model, weight_decay=0.01, learning_rate=None):
+    """
+    Separate model parameters into two groups:
+    - Parameters that will experience weight decay (most weights)
+    - Parameters that won't (biases, layernorm/embedding weights)
+
+    Args:
+        model: The model whose parameters to optimize
+        weight_decay: Weight decay value for regularization
+        learning_rate: Optional learning rate (if different per group)
+
+    Returns:
+        List of parameter group dictionaries for PyTorch optimizer
+    """
+    decay = []
+    no_decay = []
+
+    # Get all named parameters from the model
+    for name, param in model.named_parameters():
+        if not param.requires_grad:
+            continue
+
+        # Parameters that should NOT have weight decay:
+        # - Anything with 'bias' in the name
+        # - LayerNorm weights (often named with 'norm', 'ln', or 'layernorm')
+        # - Embedding weights
+        # - Batch normalization parameters
+        if any(
+            nd in name.lower() for nd in ["bias", "norm", "embedding", "embed", "bn"]
+        ):
+            no_decay.append(param)
+        else:
+            decay.append(param)
+
+    # Create parameter groups
+    param_groups = [
+        {"params": decay, "weight_decay": weight_decay},
+        {"params": no_decay, "weight_decay": 0.0},
+    ]
+
+    # Add learning rate if specified
+    if learning_rate is not None:
+        for group in param_groups:
+            group["lr"] = learning_rate
+
+    # Log the parameter distribution
+    logger.info(
+        f"Parameter groups: {len(decay)} with weight decay, "
+        f"{len(no_decay)} without weight decay"
+    )
+
+    return param_groups
+
+
+def create_optimizer_with_param_groups(
+    model,
+    optimizer_class,
+    optimizer_parameters,
+    use_parameter_groups=True,
+    cpu_offload_config=None,
+):
+    """
+    Create an optimizer with proper parameter grouping for weight decay.
+
+    Args:
+        model: The model to optimize
+        optimizer_class: The optimizer class to use
+        optimizer_parameters: Dict of optimizer parameters
+        use_parameter_groups: Whether to use parameter groups for weight decay
+        cpu_offload_config: Optional CPU offload configuration
+
+    Returns:
+        Configured optimizer instance
+    """
+    # Extract weight decay from optimizer parameters
+    weight_decay = optimizer_parameters.pop("weight_decay", 0.01)
+    learning_rate = optimizer_parameters.get("lr", None)
+
+    if use_parameter_groups and weight_decay > 0:
+        # Create parameter groups with appropriate weight decay settings
+        param_groups = create_optimizer_params_with_decay(
+            model, weight_decay=weight_decay, learning_rate=learning_rate
+        )
+
+        # Remove lr from optimizer_parameters if it was set in param groups
+        if learning_rate is not None:
+            optimizer_parameters.pop("lr", None)
+    else:
+        # Use all parameters with the same weight decay
+        param_groups = filter(lambda p: p.requires_grad, model.parameters())
+        optimizer_parameters["weight_decay"] = weight_decay
+
+    # Handle CPU offload if configured
+    if cpu_offload_config:
+        return cpu_offload_optimizer(
+            param_groups, optimizer_class, optimizer_parameters, **cpu_offload_config
+        )
+
+    # Create and return the optimizer
+    return optimizer_class(param_groups, **optimizer_parameters)

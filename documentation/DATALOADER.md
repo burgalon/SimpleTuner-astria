@@ -14,6 +14,8 @@ Here is the most basic example of a dataloader configuration file, as `multidata
     "resolution": 1024,
     "minimum_image_size": 768,
     "maximum_image_size": 2048,
+    "minimum_aspect_ratio": 0.50,
+    "maximum_aspect_ratio": 3.00,
     "target_downsample_size": 1024,
     "resolution_type": "pixel_area",
     "prepend_instance_prompt": false,
@@ -47,9 +49,10 @@ Here is the most basic example of a dataloader configuration file, as `multidata
 
 ### `dataset_type`
 
-- **Values:** `image` | `text_embeds` | `image_embeds` | `conditioning`
-- **Description:** `image` datasets contain your training data. `text_embeds` contain the outputs of the text encoder cache, and `image_embeds` contain the VAE outputs, if the model uses one. When a dataset is marked as `conditioning`, it is possible to pair it to your `image` dataset via [the conditioning_data option](#conditioning_data)
+- **Values:** `image` | `video` | `text_embeds` | `image_embeds` | `conditioning`
+- **Description:** `image` and `video` datasets contain your training data. `text_embeds` contain the outputs of the text encoder cache, and `image_embeds` contain the VAE outputs, if the model uses one. When a dataset is marked as `conditioning`, it is possible to pair it to your `image` dataset via [the conditioning_data option](#conditioning_data)
 - **Note:** Text and image embed datasets are defined differently than image datasets are. A text embed dataset stores ONLY the text embed objects. An image dataset stores the training data.
+- **Note:** Don't combine images and video in a **single** dataset. Split them out.
 
 ### `default`
 
@@ -119,7 +122,71 @@ Both `textfile` and `parquet` support multi-captions:
 - When `resolution` is measured in pixels, you should use the same unit here (eg. `1024` to exclude images under 1024px **shorter edge length**)
 - **Recommendation**: Keep `minimum_image_size` equal to `resolution` unless you want to risk training on poorly-upsized images.
 
+### `minimum_aspect_ratio`
+
+- **Description:** The minimum aspect ratio of the image. If the image's aspect ratio is less than this value, it will be excluded from training.
+- **Note**: If the number of images qualifying for exclusion is excessive, this might waste time at startup as the trainer will try to scan them and bucket if they are missing from the bucket lists.
+
+> **Note**: Once the aspect and metadata lists are built for your dataset, using `skip_file_discovery="vae aspect metadata"` will prevent the trainer from scanning the dataset on startup, saving a lot of time.
+
+### `maximum_aspect_ratio`
+
+- **Description:** The maximum aspect ratio of the image. If the image's aspect ratio is greater than this value, it will be excluded from training.
+- **Note**: If the number of images qualifying for exclusion is excessive, this might waste time at startup as the trainer will try to scan them and bucket if they are missing from the bucket lists.
+
+> **Note**: Once the aspect and metadata lists are built for your dataset, using `skip_file_discovery="vae aspect metadata"` will prevent the trainer from scanning the dataset on startup, saving a lot of time.
+
+
 #### Examples
+
+##### Video dataset
+
+A video dataset should be a folder of (eg. mp4) video files and the usual methods of storing captions.
+
+```json
+[
+  {
+    "id": "disney-black-and-white",
+    "type": "local",
+    "dataset_type": "video",
+    "crop": false,
+    "resolution": 480,
+    "minimum_image_size": 480,
+    "maximum_image_size": 480,
+    "target_downsample_size": 480,
+    "resolution_type": "pixel_area",
+    "cache_dir_vae": "cache/vae/ltxvideo/disney-black-and-white",
+    "instance_data_dir": "datasets/disney-black-and-white",
+    "disabled": false,
+    "caption_strategy": "textfile",
+    "metadata_backend": "discovery",
+    "repeats": 0,
+    "video": {
+        "num_frames": 125,
+        "min_frames": 125
+    }
+  },
+  {
+    "id": "text-embeds",
+    "type": "local",
+    "dataset_type": "text_embeds",
+    "default": true,
+    "cache_dir": "cache/text/ltxvideo",
+    "disabled": false,
+    "write_batch_size": 128
+  }
+]
+```
+
+- In the `video` subsection, we have the following keys we can set:
+  - `num_frames` (optional, int) is how many seconds of data we'll train on.
+    - At 25 fps, 125 frames is 5 seconds of video, standard output. This should be your target.
+  - `min_frames` (optional, int) determines the minimum length of a video that will be considered for training.
+    - This should be at least equal to `num_frames`. Not setting it ensures it'll be equal.
+  - `max_frames` (optional, int) determines the maximum length of a video that will be considered for training.
+  - `is_i2v` (optional, bool) determines whether i2v training will be done on a dataset.
+    - This is set to True by default for LTX. You can disable it, however.
+
 
 ##### Configuration
 ```json
@@ -239,7 +306,7 @@ Images are not resized before cropping **unless** `maximum_image_size` and `targ
 
 #### Example filter list
 
-A complete example list can be found [here](/caption_filter_list.example.txt). It contains common repetitive and negative strings that would be returned by BLIP (all common variety), LLaVA, and CogVLM.
+A complete example list can be found [here](/config/caption_filter_list.txt.example). It contains common repetitive and negative strings that would be returned by BLIP (all common variety), LLaVA, and CogVLM.
 
 This is a shortened example, which will be explained below:
 
@@ -525,6 +592,30 @@ In this example configuration:
 ```
 
 **Note:** The `image_embeds` dataset does not have any options to set for data paths. Those are configured via `cache_dir_vae` on the image backend.
+
+### Hugging Face Datasets Support
+
+SimpleTuner now supports loading datasets directly from Hugging Face Hub without downloading the entire dataset locally. This experimental feature is ideal for:
+
+- Large-scale datasets hosted on Hugging Face
+- Datasets with built-in metadata and quality assessments
+- Quick experimentation without local storage requirements
+
+For thorough documentation on this feature, refer to [this document](/documentation/HUGGINGFACE_DATASETS.md).
+
+For a basic example of how to use a Hugging Face dataset, set `"type": "huggingface"` in your dataloader configuration:
+
+```json
+{
+  "id": "my-hf-dataset",
+  "type": "huggingface",
+  "dataset_name": "username/dataset-name",
+  "caption_strategy": "huggingface",
+  "metadata_backend": "huggingface",
+  "caption_column": "caption",
+  "image_column": "image"
+}
+```
 
 ## Custom aspect ratio-to-resolution mapping
 

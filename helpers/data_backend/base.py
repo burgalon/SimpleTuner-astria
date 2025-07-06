@@ -48,6 +48,13 @@ class BaseDataBackend(ABC):
         pass
 
     @abstractmethod
+    def get_abs_path(self, sample_path: str = None) -> tuple:
+        """
+        Given a relative path of a sample, return the absolute path.
+        """
+        pass
+
+    @abstractmethod
     def read_image(self, filepath: str, delete_problematic_images: bool = False):
         """
         Read an image from the backend and return a PIL Image.
@@ -89,10 +96,13 @@ class BaseDataBackend(ABC):
         """
         pass
 
-    def _decompress_torch(self, gzip_data):
+    def _decompress_torch(self, gzip_data: BytesIO):
         """
         We've read the gzip from disk. Just decompress it.
         """
+        # bytes object might not have seek. workaround:
+        if not hasattr(gzip_data, "seek"):
+            gzip_data = BytesIO(gzip_data)
         gzip_data.seek(0)
         with gzip.GzipFile(fileobj=gzip_data, mode="rb") as file:
             decompressed_data = file.read()

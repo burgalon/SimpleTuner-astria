@@ -21,10 +21,30 @@ model_classes = {
         "pixart_sigma",
         "kolors",
         "sd3",
-        "legacy",
+        "sd1x",
+        "sd2x",
+        "ltxvideo",
+        "wan",
+        "sana",
+        "deepfloyd",
+        "omnigen",
+        "hidream",
+        "auraflow",
     ],
-    "lora": ["flux", "sdxl", "kolors", "sd3", "legacy"],
-    "controlnet": ["sdxl", "legacy"],
+    "lora": [
+        "flux",
+        "sdxl",
+        "kolors",
+        "sd3",
+        "sd1x",
+        "sd2x",
+        "ltxvideo",
+        "wan",
+        "deepfloyd",
+        "auraflow",
+        "hidream",
+    ],
+    "controlnet": ["sdxl", "sd1x", "sd2x"],
 }
 
 default_models = {
@@ -34,7 +54,15 @@ default_models = {
     "kolors": "kwai-kolors/kolors-diffusers",
     "terminus": "ptx0/terminus-xl-velocity-v2",
     "sd3": "stabilityai/stable-diffusion-3.5-large",
-    "legacy": "stabilityai/stable-diffusion-2-1-base",
+    "sd2x": "stabilityai/stable-diffusion-2-1-base",
+    "sd1x": "stable-diffusion-v1-5/stable-diffusion-v1-5",
+    "sana": "terminusresearch/sana-1.6b-1024px",
+    "ltxvideo": "Lightricks/LTX-Video",
+    "wan": "Wan-AI/Wan2.1-T2V-1.3B-Diffusers",
+    "hidream": "HiDream-ai/HiDream-I1-Full",
+    "auraflow": "terminusresearch/auraflow-v0.3",
+    "deepfloyd": "DeepFloyd/DeepFloyd-IF-I-XL-v1.0",
+    "omnigen": "Shitao/OmniGen-v1-diffusers",
 }
 
 default_cfg = {
@@ -44,16 +72,29 @@ default_cfg = {
     "kolors": 5.0,
     "terminus": 8.0,
     "sd3": 5.0,
+    "ltxvideo": 4.0,
+    "hidream": 2.5,
+    "wan": 4.0,
+    "sana": 3.8,
+    "omnigen": 3.2,
+    "deepfloyd": 6.0,
+    "sd2x": 7.0,
+    "sd1x": 6.0,
 }
 
 model_labels = {
-    "sd3": "Stable Diffusion 3",
     "flux": "FLUX",
     "pixart_sigma": "PixArt Sigma",
     "kolors": "Kwai Kolors",
     "terminus": "Terminus",
     "sdxl": "Stable Diffusion XL",
-    "legacy": "Stable Diffusion",
+    "sd3": "Stable Diffusion 3",
+    "sd2x": "Stable Diffusion 2",
+    "sd1x": "Stable Diffusion",
+    "ltxvideo": "LTX Video",
+    "wan": "WanX",
+    "hidream": "HiDream I1",
+    "sana": "Sana",
 }
 
 lora_ranks = [1, 16, 64, 128, 256]
@@ -429,7 +470,36 @@ def configure_env():
         ).lower()
         == "y"
     )
-    report_to_str = ""
+
+    env_contents["--attention_mechanism"] = "diffusers"
+    use_sageattention = (
+        prompt_user(
+            "Would you like to use SageAttention for image validation generation? (y/[n])",
+            "n",
+        ).lower()
+        == "y"
+    )
+    if use_sageattention:
+        env_contents["--attention_mechanism"] = "sageattention"
+        env_contents["--sageattention_usage"] = "inference"
+        use_sageattention_training = (
+            prompt_user(
+                (
+                    "Would you like to use SageAttention to cover the forward and backward pass during training?"
+                    " This has the undesirable consequence of leaving the attention layers untrained,"
+                    " as SageAttention lacks the capability to fully track gradients through quantisation."
+                    " If you are not training the attention layers for some reason, this may not matter and"
+                    " you can safely enable this. For all other use-cases, reconsideration and caution are warranted."
+                ),
+                "n",
+            ).lower()
+            == "y"
+        )
+        if use_sageattention_training:
+            env_contents["--sageattention_usage"] = "both"
+
+    # properly disable wandb/tensorboard/comet_ml etc by default
+    report_to_str = "none"
     if report_to_wandb or report_to_tensorboard:
         tracker_project_name = prompt_user(
             "Enter the name of your Weights & Biases project", f"{model_type}-training"
@@ -440,17 +510,17 @@ def configure_env():
             f"simpletuner-{model_type}",
         )
         env_contents["--tracker_run_name"] = tracker_run_name
-        report_to_str = None
         if report_to_wandb:
             report_to_str = "wandb"
         if report_to_tensorboard:
-            if report_to_wandb:
+            if report_to_str != "none":
+                # report to both WandB and Tensorboard if the user wanted.
                 report_to_str += ","
             else:
+                # remove 'none' from the option
                 report_to_str = ""
             report_to_str += "tensorboard"
-        if report_to_str:
-            env_contents["--report_to"] = report_to_str
+    env_contents["--report_to"] = report_to_str
 
     print_config(env_contents, extra_args)
 
@@ -514,11 +584,24 @@ def configure_env():
         )
     )
     env_contents["--gradient_checkpointing"] = "true"
+    if env_contents["--model_family"] in ["sdxl", "flux", "sd3", "sana"]:
+        gradient_checkpointing_interval = prompt_user(
+            "Would you like to configure a gradient checkpointing interval? A value larger than 1 will increase VRAM usage but speed up training by skipping checkpoint creation every Nth layer, and a zero will disable this feature.",
+            0,
+        )
+        try:
+            if int(gradient_checkpointing_interval) > 1:
+                env_contents["--gradient_checkpointing_interval"] = int(
+                    gradient_checkpointing_interval
+                )
+        except:
+            print("Could not parse gradient checkpointing interval. Not enabling.")
+            pass
 
     env_contents["--caption_dropout_probability"] = float(
         prompt_user(
-            "Set the caption dropout rate, or use 0.0 to disable it. Dropout is not recommended for LoRA/LyCORIS training unless you are training for style transfer.",
-            "0.0" if any([use_lora, use_lycoris]) else "0.1",
+            "Set the caption dropout rate, or use 0.0 to disable it. Dropout might be a good idea to disable for Flux training, but experimentation is warranted.",
+            "0.05" if any([use_lora, use_lycoris]) else "0.1",
         )
     )
 
@@ -706,69 +789,49 @@ def configure_env():
         sys.exit(1)
 
     # dataloader configuration
+    resolution_configs = {
+        64: {"resolution": 64, "minimum_image_size": 48},
+        96: {"resolution": 96, "minimum_image_size": 64},
+        128: {"resolution": 128, "minimum_image_size": 96},
+        256: {"resolution": 256, "minimum_image_size": 128},
+        512: {"resolution": 512, "minimum_image_size": 256},
+        768: {"resolution": 768, "minimum_image_size": 512},
+        1024: {"resolution": 1024, "minimum_image_size": 768},
+        1440: {"resolution": 1440, "minimum_image_size": 1024},
+        2048: {"resolution": 2048, "minimum_image_size": 1440},
+    }
+    default_dataset_configuration = {
+        "id": "PLACEHOLDER",
+        "type": "local",
+        "instance_data_dir": None,
+        "crop": False,
+        "resolution_type": "pixel_area",
+        "metadata_backend": "discovery",
+        "caption_strategy": "filename",
+        "cache_dir_vae": "vae",
+    }
+    default_cropped_dataset_configuration = {
+        "id": "PLACEHOLDER-crop",
+        "type": "local",
+        "instance_data_dir": None,
+        "crop": True,
+        "crop_aspect": "square",
+        "crop_style": "center",
+        "vae_cache_clear_each_epoch": False,
+        "resolution_type": "pixel_area",
+        "metadata_backend": "discovery",
+        "caption_strategy": "filename",
+        "cache_dir_vae": "vae-crop",
+    }
+
     default_local_configuration = [
-        {
-            "id": "PLACEHOLDER-512",
-            "type": "local",
-            "instance_data_dir": None,
-            "crop": False,
-            "crop_style": "random",
-            "minimum_image_size": 128,
-            "resolution": 512,
-            "resolution_type": "pixel_area",
-            "repeats": 10,
-            "metadata_backend": "discovery",
-            "caption_strategy": "filename",
-            "cache_dir_vae": "vae-512",
-        },
-        {
-            "id": "PLACEHOLDER-1024",
-            "type": "local",
-            "instance_data_dir": None,
-            "crop": False,
-            "crop_style": "random",
-            "minimum_image_size": 128,
-            "resolution": 1024,
-            "resolution_type": "pixel_area",
-            "repeats": 10,
-            "metadata_backend": "discovery",
-            "caption_strategy": "filename",
-            "cache_dir_vae": "vae-1024",
-        },
-        {
-            "id": "PLACEHOLDER-512-crop",
-            "type": "local",
-            "instance_data_dir": None,
-            "crop": True,
-            "crop_style": "random",
-            "minimum_image_size": 128,
-            "resolution": 512,
-            "resolution_type": "pixel_area",
-            "repeats": 10,
-            "metadata_backend": "discovery",
-            "caption_strategy": "filename",
-            "cache_dir_vae": "vae-512-crop",
-        },
-        {
-            "id": "PLACEHOLDER-1024-crop",
-            "type": "local",
-            "instance_data_dir": None,
-            "crop": True,
-            "crop_style": "random",
-            "minimum_image_size": 128,
-            "resolution": 1024,
-            "resolution_type": "pixel_area",
-            "repeats": 10,
-            "metadata_backend": "discovery",
-            "caption_strategy": "filename",
-            "cache_dir_vae": "vae-1024-crop",
-        },
         {
             "id": "text-embed-cache",
             "dataset_type": "text_embeds",
             "default": True,
             "type": "local",
             "cache_dir": "text",
+            "write_batch_size": 128,
         },
     ]
 
@@ -848,9 +911,36 @@ def configure_env():
         )
     dataset_repeats = int(
         prompt_user(
-            "How many times do you want to repeat each image in the dataset?", 10
+            "How many times do you want to repeat each image in the dataset? A value of zero means the dataset will only be seen once; a value of one will cause the dataset to be sampled twice.",
+            10,
         )
     )
+    default_base_resolutions = "1024"
+    multi_resolution_recommendation_text = (
+        "Multiple resolutions may be provided, but this is only recommended for Flux."
+    )
+    multi_resolution_capable_models = ["flux"]
+    if env_contents["--model_family"] in multi_resolution_capable_models:
+        default_base_resolutions = "256,512,768,1024,1440"
+    multi_resolution_recommendation_text = "A comma-separated list of values or a single item can be given to train on multiple base resolutions."
+    dataset_resolutions = prompt_user(
+        f"Which resolutions do you want to train? {multi_resolution_recommendation_text}",
+        default_base_resolutions,
+    )
+    if "," in dataset_resolutions:
+        # most models don't work with multi base resolution training.
+        if env_contents["--model_family"] not in multi_resolution_capable_models:
+            print(
+                "WARNING: Most models do not play well with multi-resolution training, resulting in degraded outputs and broken hearts. Proceed with caution."
+            )
+        dataset_resolutions = [int(res) for res in dataset_resolutions.split(",")]
+    else:
+        try:
+            dataset_resolutions = [int(dataset_resolutions)]
+        except:
+            print("Invalid resolution value. Using 1024 instead.")
+            dataset_resolutions = [1024]
+
     dataset_cache_prefix = prompt_user(
         "Where will your VAE and text encoder caches be written to? Subdirectories will be created inside for you automatically.",
         "cache/",
@@ -864,13 +954,26 @@ def configure_env():
     )
 
     # Now we'll modify the default json and if has_very_large_images is true, we will add two keys to each image dataset, 'maximum_image_size' and 'target_downsample_size' equal to the dataset's resolution value
-    for dataset in default_local_configuration:
-        if dataset.get("dataset_type") == "text_embeds":
-            dataset["cache_dir"] = f"{dataset_cache_prefix}/{dataset['cache_dir']}"
-            continue
-        dataset["instance_data_dir"] = dataset_path
+    def create_dataset_config(resolution, default_config):
+        dataset = default_config.copy()
+        dataset.update(
+            resolution_configs.get(
+                resolution,
+                {"resolution": resolution}
+            )
+        )
+        dataset["id"] = f"{dataset['id']}-{resolution}"
+        dataset["instance_data_dir"] = os.path.abspath(dataset_path)
         dataset["repeats"] = dataset_repeats
-        dataset["cache_dir_vae"] = f"{dataset_cache_prefix}/{dataset['cache_dir_vae']}"
+        # we want the absolute path, as this works best with datasets containing nested subdirectories.
+        dataset["cache_dir_vae"] = os.path.abspath(
+            os.path.join(
+                dataset_cache_prefix,
+                env_contents["--model_family"],
+                dataset["cache_dir_vae"],
+                str(resolution),
+            )
+        )
         if has_very_large_images:
             dataset["maximum_image_size"] = dataset["resolution"]
             dataset["target_downsample_size"] = dataset["resolution"]
@@ -878,6 +981,26 @@ def configure_env():
         if dataset_instance_prompt:
             dataset["instance_prompt"] = dataset_instance_prompt
         dataset["caption_strategy"] = dataset_caption_strategy
+
+        if has_very_large_images:
+            dataset["maximum_image_size"] = dataset["resolution"]
+            dataset["target_downsample_size"] = dataset["resolution"]
+        return dataset
+
+    # this is because the text embed dataset is in the default config list at the top.
+    # it's confusingly written because i'm lazy, but you could do this any number of ways.
+    default_local_configuration[0]["cache_dir"] = os.path.abspath(
+        os.path.join(dataset_cache_prefix, env_contents["--model_family"], "text")
+    )
+    for resolution in dataset_resolutions:
+        uncropped_dataset = create_dataset_config(
+            resolution, default_dataset_configuration
+        )
+        default_local_configuration.append(uncropped_dataset)
+        cropped_dataset = create_dataset_config(
+            resolution, default_cropped_dataset_configuration
+        )
+        default_local_configuration.append(cropped_dataset)
 
     print("Dataloader configuration:")
     print(default_local_configuration)

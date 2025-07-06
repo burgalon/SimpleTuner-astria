@@ -1,23 +1,20 @@
+import logging, os
 import huggingface_hub
 from helpers.training.default_settings.safety_check import safety_check
 from helpers.publishing.huggingface import HubManager
 from configure import model_labels
+from typing import Optional
 import shutil
 import hashlib
 import json
 import copy
 import random
-import logging
 import math
-import os
 import sys
 import glob
 import wandb
 
-from typing import TYPE_CHECKING
 
-# Quiet down, you.
-os.environ["ACCELERATE_LOG_LEVEL"] = "WARNING"
 from helpers import log_format  # noqa
 from helpers.configuration.loader import load_config
 from helpers.caching.memory import reclaim_memory
@@ -25,40 +22,27 @@ from helpers.training.multi_process import _get_rank as get_rank
 from helpers.training.validation import Validation, prepare_validation_prompt_list
 from helpers.training.evaluation import ModelEvaluator
 from helpers.training.state_tracker import StateTracker
-from helpers.training.schedulers import load_scheduler_from_args
 from helpers.training.custom_schedule import get_lr_scheduler
-from helpers.training.adapter import determine_adapter_target_modules, load_lora_weights
-from helpers.training.diffusion_model import load_diffusion_model
-from helpers.training.text_encoding import (
-    load_tes,
-    determine_te_path_subfolder,
-    import_model_class_from_model_name_or_path,
-    get_tokenizers,
-)
 from helpers.training.optimizer_param import (
     determine_optimizer_class_with_config,
+    create_optimizer_with_param_groups,
     determine_params_to_optimize,
     is_lr_scheduler_disabled,
+    is_lr_schedulefree,
     cpu_offload_optimizer,
 )
 from helpers.data_backend.factory import BatchFetcher
 from helpers.training.deepspeed import (
-    deepspeed_zero_init_disabled_context_manager,
     prepare_model_for_deepspeed,
 )
 from helpers.training.wrappers import unwrap_model
 from helpers.data_backend.factory import configure_multi_databackend
 from helpers.data_backend.factory import random_dataloader_iterator
-from helpers.training import steps_remaining_in_epoch
-from helpers.training.custom_schedule import (
-    generate_timestep_weights,
-    segmented_timestep_selection,
-)
+from helpers.training import trainable_parameter_count
 from helpers.training.min_snr_gamma import compute_snr
 from helpers.training.peft_init import init_lokr_network_with_perturbed_normal
 from accelerate.logging import get_logger
-from diffusers.models.embeddings import get_2d_rotary_pos_embed
-from helpers.models.smoldit import get_resize_crop_region_for_grid
+from helpers.models.all import model_families
 
 logger = get_logger(
     "SimpleTuner", log_level=os.environ.get("SIMPLETUNER_LOG_LEVEL", "INFO")
@@ -82,7 +66,6 @@ import diffusers
 import accelerate
 import transformers
 import torch.nn.functional as F
-import torch.utils.checkpoint
 from accelerate import Accelerator
 from accelerate.utils import set_seed
 from configure import model_classes
@@ -93,41 +76,24 @@ try:
 except:
     print("[ERROR] Lycoris not available. Please install ")
 from tqdm.auto import tqdm
-from transformers import PretrainedConfig, CLIPTokenizer
-from helpers.models.sdxl.pipeline import StableDiffusionXLPipeline
-from diffusers import StableDiffusion3Pipeline
 
 from diffusers import (
-    AutoencoderKL,
     ControlNetModel,
     DDIMScheduler,
     DDPMScheduler,
-    UNet2DConditionModel,
-    FluxTransformer2DModel,
-    PixArtTransformer2DModel,
     EulerDiscreteScheduler,
     EulerAncestralDiscreteScheduler,
     UniPCMultistepScheduler,
 )
 
-from peft import LoraConfig
 from peft.utils import get_peft_model_state_dict
 from helpers.training.ema import EMAModel
 from diffusers.utils import (
     check_min_version,
     convert_state_dict_to_diffusers,
-    is_wandb_available,
 )
 from diffusers.utils.import_utils import is_xformers_available
-from transformers.utils import ContextManagers
-
-from helpers.models.flux import (
-    prepare_latent_image_ids,
-    pack_latents,
-    unpack_latents,
-    get_mobius_guidance,
-    apply_flux_schedule_shift,
-)
+from helpers.models.common import VideoModelFoundation, ImageModelFoundation
 
 is_optimi_available = False
 try:
@@ -152,42 +118,58 @@ logging.basicConfig(
     datefmt="%m/%d/%Y %H:%M:%S",
     level=logging.INFO,
 )
-
-transformers.utils.logging.set_verbosity_warning()
-diffusers.utils.logging.set_verbosity_warning()
+if hasattr(transformers.utils, "logging"):
+    transformers.utils.logging.set_verbosity_warning()
+if hasattr(diffusers.utils, "logging"):
+    diffusers.utils.logging.set_verbosity_warning()
 
 
 class Trainer:
     def __init__(
-        self, config: dict = None, disable_accelerator: bool = False, job_id: str = None
+        self,
+        config: dict = None,
+        disable_accelerator: bool = False,
+        job_id: str = None,
+        exit_on_error: bool = False,
     ):
         self.accelerator = None
+        self.model = None
         self.job_id = job_id
         StateTracker.set_job_id(job_id)
-        self.parse_arguments(args=config, disable_accelerator=disable_accelerator)
+        self.parse_arguments(
+            args=config,
+            disable_accelerator=disable_accelerator,
+            exit_on_error=exit_on_error,
+        )
+        if (
+            getattr(self, "config", None) is not None
+            and self.config.model_family in model_families
+        ):
+            self.model = model_families[self.config.model_family](
+                self.config, self.accelerator
+            )
+            self.model.check_user_config()
+            StateTracker.set_model(self.model)
         self._misc_init()
         self.lycoris_wrapped_network = None
         self.lycoris_config = None
         self.lr_scheduler = None
         self.webhook_handler = None
         self.should_abort = False
-        self.unet = None
-        self.transformer = None
-        self.vae = None
-        self.text_encoder_1 = None
-        self.text_encoder_2 = None
-        self.text_encoder_3 = None
-        self.controlnet = None
         self.ema_model = None
         self.validation = None
+        # this updates self.config further, so we will run it here.
+        self.init_noise_schedule()
 
     def _config_to_obj(self, config):
         if not config:
             return None
         return type("Config", (object,), config)
 
-    def parse_arguments(self, args=None, disable_accelerator: bool = False):
-        self.config = load_config(args)
+    def parse_arguments(
+        self, args=None, disable_accelerator: bool = False, exit_on_error: bool = False
+    ):
+        self.config = load_config(args, exit_on_error=exit_on_error)
         report_to = (
             None if self.config.report_to.lower() == "none" else self.config.report_to
         )
@@ -204,22 +186,27 @@ class Trainer:
                 kwargs_handlers=[self.config.process_group_kwargs],
             )
         safety_check(args=self.config, accelerator=self.accelerator)
+
         if self.config.lr_scale:
+            lr_cur = self.config.learning_rate
+            lr_scale_bsz = self.config.train_batch_size
+            lr_scale_ga = self.config.gradient_accumulation_steps
+            lr_scale_np = getattr(self.accelerator, "num_processes", 1)
+            lr_scale_mul = lr_scale_ga * lr_scale_bsz * lr_scale_np
+            lr_new = lr_cur * (
+                math.sqrt(lr_scale_mul) if self.config.lr_scale_sqrt else lr_scale_mul
+            )
             logger.info(
-                f"Scaling learning rate ({self.config.learning_rate}), due to --lr_scale"
+                f"Scaling learning rate from {lr_cur:.1e} to {lr_new:.1e}"
+                f" due to {'--lr-scale and --lr-scale-sqrt' if self.config.lr_scale_sqrt else '--lr-scale'}"
+                f" (bsz: {lr_scale_bsz}, ga: {lr_scale_ga}, nprocs: {lr_scale_np})"
             )
-            self.config.learning_rate = (
-                self.config.learning_rate
-                * self.config.gradient_accumulation_steps
-                * self.config.train_batch_size
-                * getattr(self.accelerator, "num_processes", 1)
-            )
+            self.config.learning_rate = lr_new
+
         StateTracker.set_accelerator(self.accelerator)
         StateTracker.set_args(self.config)
         StateTracker.set_weight_dtype(self.config.weight_dtype)
         self.set_model_family()
-        # this updates self.config further, so we will run it here.
-        self.init_noise_schedule()
 
     def run(self):
         try:
@@ -249,9 +236,12 @@ class Trainer:
             # Model movement and validation setup
             self.move_models(destination="accelerator")
             self._exit_on_signal()
+            self.init_distillation()
             self.init_validations()
             self._exit_on_signal()
+            self.enable_sageattention_inference()
             self.init_benchmark_base_model()
+            self.disable_sageattention_inference()
             self._exit_on_signal()
             self.resume_and_prepare()
             self._exit_on_signal()
@@ -290,11 +280,22 @@ class Trainer:
             initializer()
             self._exit_on_signal()
 
+    def _get_noise_schedule(self):
+        self.config, scheduler = self.model.setup_training_noise_schedule()
+
+        return scheduler
+
     def init_noise_schedule(self):
-        self.config, _flow_matching, self.noise_scheduler = load_scheduler_from_args(
-            self.config
+        if self.model is None:
+            return
+        from helpers.models.common import PredictionTypes
+
+        self.config.flow_matching = (
+            True
+            if self.model.PREDICTION_TYPE is PredictionTypes.FLOW_MATCHING
+            else False
         )
-        self.config.flow_matching = _flow_matching
+        self.noise_scheduler = self._get_noise_schedule()
         self.lr = 0.0
 
     def configure_webhook(self, send_startup_message: bool = True):
@@ -307,6 +308,10 @@ class Trainer:
             self.config.webhook_config,
             self.accelerator,
             f"{self.config.tracker_project_name} {self.config.tracker_run_name}",
+            send_video=(
+                True if isinstance(self.model, VideoModelFoundation) else False
+            ),
+            args=self.config,
         )
         StateTracker.set_webhook_handler(self.webhook_handler)
         if send_startup_message:
@@ -353,6 +358,25 @@ class Trainer:
             self.config.is_torchao = True
         elif "bnb" in self.config.base_model_precision:
             self.config.is_bnb = True
+        # if text_encoder_1_precision -> text_encoder_4_precision has quanto we'll mark that as well
+        for i in range(1, 5):
+            if isinstance(
+                getattr(self.config, f"text_encoder_{i}_precision", None), str
+            ) and getattr(self.config, f"text_encoder_{i}_precision", None):
+                if "quanto" in getattr(self.config, f"text_encoder_{i}_precision"):
+                    if self.config.is_torchao:
+                        raise ValueError(
+                            "Cannot enable Quanto and TorchAO together. One quant engine must be used for all precision levels."
+                        )
+                    self.config.is_quanto = True
+                elif "torchao" in getattr(self.config, f"text_encoder_{i}_precision"):
+                    if self.config.is_quanto:
+                        raise ValueError(
+                            "Cannot enable Quanto and TorchAO together. One quant engine must be used for all precision levels."
+                        )
+                    self.config.is_torchao = True
+                elif "bnb" in getattr(self.config, f"text_encoder_{i}_precision"):
+                    self.config.is_bnb = True
         if self.config.is_quanto or self.config.is_torchao:
             from helpers.training.quantisation import quantise_model
 
@@ -360,48 +384,17 @@ class Trainer:
 
     def set_model_family(self, model_family: str = None):
         model_family = getattr(self.config, "model_family", model_family)
-        if not model_family:
-            logger.warning(
-                "Using --model_family (or MODEL_FAMILY) to specify which model you are training will be required in a future release."
-            )
-            if self.config.model_family == "sd3":
-                model_family = "sd3"
-                logger.warning(
-                    "Using --sd3 is deprecated. Please use --model_family=sd3."
-                )
-            if self.config.model_family == "flux":
-                model_family = "flux"
-                logger.warning(
-                    "Using --flux is deprecated. Please use --model_family=flux."
-                )
-            if self.config.model_family == "pixart_sigma":
-                model_family = "pixart_sigma"
-                logger.warning(
-                    "Using --pixart_sigma is deprecated. Please use --model_family=pixart_sigma."
-                )
-            if self.config.model_family == "legacy":
-                model_family = "legacy"
-                logger.warning(
-                    "Using --legacy is deprecated. Please use --model_family=legacy."
-                )
-            if self.config.model_family == "kolors":
-                model_family = "kolors"
-                logger.warning(
-                    "Using --kolors is deprecated. Please use --model_family=kolors."
-                )
-            if self.config.model_family == "smoldit":
-                model_family = "smoldit"
-            if model_family is None:
-                model_family = "sdxl"
-                logger.warning(
-                    "Training SDXL without specifying --model_family is deprecated. Please use --model_family=sdxl."
-                )
-        elif model_family not in model_classes["full"]:
+        if model_family not in model_classes["full"]:
             raise ValueError(f"Invalid model family specified: {model_family}")
 
-        self._set_model_paths()
+        from helpers.models.all import model_families
+
+        model_implementation = model_families.get(model_family)
         StateTracker.set_model_family(model_family)
-        self.config.model_type_label = model_labels[model_family.lower()]
+        self.config.model_type_label = (
+            getattr(model_implementation, "NAME", None)
+            or model_labels[model_family.lower()]
+        )
         if StateTracker.is_sdxl_refiner():
             self.config.model_type_label = "SDXL Refiner"
 
@@ -409,6 +402,8 @@ class Trainer:
         if self.config.output_dir is not None:
             os.makedirs(self.config.output_dir, exist_ok=True)
         if self.config.preserve_data_backend_cache:
+            return
+        if not self.accelerator.is_local_main_process:
             return
         StateTracker.delete_cache_files(
             preserve_data_backend_cache=self.config.preserve_data_backend_cache
@@ -425,7 +420,7 @@ class Trainer:
             return
         if access_token:
             huggingface_hub.login(token=access_token)
-        self.hub_manager = HubManager(config=self.config)
+        self.hub_manager = HubManager(config=self.config, model=self.model)
         try:
             StateTracker.set_hf_user(huggingface_hub.whoami())
             logger.info(
@@ -435,16 +430,6 @@ class Trainer:
             logger.error(f"Failed to log into Hugging Face Hub: {e}")
             raise e
 
-    def _set_model_paths(self):
-        self.config.vae_path = (
-            self.config.pretrained_model_name_or_path
-            if self.config.pretrained_vae_model_name_or_path is None
-            else self.config.pretrained_vae_model_name_or_path
-        )
-        self.config.text_encoder_path, self.config.text_encoder_subfolder = (
-            determine_te_path_subfolder(self.config)
-        )
-
     def init_preprocessing_models(self, move_to_accelerator: bool = True):
         # image embeddings
         self.init_vae(move_to_accelerator=move_to_accelerator)
@@ -452,157 +437,19 @@ class Trainer:
         self.init_text_encoder(move_to_accelerator=move_to_accelerator)
 
     def init_vae(self, move_to_accelerator: bool = True):
-        logger.info(f"Load VAE: {self.config.vae_path}")
-        self.config.vae_kwargs = {
-            "pretrained_model_name_or_path": self.config.vae_path,
-            "subfolder": "vae",
-            "revision": self.config.revision,
-            "force_upcast": False,
-            "variant": self.config.variant,
-        }
-        try:
-            self.vae = AutoencoderKL.from_pretrained(**self.config.vae_kwargs)
-        except:
-            logger.warning(
-                "Couldn't load VAE with default path. Trying without a subfolder.."
-            )
-            self.config.vae_kwargs["subfolder"] = None
-            self.vae = AutoencoderKL.from_pretrained(**self.config.vae_kwargs)
-            if (
-                self.vae is not None
-                and self.config.vae_enable_tiling
-                and hasattr(self.vae, "enable_tiling")
-            ):
-                logger.warning(
-                    "Enabling VAE tiling for greatly reduced memory consumption due to --vae_enable_tiling which may result in VAE tiling artifacts in encoded latents."
-                )
-                self.vae.enable_tiling()
-        if not move_to_accelerator:
-            logger.debug("Not moving VAE to accelerator.")
+        if getattr(self.model, "AUTOENCODER_CLASS", None) is None:
+            logger.debug(f"Model {self.model.NAME} does not have a VAE.")
             return
-        if self.vae is not None:
-            # The VAE is in bfloat16 to avoid NaN losses.
-            _vae_dtype = torch.bfloat16
-            if hasattr(self.config, "vae_dtype"):
-                # Let's use a case-switch for convenience: bf16, fp16, fp32, none/default
-                if self.config.vae_dtype == "bf16":
-                    _vae_dtype = torch.bfloat16
-                elif self.config.vae_dtype == "fp16":
-                    raise ValueError(
-                        "fp16 is not supported for SDXL's VAE. Please use bf16 or fp32."
-                    )
-                elif self.config.vae_dtype == "fp32":
-                    _vae_dtype = torch.float32
-                elif (
-                    self.config.vae_dtype == "none"
-                    or self.config.vae_dtype == "default"
-                ):
-                    _vae_dtype = torch.bfloat16
-            logger.info(
-                f"Loading VAE onto accelerator, converting from {self.vae.dtype} to {_vae_dtype}"
-            )
-            self.vae.to(self.accelerator.device, dtype=_vae_dtype)
-            StateTracker.set_vae_dtype(_vae_dtype)
-            StateTracker.set_vae(self.vae)
-
-    def init_text_tokenizer(self):
-        logger.info("Load tokenizers")
-        self.tokenizer_1, self.tokenizer_2, self.tokenizer_3 = get_tokenizers(
-            self.config
-        )
-        self.tokenizers = [self.tokenizer_1, self.tokenizer_2, self.tokenizer_3]
+        logger.info(f"Load VAE: {self.config.pretrained_vae_model_name_or_path}")
+        self.model.load_vae(move_to_device=move_to_accelerator)
+        StateTracker.set_vae_dtype(self.model.vae.dtype)
+        StateTracker.set_vae(self.model.vae)
 
     def init_text_encoder(self, move_to_accelerator: bool = True):
-        self.init_text_tokenizer()
-        self.text_encoder_1, self.text_encoder_2, self.text_encoder_3 = None, None, None
-        self.text_encoder_cls_1, self.text_encoder_cls_2, self.text_encoder_cls_3 = (
-            None,
-            None,
-            None,
-        )
-        if self.tokenizer_1 is not None:
-            self.text_encoder_cls_1 = import_model_class_from_model_name_or_path(
-                self.config.text_encoder_path,
-                self.config.revision,
-                self.config,
-                subfolder=self.config.text_encoder_subfolder,
-            )
-        if self.tokenizer_2 is not None:
-            self.text_encoder_cls_2 = import_model_class_from_model_name_or_path(
-                self.config.pretrained_model_name_or_path,
-                self.config.revision,
-                self.config,
-                subfolder="text_encoder_2",
-            )
-        if self.tokenizer_3 is not None and self.config.model_family == "sd3":
-            self.text_encoder_cls_3 = import_model_class_from_model_name_or_path(
-                self.config.pretrained_model_name_or_path,
-                self.config.revision,
-                self.config,
-                subfolder="text_encoder_3",
-            )
-        with ContextManagers(deepspeed_zero_init_disabled_context_manager()):
-            tokenizers = [self.tokenizer_1, self.tokenizer_2, self.tokenizer_3]
-            text_encoder_classes = [
-                self.text_encoder_cls_1,
-                self.text_encoder_cls_2,
-                self.text_encoder_cls_3,
-            ]
-            (
-                text_encoder_variant,
-                self.text_encoder_1,
-                self.text_encoder_2,
-                self.text_encoder_3,
-            ) = load_tes(
-                args=self.config,
-                text_encoder_classes=text_encoder_classes,
-                weight_dtype=self.config.weight_dtype,
-                tokenizers=tokenizers,
-                text_encoder_path=self.config.text_encoder_path,
-                text_encoder_subfolder=self.config.text_encoder_subfolder,
-            )
-        if not move_to_accelerator:
-            logger.debug("Not moving text encoders to accelerator.")
-            return
-        self.text_encoders = []
-        self.tokenizers = []
-        if self.tokenizer_1 is not None:
-            logger.info("Moving text encoder to GPU.")
-            self.text_encoder_1.to(
-                self.accelerator.device, dtype=self.config.weight_dtype
-            )
-            self.tokenizers.append(self.tokenizer_1)
-            self.text_encoders.append(self.text_encoder_1)
-        if self.tokenizer_2 is not None:
-            logger.info("Moving text encoder 2 to GPU.")
-            self.text_encoder_2.to(
-                self.accelerator.device, dtype=self.config.weight_dtype
-            )
-            self.tokenizers.append(self.tokenizer_2)
-            self.text_encoders.append(self.text_encoder_2)
-        if self.tokenizer_3 is not None:
-            logger.info("Moving text encoder 3 to GPU.")
-            self.text_encoder_3.to(
-                self.accelerator.device, dtype=self.config.weight_dtype
-            )
-            self.tokenizers.append(self.tokenizer_3)
-            self.text_encoders.append(self.text_encoder_3)
+        self.model.load_text_encoder(move_to_device=move_to_accelerator)
 
     def init_freeze_models(self):
-        # Freeze vae and text_encoders
-        if self.vae is not None:
-            self.vae.requires_grad_(False)
-        if self.text_encoder_1 is not None:
-            self.text_encoder_1.requires_grad_(False)
-        if self.text_encoder_2 is not None:
-            self.text_encoder_2.requires_grad_(False)
-        if self.text_encoder_3 is not None:
-            self.text_encoder_3.requires_grad_(False)
-        if "lora" in self.config.model_type or self.config.controlnet:
-            if self.transformer is not None:
-                self.transformer.requires_grad_(False)
-            if self.unet is not None:
-                self.unet.requires_grad_(False)
+        self.model.freeze_components()
         self.accelerator.wait_for_everyone()
 
     def init_load_base_model(self):
@@ -612,9 +459,7 @@ class Trainer:
             structured_data={"message": webhook_msg},
             message_type="init_load_base_model_begin",
         )
-        self.unet, self.transformer = load_diffusion_model(
-            self.config, self.config.weight_dtype
-        )
+        self.model.load_model(move_to_device=False)
         self.accelerator.wait_for_everyone()
         self._send_webhook_raw(
             structured_data={"message": "Base model has loaded."},
@@ -634,8 +479,9 @@ class Trainer:
             configure_multi_databackend(
                 self.config,
                 accelerator=self.accelerator,
-                text_encoders=self.text_encoders,
-                tokenizers=self.tokenizers,
+                text_encoders=self.model.text_encoders,
+                tokenizers=self.model.tokenizers,
+                model=self.model,
             )
             self._send_webhook_raw(
                 structured_data={"message": "Completed configuring data backends."},
@@ -659,16 +505,22 @@ class Trainer:
 
             raise e
 
-        self.init_validation_prompts()
+        try:
+            self.init_validation_prompts()
+        except Exception as e:
+            logger.error("Could not generate validation prompts.")
+            logger.error(e)
+            raise e
+
         # We calculate the number of steps per epoch by dividing the number of images by the effective batch divisor.
         # Gradient accumulation steps mean that we only update the model weights every /n/ steps.
         collected_data_backend_str = list(StateTracker.get_data_backends().keys())
         if self.config.push_to_hub and self.accelerator.is_main_process:
             self.hub_manager.collected_data_backend_str = collected_data_backend_str
-            self.hub_manager.set_validation_prompts(
-                self.validation_prompts, self.validation_shortnames
+            self.hub_manager.set_validation_prompts(self.validation_prompt_metadata)
+            logger.debug(
+                f"Collected validation prompts: {self.validation_prompt_metadata}"
             )
-            logger.debug(f"Collected validation prompts: {self.validation_prompts}")
         self._recalculate_training_steps()
         logger.info(
             f"Collected the following data backends: {collected_data_backend_str}"
@@ -685,30 +537,24 @@ class Trainer:
         self.accelerator.wait_for_everyone()
 
     def init_validation_prompts(self):
-        if self.accelerator.is_main_process:
-            if self.config.model_family == "flux":
-                (
-                    self.validation_prompts,
-                    self.validation_shortnames,
-                    self.validation_negative_prompt_embeds,
-                    self.validation_negative_pooled_embeds,
-                    self.validation_negative_time_ids,
-                ) = prepare_validation_prompt_list(
-                    args=self.config,
-                    embed_cache=StateTracker.get_default_text_embed_cache(),
-                )
-            else:
-                (
-                    self.validation_prompts,
-                    self.validation_shortnames,
-                    self.validation_negative_prompt_embeds,
-                    self.validation_negative_pooled_embeds,
-                ) = prepare_validation_prompt_list(
-                    args=self.config,
-                    embed_cache=StateTracker.get_default_text_embed_cache(),
-                )
+        if (
+            hasattr(self.accelerator, "state")
+            and hasattr(self.accelerator.state, "deepspeed_plugin")
+            and getattr(self.accelerator.state.deepspeed_plugin, "deepspeed_config", {})
+            .get("zero_optimization", {})
+            .get("stage")
+            == 3
+        ):
+            logger.error("Cannot run validations with DeepSpeed ZeRO stage 3.")
+            return
+        if self.accelerator.is_main_process and not self.config.validation_disable:
+            self.validation_prompt_metadata = prepare_validation_prompt_list(
+                args=self.config,
+                embed_cache=StateTracker.get_default_text_embed_cache(),
+                model=self.model,
+            )
         else:
-            self.validation_prompts = None
+            self.validation_prompt_metadata = None
             self.validation_shortnames = None
             self.validation_negative_prompt_embeds = None
             self.validation_negative_pooled_embeds = None
@@ -734,15 +580,7 @@ class Trainer:
         memory_before_unload = self.stats_memory_used()
         if self.accelerator.is_main_process:
             logger.info("Unloading text encoders, as they are not being trained.")
-        if self.text_encoder_1 is not None:
-            self.text_encoder_1 = self.text_encoder_1.to("cpu")
-        if self.text_encoder_2 is not None:
-            self.text_encoder_2 = self.text_encoder_2.to("cpu")
-        if self.text_encoder_3 is not None:
-            self.text_encoder_3 = self.text_encoder_3.to("cpu")
-        del self.text_encoder_1, self.text_encoder_2, self.text_encoder_3
-        self.text_encoder_1, self.text_encoder_2, self.text_encoder_3 = None, None, None
-        self.text_encoders = []
+        self.model.unload_text_encoder()
         for backend_id, backend in StateTracker.get_data_backends().items():
             if "text_embed_cache" in backend:
                 backend["text_embed_cache"].text_encoders = None
@@ -752,7 +590,6 @@ class Trainer:
         memory_saved = memory_after_unload - memory_before_unload
         logger.info(
             f"After nuking text encoders from orbit, we freed {abs(round(memory_saved, 2))} GB of VRAM."
-            " The real memories were the friends we trained a model on along the way."
         )
 
     def init_precision(
@@ -776,38 +613,51 @@ class Trainer:
             elif self.config.base_model_default_dtype == "bf16":
                 self.config.base_weight_dtype = torch.bfloat16
                 self.config.enable_adamw_bf16 = True
+            elif self.config.base_model_default_dtype == "fp16":
+                raise ValueError("fp16 mixed precision training is not supported.")
             if not preprocessing_models_only:
-                if self.unet is not None:
+                logger.info(
+                    f"Moving {self.model.MODEL_TYPE.value} to dtype={self.config.base_weight_dtype}, device={quantization_device}"
+                )
+                self.model.model.to(
+                    quantization_device, dtype=self.config.base_weight_dtype
+                )
+                if self.config.controlnet:
                     logger.info(
-                        f"Moving U-net to dtype={self.config.base_weight_dtype}, device={quantization_device}"
+                        f"Moving ControlNet to dtype={self.config.base_weight_dtype}, device={quantization_device}"
                     )
-                    self.unet.to(
+                    self.model.controlnet.to(
                         quantization_device, dtype=self.config.base_weight_dtype
                     )
-                elif self.transformer is not None:
-                    logger.info(
-                        f"Moving transformer to dtype={self.config.base_weight_dtype}, device={quantization_device}"
-                    )
-                    self.transformer.to(
-                        quantization_device, dtype=self.config.base_weight_dtype
-                    )
-
         if self.config.is_quanto:
             with self.accelerator.local_main_process_first():
                 if ema_only:
                     self.quantise_model(ema=self.ema_model, args=self.config)
 
                     return
+                if self.config.controlnet:
+                    # we'll do the base model first
+                    self.quantise_model(
+                        model=(
+                            self.model.unwrap_model(model=self.model.model)
+                            if not preprocessing_models_only
+                            else None
+                        ),
+                        text_encoders=None,
+                        controlnet=None,
+                        ema=self.ema_model,
+                        args=self.config,
+                    )
+
                 self.quantise_model(
-                    unet=self.unet if not preprocessing_models_only else None,
-                    transformer=(
-                        self.transformer if not preprocessing_models_only else None
+                    model=(
+                        self.model.get_trained_component()
+                        if not preprocessing_models_only
+                        else None
                     ),
-                    text_encoder_1=self.text_encoder_1,
-                    text_encoder_2=self.text_encoder_2,
-                    text_encoder_3=self.text_encoder_3,
+                    text_encoders=self.model.text_encoders,
                     controlnet=None,
-                    ema=self.ema_model,
+                    ema=None,
                     args=self.config,
                 )
         elif self.config.is_torchao:
@@ -819,96 +669,52 @@ class Trainer:
 
                     return
                 (
-                    self.unet,
-                    self.transformer,
-                    self.text_encoder_1,
-                    self.text_encoder_2,
-                    self.text_encoder_3,
+                    q_model,
+                    self.model.text_encoders,
                     self.controlnet,
                     self.ema_model,
                 ) = self.quantise_model(
-                    unet=self.unet if not preprocessing_models_only else None,
-                    transformer=(
-                        self.transformer if not preprocessing_models_only else None
+                    model=(
+                        self.model.get_trained_component(base_model=True)
+                        if not preprocessing_models_only
+                        else None
                     ),
-                    text_encoder_1=self.text_encoder_1,
-                    text_encoder_2=self.text_encoder_2,
-                    text_encoder_3=self.text_encoder_3,
+                    text_encoders=self.model.text_encoders,
                     controlnet=None,
                     ema=self.ema_model,
                     args=self.config,
                 )
+                self.model.set_prepared_model(q_model, base_model=True)
+                if self.config.controlnet:
+                    (
+                        q_model,
+                        _,
+                        _,
+                        _,
+                    ) = self.quantise_model(
+                        model=(
+                            self.model.get_trained_component(base_model=False)
+                            if not preprocessing_models_only
+                            else None
+                        ),
+                        args=self.config,
+                    )
+                    self.model.set_prepared_model(q_model, base_model=False)
 
     def init_controlnet_model(self):
         if not self.config.controlnet:
             return
-        logger.info("Creating the controlnet..")
-        if self.config.controlnet_model_name_or_path:
-            logger.info("Loading existing controlnet weights")
-            self.controlnet = ControlNetModel.from_pretrained(
-                self.config.controlnet_model_name_or_path
-            )
-        else:
-            logger.info("Initializing controlnet weights from unet")
-            self.controlnet = ControlNetModel.from_unet(self.unet)
-
+        self.model.controlnet_init()
         self.accelerator.wait_for_everyone()
 
     def init_trainable_peft_adapter(self):
         if "lora" not in self.config.model_type:
             return
-        if self.config.controlnet:
-            raise ValueError("Cannot train LoRA with ControlNet.")
         if "standard" == self.config.lora_type.lower():
             lora_info_msg = f"Using LoRA training mode (rank={self.config.lora_rank})"
             logger.info(lora_info_msg)
             self._send_webhook_msg(message=lora_info_msg)
-            target_modules = determine_adapter_target_modules(
-                self.config, self.unet, self.transformer
-            )
-            addkeys, misskeys = [], []
-            if self.unet is not None:
-                unet_lora_config = LoraConfig(
-                    r=self.config.lora_rank,
-                    lora_alpha=(
-                        self.config.lora_alpha
-                        if self.config.lora_alpha is not None
-                        else self.config.lora_rank
-                    ),
-                    lora_dropout=self.config.lora_dropout,
-                    init_lora_weights=self.config.lora_initialisation_style,
-                    target_modules=target_modules,
-                    use_dora=self.config.use_dora,
-                )
-                logger.info("Adding LoRA adapter to the unet model..")
-                self.unet.add_adapter(unet_lora_config)
-                if self.config.init_lora:
-                    addkeys, misskeys = load_lora_weights(
-                        {"unet": self.unet},
-                        self.config.init_lora,
-                        use_dora=self.config.use_dora,
-                    )
-            elif self.transformer is not None:
-                transformer_lora_config = LoraConfig(
-                    r=self.config.lora_rank,
-                    lora_alpha=(
-                        self.config.lora_alpha
-                        if self.config.lora_alpha is not None
-                        else self.config.lora_rank
-                    ),
-                    init_lora_weights=self.config.lora_initialisation_style,
-                    target_modules=target_modules,
-                    use_dora=self.config.use_dora,
-                )
-                logger.info("Adding LoRA adapter to the transformer model..")
-                self.transformer.add_adapter(transformer_lora_config)
-
-                if self.config.init_lora:
-                    addkeys, misskeys = load_lora_weights(
-                        {"transformer": self.transformer},
-                        self.config.init_lora,
-                        use_dora=self.config.use_dora,
-                    )
+            addkeys, misskeys = self.model.add_lora_adapter()
             if addkeys:
                 logger.warning(
                     "The following keys were found in %s, but are not part of the model and are ignored:\n %s.\nThis is most likely an error"
@@ -920,31 +726,29 @@ class Trainer:
                     % (self.config.init_lora, str(misskeys))
                 )
 
+            logger.info(
+                f"LoRA network has been initialized with {trainable_parameter_count(self._get_trainable_parameters())} parameters"
+            )
         elif "lycoris" == self.config.lora_type.lower():
             from lycoris import create_lycoris
 
             with open(self.config.lycoris_config, "r") as f:
                 self.lycoris_config = json.load(f)
-            multiplier = int(self.lycoris_config["multiplier"])
-            linear_dim = int(self.lycoris_config["linear_dim"])
-            linear_alpha = int(self.lycoris_config["linear_alpha"])
+            multiplier = int(self.lycoris_config.get("multiplier", 1))
+            linear_dim = int(self.lycoris_config.get("linear_dim", 4))
+            linear_alpha = int(self.lycoris_config.get("linear_alpha", 1))
             apply_preset = self.lycoris_config.get("apply_preset", None)
             if apply_preset is not None and apply_preset != {}:
                 LycorisNetwork.apply_preset(apply_preset)
 
             # Remove the positional arguments we extracted.
-            del self.lycoris_config["multiplier"]
-            del self.lycoris_config["linear_dim"]
-            del self.lycoris_config["linear_alpha"]
+            keys_to_remove = ["multiplier", "linear_dim", "linear_alpha"]
+            for key in keys_to_remove:
+                if key in self.lycoris_config:
+                    del self.lycoris_config[key]
 
             logger.info("Using lycoris training mode")
             self._send_webhook_msg(message="Using lycoris training mode.")
-
-            model_for_lycoris_wrap = None
-            if self.transformer is not None:
-                model_for_lycoris_wrap = self.transformer
-            if self.unet is not None:
-                model_for_lycoris_wrap = self.unet
 
             if self.config.init_lora is not None:
                 from lycoris import create_lycoris_from_weights
@@ -952,13 +756,13 @@ class Trainer:
                 self.lycoris_wrapped_network = create_lycoris_from_weights(
                     multiplier,
                     self.config.init_lora,
-                    model_for_lycoris_wrap,
+                    self.model.get_trained_component(),
                     weights_sd=None,
                     **self.lycoris_config,
                 )[0]
             else:
                 self.lycoris_wrapped_network = create_lycoris(
-                    model_for_lycoris_wrap,
+                    self.model.get_trained_component(),
                     multiplier,
                     linear_dim,
                     linear_alpha,
@@ -977,11 +781,8 @@ class Trainer:
                 "_lycoris_wrapped_network",
                 self.lycoris_wrapped_network,
             )
-            lycoris_num_params = sum(
-                p.numel() for p in self.lycoris_wrapped_network.parameters()
-            )
             logger.info(
-                f"LyCORIS network has been initialized with {lycoris_num_params:,} parameters"
+                f"LyCORIS network has been initialized with {trainable_parameter_count(self.lycoris_wrapped_network.parameters())} parameters"
             )
         self.accelerator.wait_for_everyone()
 
@@ -989,68 +790,105 @@ class Trainer:
         if self.config.layer_freeze_strategy == "bitfit":
             from helpers.training.model_freeze import apply_bitfit_freezing
 
-            if self.unet is not None:
-                logger.info("Applying BitFit freezing strategy to the U-net.")
-                self.unet = apply_bitfit_freezing(
-                    unwrap_model(self.accelerator, self.unet), self.config
+            if self.model.get_trained_component() is not None:
+                logger.info(
+                    f"Applying BitFit freezing strategy to the {self.model.MODEL_TYPE.value}."
                 )
-            if self.transformer is not None:
-                logger.warning(
-                    "Training DiT models with BitFit is not yet tested, and unexpected results may occur."
+                self.model.model = apply_bitfit_freezing(
+                    unwrap_model(self.accelerator, self.model.model), self.config
                 )
-                self.transformer = apply_bitfit_freezing(
-                    unwrap_model(self.accelerator, self.transformer), self.config
+        self.enable_gradient_checkpointing()
+
+    def init_distillation(self):
+        self.distiller = None
+        if self.config.distillation_method is None:
+            return
+
+        if self.config.distillation_method == "dcm":
+            from helpers.distillation.dcm.distiller import DCMDistiller
+
+            # For LoRA with DCM regularization (single model)
+            dcm_config = {
+                "model_family": self.config.model_family,
+                "model_type": self.config.model_type,
+                "loss_type": self.model.PREDICTION_TYPE.value,
+                "pred_type": self.model.PREDICTION_TYPE.value,
+                # "windows": 16,
+                "is_regularisation_data": True,  # Use regularization approach
+            }
+            if self.config.distillation_config is not None:
+                if "dcm" in self.config.distillation_config:
+                    dcm_config.update(self.config.distillation_config["dcm"])
+                else:
+                    dcm_config.update(self.config.distillation_config)
+            logger.info(f"Distillation config: {dcm_config}")
+            if self.config.model_type == "lora":
+                logger.info(
+                    "Loading flow-matching distillation via low-rank adapter training."
+                )
+                self.distiller = DCMDistiller(
+                    teacher_model=self.model,
+                    noise_scheduler=self.noise_scheduler,
+                    config=dcm_config,
+                )
+            elif self.config.model_type == "full":
+                raise NotImplementedError(
+                    "Separate teacher/student models for distillation are not implemented yet."
                 )
 
+    def enable_gradient_checkpointing(self):
         if self.config.gradient_checkpointing:
-            if self.unet is not None:
+            logger.debug("Enabling gradient checkpointing.")
+            if hasattr(
+                self.model.get_trained_component(), "enable_gradient_checkpointing"
+            ):
                 unwrap_model(
-                    self.accelerator, self.unet
+                    self.accelerator, self.model.get_trained_component()
                 ).enable_gradient_checkpointing()
-            if self.transformer is not None and self.config.model_family != "smoldit":
+            if (
+                hasattr(self.config, "train_text_encoder")
+                and self.config.train_text_encoder
+            ):
+                for text_encoder in self.model.text_encoders:
+                    if text_encoder is not None:
+                        unwrap_model(
+                            self.accelerator, text_encoder
+                        ).gradient_checkpointing_enable()
+
+    def disable_gradient_checkpointing(self):
+        if self.config.gradient_checkpointing:
+            logger.debug("Disabling gradient checkpointing.")
+            if hasattr(
+                self.model.get_trained_component(), "disable_gradient_checkpointing"
+            ):
                 unwrap_model(
-                    self.accelerator, self.transformer
-                ).enable_gradient_checkpointing()
+                    self.accelerator, self.model.get_trained_component(base_model=True)
+                ).disable_gradient_checkpointing()
             if self.config.controlnet:
                 unwrap_model(
-                    self.accelerator, self.controlnet
-                ).enable_gradient_checkpointing()
+                    self.accelerator, self.model.get_trained_component()
+                ).disable_gradient_checkpointing()
             if (
                 hasattr(self.config, "train_text_encoder")
                 and self.config.train_text_encoder
             ):
                 unwrap_model(
                     self.accelerator, self.text_encoder_1
-                ).gradient_checkpointing_enable()
+                ).gradient_checkpointing_disable()
                 unwrap_model(
                     self.accelerator, self.text_encoder_2
-                ).gradient_checkpointing_enable()
+                ).gradient_checkpointing_disable()
 
     def _get_trainable_parameters(self):
         # Return just a list of the currently trainable parameters.
         if self.config.model_type == "lora":
             if self.config.lora_type == "lycoris":
                 return self.lycoris_wrapped_network.parameters()
-            elif self.unet is not None:
-                return [
-                    param for _, param in self.unet.named_parameters()
-                    if param.requires_grad
-                ]
-            elif self.transformer is not None:
-                return [
-                    param for _, param in self.transformer.named_parameters()
-                    if param.requires_grad
-                ]
-        if self.config.controlnet:
-            return [
-                param for param in self.controlnet.parameters() if param.requires_grad
-            ]
-        if self.unet is not None:
-            return [param for param in self.unet.parameters() if param.requires_grad]
-        if self.transformer is not None:
-            return [
-                param for param in self.transformer.parameters() if param.requires_grad
-            ]
+        return [
+            param
+            for param in self.model.get_trained_component().parameters()
+            if param.requires_grad
+        ]
 
     def _recalculate_training_steps(self):
         # Scheduler and math around the number of training steps.
@@ -1101,7 +939,8 @@ class Trainer:
                     "You must specify either --max_train_steps or --num_train_epochs with a value > 0"
                 )
             self.config.num_train_epochs = math.ceil(
-                self.config.max_train_steps / self.config.num_update_steps_per_epoch
+                self.config.max_train_steps
+                / max(self.config.num_update_steps_per_epoch, 1)
             )
             logger.info(
                 f"Calculated our maximum training steps at {self.config.max_train_steps} because we have"
@@ -1135,20 +974,29 @@ class Trainer:
 
         self.params_to_optimize = determine_params_to_optimize(
             args=self.config,
-            controlnet=self.controlnet,
-            unet=self.unet,
-            transformer=self.transformer,
-            text_encoder_1=self.text_encoder_1,
-            text_encoder_2=self.text_encoder_2,
+            model=self.model,
             model_type_label=self.config.model_type_label,
             lycoris_wrapped_network=self.lycoris_wrapped_network,
+        )
+        logger.info(
+            f"Connecting optimizer to {trainable_parameter_count(self.params_to_optimize)} trainable parameters"
         )
 
         if self.config.use_deepspeed_optimizer:
             logger.info(
                 f"DeepSpeed Optimizer arguments, weight_decay={self.config.adam_weight_decay} eps={self.config.adam_epsilon}, extra_arguments={extra_optimizer_args}"
             )
-            self.optimizer = optimizer_class(self.params_to_optimize)
+            self.optimizer = create_optimizer_with_param_groups(
+                self.model.get_trained_component(),
+                optimizer_class,
+                self.params_to_optimize,
+                use_parameter_groups=True,  # Enable weight decay separation
+                cpu_offload_config=(
+                    {"offload_mechanism": self.config.optimizer_offload_mechanism}
+                    if self.config.optimizer_offload_mechanism
+                    else None
+                ),
+            )
         else:
             logger.info(f"Optimizer arguments={extra_optimizer_args}")
             if self.config.train_text_encoder and self.config.text_encoder_lr:
@@ -1176,44 +1024,21 @@ class Trainer:
                 "Marking model for gradient release. This feature is experimental, and may use more VRAM or not work."
             )
             prepare_for_gradient_release(
-                (
-                    self.controlnet
-                    if self.config.controlnet
-                    else self.transformer if self.transformer is not None else self.unet
-                ),
-                self.optimizer,
+                self.model.get_trained_component(), self.optimizer
             )
-
-        # Iterate through the state dictionary
-        if self.config.model_type == "lora" and self.config.peft_model_precision == 'fp32':
-                logger.info(f"Moving LoRA adapter optimizer parameters to dtype {self.config.peft_model_precision}")
-                for _, state in self.optimizer.state_dict()['state'].items():
-                    for key, value in state.items():
-                        # Check if the value is a tensor.
-                        if isinstance(value, torch.Tensor):
-                            # Convert the tensor to torch.float32.
-                            state[key] = value.to(dtype=torch.float32)
 
     def init_lr_scheduler(self):
-        self.config.is_schedulefree = is_lr_scheduler_disabled(self.config.optimizer)
+        self.config.is_schedulefree = is_lr_schedulefree(self.config.optimizer)
+        self.config.is_lr_scheduler_disabled = (
+            is_lr_scheduler_disabled(self.config.optimizer)
+            or self.config.use_deepspeed_scheduler
+        )
         if self.config.is_schedulefree:
-            logger.info(
-                "Using experimental AdamW ScheduleFree optimiser from Facebook. Experimental due to newly added Kahan summation."
-            )
+            logger.info("Using experimental ScheduleFree optimiser..")
+        if self.config.is_lr_scheduler_disabled:
             # we don't use LR schedulers with schedulefree optimisers
+            logger.info("Optimiser cannot use an LR scheduler, so we are disabling it.")
             lr_scheduler = None
-        if not self.config.use_deepspeed_scheduler and not self.config.is_schedulefree:
-            logger.info(
-                f"Loading {self.config.lr_scheduler} learning rate scheduler with {self.config.lr_warmup_steps} warmup steps"
-            )
-            lr_scheduler = get_lr_scheduler(
-                self.config,
-                self.optimizer,
-                self.accelerator,
-                logger,
-                use_deepspeed_scheduler=False,
-            )
-        else:
             logger.info(f"Using dummy learning rate scheduler")
             if torch.backends.mps.is_available():
                 lr_scheduler = None
@@ -1223,18 +1048,30 @@ class Trainer:
                     total_num_steps=self.config.max_train_steps,
                     warmup_num_steps=self.config.lr_warmup_steps,
                 )
-        if lr_scheduler is not None:
-            if hasattr(lr_scheduler, "num_update_steps_per_epoch"):
-                lr_scheduler.num_update_steps_per_epoch = (
-                    self.config.num_update_steps_per_epoch
-                )
-            if hasattr(lr_scheduler, "last_step"):
-                lr_scheduler.last_step = self.state.get("global_resume_step", 0)
+            return lr_scheduler
+
+        logger.info(
+            f"Loading {self.config.lr_scheduler} learning rate scheduler with {self.config.lr_warmup_steps} warmup steps"
+        )
+        lr_scheduler = get_lr_scheduler(
+            self.config,
+            self.optimizer,
+            self.accelerator,
+            logger,
+            global_step=self.state["global_step"],
+            use_deepspeed_scheduler=False,
+        )
+        if hasattr(lr_scheduler, "num_update_steps_per_epoch"):
+            lr_scheduler.num_update_steps_per_epoch = (
+                self.config.num_update_steps_per_epoch
+            )
+        if hasattr(lr_scheduler, "last_step"):
+            lr_scheduler.last_step = self.state.get("global_resume_step", 0)
 
         return lr_scheduler
 
     def init_ema_model(self):
-        # Create EMA for the unet.
+        # Create EMA for the model.
         self.ema_model = None
         if not self.config.use_ema:
             return
@@ -1246,12 +1083,9 @@ class Trainer:
             if self.config.controlnet:
                 ema_model_cls = self.controlnet.__class__
                 ema_model_config = self.controlnet.config
-            elif self.unet is not None:
-                ema_model_cls = self.unet.__class__
-                ema_model_config = self.unet.config
-            elif self.transformer is not None:
-                ema_model_cls = self.transformer.__class__
-                ema_model_config = self.transformer.config
+            elif self.model.get_trained_component() is not None:
+                ema_model_cls = self.model.get_trained_component().__class__
+                ema_model_config = self.model.get_trained_component().config
             else:
                 raise ValueError(
                     f"Please open a bug report or disable EMA. Unknown EMA model family: {self.config.model_family}"
@@ -1277,12 +1111,9 @@ class Trainer:
 
         self.model_hooks = SaveHookManager(
             args=self.config,
-            unet=self.unet,
-            transformer=self.transformer,
+            model=self.model,
             ema_model=self.ema_model,
             accelerator=self.accelerator,
-            text_encoder_1=self.text_encoder_1,
-            text_encoder_2=self.text_encoder_2,
             use_deepspeed_optimizer=self.config.use_deepspeed_optimizer,
         )
         self.accelerator.register_save_state_pre_hook(self.model_hooks.save_model_hook)
@@ -1315,28 +1146,12 @@ class Trainer:
             structured_data={"message": "Moving weights to GPU"},
             message_type="init_prepare_models_begin",
         )
-        primary_model = self.unet if self.unet is not None else self.transformer
-        if self.config.controlnet:
-            primary_model = self.controlnet
+        primary_model = self.model.get_trained_component()
         results = self.accelerator.prepare(
             primary_model, lr_scheduler, self.optimizer, self.train_dataloaders[0]
         )
-        if self.config.controlnet:
-            self.controlnet = results[0]
-        elif self.unet is not None:
-            self.unet = results[0]
-        elif self.transformer is not None:
-            self.transformer = results[0]
+        self.model.set_prepared_model(results[0])
 
-        if self.config.unet_attention_slice:
-            if torch.backends.mps.is_available():
-                logger.warning(
-                    "Using attention slicing when training SDXL on MPS can result in NaN errors on the first backward pass. If you run into issues, disable this option and reduce your batch size instead to reduce memory consumption."
-                )
-            if self.unet is not None:
-                self.unet.set_attention_slice("auto")
-            if self.transformer is not None:
-                self.transformer.set_attention_slice("auto")
         self.lr_scheduler = results[1]
         self.optimizer = results[2]
         # The rest of the entries are dataloaders:
@@ -1392,9 +1207,7 @@ class Trainer:
         if self.config.keep_vae_loaded or self.config.vae_cache_ondemand:
             return
         memory_before_unload = self.stats_memory_used()
-        self.vae = self.vae.to("cpu")
-        del self.vae
-        self.vae = None
+        self.model.unload_vae()
         for _, backend in StateTracker.get_data_backends().items():
             if "vaecache" in backend:
                 backend["vaecache"].vae = None
@@ -1416,49 +1229,28 @@ class Trainer:
         ):
             logger.error("Cannot run validations with DeepSpeed ZeRO stage 3.")
             return
-
-        first_backend_key = sorted(list(
-            filter(
-                lambda name: 'mask' not in name,
-                StateTracker.get_data_backends().keys(),
-            )))[0]
-        imgs_eval = StateTracker.get_image_files(
-            data_backend_id=first_backend_key,
-        )
-
+        self.evaluation = None
+        if self.config.validation_disable:
+            return
         if (
-            self.config.evaluation_type is not None
-            and self.config.evaluation_type.lower() != ""
-            and self.config.evaluation_type.lower() != "none"
-            and self.config.evaluation_type.lower() == "face"
+            self.config.eval_steps_interval is not None
+            and self.config.eval_steps_interval > 0
         ):
-            logger.info(f"Using backend {first_backend_key} for face embedding ground truth")
-        model_evaluator = ModelEvaluator.from_config(
-            args=self.config,
-            baseline_images=imgs_eval,
-        )
+            from helpers.training.validation import Evaluation
+
+            self.evaluation = Evaluation(accelerator=self.accelerator)
+        model_evaluator = ModelEvaluator.from_config(args=self.config)
         self.validation = Validation(
             trainable_parameters=self._get_trainable_parameters,
             accelerator=self.accelerator,
-            unet=self.unet,
-            transformer=self.transformer,
+            model=self.model,
+            distiller=self.distiller,
             args=self.config,
-            validation_prompts=self.validation_prompts,
-            validation_shortnames=self.validation_shortnames,
-            text_encoder_1=self.text_encoder_1,
-            tokenizer=self.tokenizer_1,
+            validation_prompt_metadata=self.validation_prompt_metadata,
             vae_path=self.config.vae_path,
             weight_dtype=self.config.weight_dtype,
             embed_cache=StateTracker.get_default_text_embed_cache(),
-            validation_negative_pooled_embeds=self.validation_negative_pooled_embeds,
-            validation_negative_prompt_embeds=self.validation_negative_prompt_embeds,
-            text_encoder_2=self.text_encoder_2,
-            tokenizer_2=self.tokenizer_2,
-            text_encoder_3=self.text_encoder_3,
-            tokenizer_3=self.tokenizer_3,
             ema_model=self.ema_model,
-            vae=self.vae,
-            controlnet=self.controlnet if self.config.controlnet else None,
             model_evaluator=model_evaluator,
             is_deepspeed=self.config.use_deepspeed_optimizer,
         )
@@ -1502,15 +1294,14 @@ class Trainer:
         )
         StateTracker.set_global_resume_step(self.state["global_resume_step"])
         if not self.config.resume_from_checkpoint:
+            logger.info(f"Not resuming from checkpoint.")
             return lr_scheduler
         if self.config.resume_from_checkpoint != "latest":
             path = os.path.basename(self.config.resume_from_checkpoint)
         else:
             # Get the most recent checkpoint
-            dirs = os.listdir(self.config.output_dir)
-            dirs = [d for d in dirs if d.startswith("checkpoint")]
-            dirs = sorted(dirs, key=lambda x: int(x.split("-")[1]))
-            path = dirs[-1] if len(dirs) > 0 else None
+            path = self.checkpoint_state_latest(self.config.output_dir)
+            logger.info(f"Checking {path} for latest checkpoint.")
 
         if path is None:
             logger.info(
@@ -1526,8 +1317,12 @@ class Trainer:
             self.config.resume_from_checkpoint = None
             return lr_scheduler
 
-        logger.info(f"Resuming from checkpoint {path}")
-        self.accelerator.load_state(os.path.join(self.config.output_dir, path))
+        checkpoint_dir = os.path.join(self.config.output_dir, path)
+        logger.info(f"Resuming from checkpoint {checkpoint_dir}")
+        self.accelerator.load_state(checkpoint_dir)
+        if getattr(self, "distiller", None) is not None:
+            logger.info(f"Loading DCM checkpoint states..")
+            self.distiller.on_load_checkpoint(checkpoint_dir)
         try:
             if (
                 "constant" == self.config.lr_scheduler
@@ -1603,11 +1398,27 @@ class Trainer:
                 * self.accelerator.num_processes
             )
 
-        if self.state["current_epoch"] > self.config.num_train_epochs + 1:
+        if (
+            self.state["current_epoch"] > self.config.num_train_epochs + 1
+            and not self.config.ignore_final_epochs
+        ):
             logger.info(
                 f"Reached the end ({self.state['current_epoch']} epochs) of our training run ({self.config.num_train_epochs} epochs). This run will do zero steps."
             )
         self.accelerator.wait_for_everyone()
+
+        if self.optimizer is not None and self.config.optimizer == "prodigy":
+            # fix the device assignment for the prodigy optimizer parameters
+            for group in (
+                self.optimizer.param_groups
+                if self.optimizer.optimizer.split_groups
+                else self.optimizer.param_groups[:1]
+            ):
+                p = group["params"][0]
+                group["running_d_numerator"] = group["running_d_numerator"].to(p.device)
+                group["running_d_denom"] = group["running_d_denom"].to(p.device)
+                if "use_focus" not in group:
+                    group["use_focus"] = False
 
         return lr_scheduler
 
@@ -1622,7 +1433,10 @@ class Trainer:
             delattr(public_args, "process_group_kwargs")
             delattr(public_args, "weight_dtype")
             delattr(public_args, "base_weight_dtype")
-            delattr(public_args, "vae_kwargs")
+            if hasattr(public_args, "vae_kwargs"):
+                delattr(public_args, "vae_kwargs")
+            if hasattr(public_args, "sana_complex_human_instruction"):
+                delattr(public_args, "sana_complex_human_instruction")
 
             # Hash the contents of public_args to reflect a deterministic ID for a single set of params:
             public_args_hash = hashlib.md5(
@@ -1632,18 +1446,32 @@ class Trainer:
             tracker_run_name = (
                 self.config.tracker_run_name or "simpletuner-training-run"
             )
-            self.accelerator.init_trackers(
-                project_name,
-                config=vars(public_args),
-                init_kwargs={
-                    "wandb": {
-                        "name": tracker_run_name,
-                        "id": f"{public_args_hash}",
-                        "resume": "allow",
-                        "allow_val_change": True,
-                    }
-                },
-            )
+            try:
+                self.accelerator.init_trackers(
+                    project_name,
+                    config=vars(public_args),
+                    init_kwargs={
+                        "wandb": {
+                            "name": tracker_run_name,
+                            "id": f"{public_args_hash}",
+                            "resume": "allow",
+                            "allow_val_change": True,
+                        }
+                    },
+                )
+            except Exception as e:
+                if "Object has no attribute 'disabled'" in repr(e):
+                    logger.warning(
+                        "WandB is disabled, and Accelerate was not quite happy about it."
+                    )
+                else:
+                    logger.error(f"Could not initialize trackers: {e}")
+                    self._send_webhook_raw(
+                        structured_data={
+                            "message": f"Could not initialize trackers. Continuing without. {e}"
+                        },
+                        message_type="error",
+                    )
             self._send_webhook_raw(
                 structured_data=public_args.__dict__,
                 message_type="training_config",
@@ -1657,93 +1485,204 @@ class Trainer:
         lr_scheduler = self.init_resume_checkpoint(lr_scheduler=lr_scheduler)
         self.init_post_load_freeze()
 
+    def enable_sageattention_inference(self):
+        # if the sageattention is inference-only, we'll enable it.
+        # if it's training only, we'll disable it.
+        # if it's inference+training, we leave it alone.
+        if (
+            "sageattention" not in self.config.attention_mechanism
+            or self.config.sageattention_usage == "training+inference"
+        ):
+            return
+        if self.config.sageattention_usage == "inference":
+            self.enable_sageattention()
+        if self.config.sageattention_usage == "training":
+            self.disable_sageattention()
+
+    def disable_sageattention_inference(self):
+        # if the sageattention is inference-only, we'll disable it.
+        # if it's training only, we'll enable it.
+        # if it's inference+training, we leave it alone.
+        if (
+            "sageattention" not in self.config.attention_mechanism
+            or self.config.sageattention_usage == "training+inference"
+        ):
+            return
+        if self.config.sageattention_usage == "inference":
+            self.disable_sageattention()
+        if self.config.sageattention_usage == "training":
+            self.enable_sageattention()
+
+    def disable_sageattention(self):
+        if "sageattention" not in self.config.attention_mechanism:
+            return
+
+        if (
+            hasattr(torch.nn.functional, "scaled_dot_product_attention_sdpa")
+            and torch.nn.functional
+            != torch.nn.functional.scaled_dot_product_attention_sdpa
+        ):
+            logger.info("Disabling SageAttention.")
+            setattr(
+                torch.nn.functional,
+                "scaled_dot_product_attention",
+                torch.nn.functional.scaled_dot_product_attention_sdpa,
+            )
+
+    def enable_sageattention(self):
+        if "sageattention" not in self.config.attention_mechanism:
+            return
+
+        # we'll try and load SageAttention and overload pytorch's sdpa function.
+        try:
+            logger.info("Enabling SageAttention.")
+            from sageattention import (
+                sageattn,
+                sageattn_qk_int8_pv_fp16_triton,
+                sageattn_qk_int8_pv_fp16_cuda,
+                sageattn_qk_int8_pv_fp8_cuda,
+            )
+
+            sageattn_functions = {
+                "sageattention": sageattn,
+                "sageattention-int8-fp16-triton": sageattn_qk_int8_pv_fp16_triton,
+                "sageattention-int8-fp16-cuda": sageattn_qk_int8_pv_fp16_cuda,
+                "sageattention-int8-fp8-cuda": sageattn_qk_int8_pv_fp8_cuda,
+            }
+            # store the old SDPA for validations to use during VAE decode
+            if not hasattr(torch.nn.functional, "scaled_dot_product_attention_sdpa"):
+                setattr(
+                    torch.nn.functional,
+                    "scaled_dot_product_attention_sdpa",
+                    torch.nn.functional.scaled_dot_product_attention,
+                )
+
+            def sageattn_wrapper_for_torch_sdpa_with_fallback(
+                query,
+                key,
+                value,
+                attn_mask=None,
+                dropout_p=0.0,
+                is_causal=False,
+                scale=None,
+                enable_gqa=False,
+            ) -> torch.Tensor:
+                try:
+                    return sageattn_functions[self.config.attention_mechanism](
+                        query, key, value, is_causal=is_causal
+                    )
+                except:
+                    logger.error(
+                        f"Could not run SageAttention with {self.config.attention_mechanism}. Falling back to Pytorch SDPA."
+                    )
+                    return torch.nn.functional.scaled_dot_product_attention_sdpa(
+                        query,
+                        key,
+                        value,
+                        attn_mask,
+                        dropout_p,
+                        is_causal,
+                        scale,
+                        enable_gqa,
+                    )
+
+            torch.nn.functional.scaled_dot_product_attention = (
+                sageattn_wrapper_for_torch_sdpa_with_fallback
+            )
+            if not hasattr(torch.nn.functional, "scaled_dot_product_attention_sage"):
+                setattr(
+                    torch.nn.functional,
+                    "scaled_dot_product_attention_sage",
+                    torch.nn.functional.scaled_dot_product_attention,
+                )
+
+            if "training" in self.config.sageattention_usage:
+                logger.warning(
+                    f"Using {self.config.attention_mechanism} for attention calculations during training. Your attention layers will not be trained. To disable SageAttention, remove or set --attention_mechanism to a different value."
+                )
+        except ImportError as e:
+            logger.error(
+                "Could not import SageAttention. Please install it to use this --attention_mechanism=sageattention."
+            )
+            logger.error(repr(e))
+            sys.exit(1)
+
     def move_models(self, destination: str = "accelerator"):
         target_device = "cpu"
         if destination == "accelerator":
             target_device = self.accelerator.device
         logger.info(
-            f"Moving the {'U-net' if self.unet is not None else 'diffusion transformer'} to GPU in {self.config.weight_dtype if not self.config.is_quantized else self.config.base_model_precision} precision."
+            f"Moving the {str(self.model.get_trained_component().__class__)} to GPU in {self.config.weight_dtype if not self.config.is_quantized else self.config.base_model_precision} precision."
         )
-        if self.unet is not None:
+        if self.model.get_trained_component() is not None:
             if self.config.is_quantized:
-                self.unet.to(target_device)
+                self.model.get_trained_component().to(target_device)
             else:
-                self.unet.to(target_device, dtype=self.config.weight_dtype)
-        if self.transformer is not None:
-            if self.config.is_quantized:
-                self.transformer.to(target_device)
-            else:
-                self.transformer.to(target_device, dtype=self.config.weight_dtype)
+                self.model.get_trained_component().to(
+                    target_device, dtype=self.config.weight_dtype
+                )
         if getattr(self.accelerator, "_lycoris_wrapped_network", None) is not None:
             self.accelerator._lycoris_wrapped_network = (
                 self.accelerator._lycoris_wrapped_network.to(
                     target_device, dtype=self.config.weight_dtype
                 )
             )
+
         if (
-            self.config.enable_xformers_memory_efficient_attention
-            and self.config.model_family
-            not in [
-                "sd3",
-                "pixart_sigma",
-                "flux",
-                "smoldit",
-                "kolors",
-            ]
+            "sageattention" in self.config.attention_mechanism
+            and "training" in self.config.sageattention_usage
         ):
-            logger.info("Enabling xformers memory-efficient attention.")
+            logger.info(
+                "Using SageAttention for training. This is an unsupported, experimental configuration."
+            )
+            self.enable_sageattention()
+        elif self.config.attention_mechanism == "xformers":
             if is_xformers_available():
                 import xformers  # type: ignore # noqa
 
-                if self.unet is not None:
-                    self.unet.enable_xformers_memory_efficient_attention()
-                if self.transformer is not None:
-                    self.transformer.enable_xformers_memory_efficient_attention()
-                if self.config.controlnet:
-                    self.controlnet.enable_xformers_memory_efficient_attention()
+                if hasattr(
+                    self.model.get_trained_component(),
+                    "enable_xformers_memory_efficient_attention",
+                ):
+                    logger.info("Enabling xformers memory-efficient attention.")
+                    self.model.get_trained_component().enable_xformers_memory_efficient_attention()
+                else:
+                    self.config.enable_xformers_memory_efficient_attention = False
+                    self.config.attention_mechanism = "diffusers"
+                    logger.warning(
+                        "xformers is not enabled, as it is incompatible with this model type."
+                        " Falling back to diffusers attention mechanism (Pytorch SDPA)."
+                        " Alternatively, provide --attention_mechanism=sageattention for a more efficient option on CUDA systems."
+                    )
             else:
                 raise ValueError(
                     "xformers is not available. Make sure it is installed correctly"
                 )
-        elif self.config.enable_xformers_memory_efficient_attention:
-            logger.warning(
-                "xformers is not enabled, as it is incompatible with this model type."
-            )
-            self.config.enable_xformers_memory_efficient_attention = False
 
         if self.config.controlnet:
-            self.controlnet.train()
-            logger.info(
-                f"Moving ControlNet to {target_device} in {self.config.weight_dtype} precision."
+            self.model.get_trained_component().train()
+            self.model.unwrap_model(self.model.model).to(
+                device=target_device, dtype=self.config.weight_dtype
             )
-            self.controlnet.to(device=target_device, dtype=self.config.weight_dtype)
             if self.config.train_text_encoder:
                 logger.warning(
                     "Unknown results will occur when finetuning the text encoder alongside ControlNet."
                 )
 
-        trainable_parameters = self._get_trainable_parameters()
-
-        if self.config.model_type == "lora":
-            peft_dtype = torch.bfloat16
-            if self.config.peft_model_precision == 'fp32':
-                peft_dtype = torch.float32
-            logger.info(f"Moving LoRA adapter parameters to dtype {self.config.peft_model_precision}")
-            for param in trainable_parameters:
-                param.data = param.data.to(dtype=peft_dtype)
-
     def mark_optimizer_train(self):
-        if is_lr_scheduler_disabled(self.config.optimizer) and hasattr(
+        if is_lr_schedulefree(self.config.optimizer) and hasattr(
             self.optimizer, "train"
         ):
             # we typically have to call train() on the optim for schedulefree.
+            logger.debug("Setting optimiser into train() mode.")
             self.optimizer.train()
 
     def mark_optimizer_eval(self):
-        if is_lr_scheduler_disabled(self.config.optimizer) and hasattr(
+        if is_lr_schedulefree(self.config.optimizer) and hasattr(
             self.optimizer, "eval"
         ):
             # we typically have to call eval() on the optim for schedulefree before saving or running validations.
+            logger.debug("Setting optimiser into eval() mode.")
             self.optimizer.eval()
 
     def _send_webhook_msg(
@@ -1782,6 +1721,7 @@ class Trainer:
 
     def _train_initial_msg(self):
         initial_msg = "\n***** Running training *****"
+        initial_msg += f"\n-  Trainable parameters: {trainable_parameter_count(self._get_trainable_parameters())}"
         initial_msg += f"\n-  Num batches = {self.config.total_num_batches}"
         initial_msg += f"\n-  Num Epochs = {self.config.num_train_epochs}"
         initial_msg += f"\n  - Current Epoch = {self.state['first_epoch']}"
@@ -1791,7 +1731,7 @@ class Trainer:
         initial_msg += f"\n-  Total optimization steps = {self.config.max_train_steps}"
         if self.state["global_step"] > 1:
             initial_msg += f"\n  - Steps completed: {self.state['global_step']}"
-        initial_msg += f"\n-  Total optimization steps remaining = {max(0, self.config.total_steps_remaining_at_start)}"
+        initial_msg += f"\n-  Total optimization steps remaining = {max(0, getattr(self.config, 'total_steps_remaining_at_start', self.config.max_train_steps))}"
         logger.info(initial_msg)
         self._send_webhook_msg(message=initial_msg)
         structured_data = {
@@ -1802,7 +1742,14 @@ class Trainer:
             "total_batch_size": self.config.total_batch_size,
             "micro_batch_size": self.config.train_batch_size,
             "current_step": self.state["global_step"],
-            "remaining_num_steps": max(0, self.config.total_steps_remaining_at_start),
+            "remaining_num_steps": max(
+                0,
+                getattr(
+                    self.config,
+                    "total_steps_remaining_at_start",
+                    self.config.max_train_steps,
+                ),
+            ),
         }
         self._send_webhook_raw(
             structured_data=structured_data, message_type="_train_initial_msg"
@@ -1885,260 +1832,243 @@ class Trainer:
 
     def model_predict(
         self,
-        batch,
-        latents,
-        noisy_latents,
-        encoder_hidden_states,
-        added_cond_kwargs,
-        add_text_embeds,
-        timesteps,
+        prepared_batch,
+        custom_timesteps: list = None,
     ):
-        if self.config.controlnet:
-            training_logger.debug(
-                f"Extra conditioning dtype: {batch['conditioning_pixel_values'].dtype}"
-            )
+        if custom_timesteps is not None:
+            timesteps = custom_timesteps
         if not self.config.disable_accelerator:
             if self.config.controlnet:
-                # ControlNet conditioning.
-                controlnet_image = batch["conditioning_pixel_values"].to(
-                    dtype=self.config.weight_dtype
+                model_pred = self.model.controlnet_predict(
+                    prepared_batch=prepared_batch,
                 )
-                training_logger.debug(f"Image shape: {controlnet_image.shape}")
-                down_block_res_samples, mid_block_res_sample = self.controlnet(
-                    noisy_latents,
-                    timesteps,
-                    encoder_hidden_states=encoder_hidden_states,
-                    added_cond_kwargs=added_cond_kwargs,
-                    controlnet_cond=controlnet_image,
-                    return_dict=False,
-                )
-                # Predict the noise residual
-                if self.unet is not None:
-                    model_pred = self.unet(
-                        noisy_latents,
-                        timesteps,
-                        encoder_hidden_states=encoder_hidden_states,
-                        added_cond_kwargs=added_cond_kwargs,
-                        down_block_additional_residuals=[
-                            sample.to(dtype=self.config.weight_dtype)
-                            for sample in down_block_res_samples
-                        ],
-                        mid_block_additional_residual=mid_block_res_sample.to(
-                            dtype=self.config.weight_dtype
-                        ),
-                        return_dict=False,
-                    )[0]
-                if self.transformer is not None:
-                    raise Exception(
-                        "ControlNet predictions for transformer models are not yet implemented."
-                    )
-            elif self.config.model_family == "flux":
-                # handle guidance
-                packed_noisy_latents = pack_latents(
-                    noisy_latents,
-                    batch_size=latents.shape[0],
-                    num_channels_latents=latents.shape[1],
-                    height=latents.shape[2],
-                    width=latents.shape[3],
-                ).to(
-                    dtype=self.config.base_weight_dtype,
-                    device=self.accelerator.device,
-                )
-                if self.config.flux_guidance_mode == "mobius":
-                    guidance_scales = get_mobius_guidance(
-                        self.config,
-                        self.state["global_step"],
-                        self.config.num_update_steps_per_epoch,
-                        latents.shape[0],
-                        self.accelerator.device,
-                    )
-                elif self.config.flux_guidance_mode == "constant":
-                    guidance_scales = [
-                        float(self.config.flux_guidance_value)
-                    ] * latents.shape[0]
-
-                elif self.config.flux_guidance_mode == "random-range":
-                    # Generate a list of random values within the specified range for each latent
-                    guidance_scales = [
-                        random.uniform(
-                            self.config.flux_guidance_min,
-                            self.config.flux_guidance_max,
-                        )
-                        for _ in range(latents.shape[0])
-                    ]
-                self.guidance_values_list.append(guidance_scales)
-
-                # Now `guidance` will have different values for each latent in `latents`.
-                transformer_config = None
-                if hasattr(self.transformer, "module"):
-                    transformer_config = self.transformer.module.config
-                elif hasattr(self.transformer, "config"):
-                    transformer_config = self.transformer.config
-                if transformer_config is not None and getattr(
-                    transformer_config, "guidance_embeds", False
-                ):
-                    guidance = torch.tensor(
-                        guidance_scales, device=self.accelerator.device
-                    )
-                else:
-                    guidance = None
-                img_ids = prepare_latent_image_ids(
-                    latents.shape[0],
-                    latents.shape[2],
-                    latents.shape[3],
-                    self.accelerator.device,
-                    self.config.weight_dtype,
-                )
-                timesteps = (
-                    torch.tensor(timesteps)
-                    .expand(noisy_latents.shape[0])
-                    .to(device=self.accelerator.device)
-                    / 1000
-                )
-
-                text_ids = torch.zeros(
-                    batch["prompt_embeds"].shape[1],
-                    3,
-                ).to(
-                    device=self.accelerator.device,
-                    dtype=self.config.base_weight_dtype,
-                )
-                training_logger.debug(
-                    "DTypes:"
-                    f"\n-> Text IDs shape: {text_ids.shape if hasattr(text_ids, 'shape') else None}, dtype: {text_ids.dtype if hasattr(text_ids, 'dtype') else None}"
-                    f"\n-> Image IDs shape: {img_ids.shape if hasattr(img_ids, 'shape') else None}, dtype: {img_ids.dtype if hasattr(img_ids, 'dtype') else None}"
-                    f"\n-> Timesteps shape: {timesteps.shape if hasattr(timesteps, 'shape') else None}, dtype: {timesteps.dtype if hasattr(timesteps, 'dtype') else None}"
-                    f"\n-> Guidance: {guidance}"
-                    f"\n-> Packed Noisy Latents shape: {packed_noisy_latents.shape if hasattr(packed_noisy_latents, 'shape') else None}, dtype: {packed_noisy_latents.dtype if hasattr(packed_noisy_latents, 'dtype') else None}"
-                )
-
-                flux_transformer_kwargs = {
-                    "hidden_states": packed_noisy_latents,
-                    # YiYi notes: divide it by 1000 for now because we scale it by 1000 in the transforme rmodel (we should not keep it but I want to keep the inputs same for the model for testing)
-                    "timestep": timesteps,
-                    "guidance": guidance,
-                    "pooled_projections": batch["add_text_embeds"].to(
-                        device=self.accelerator.device,
-                        dtype=self.config.base_weight_dtype,
-                    ),
-                    "encoder_hidden_states": batch["prompt_embeds"].to(
-                        device=self.accelerator.device,
-                        dtype=self.config.base_weight_dtype,
-                    ),
-                    "txt_ids": text_ids.to(
-                        device=self.accelerator.device,
-                        dtype=self.config.base_weight_dtype,
-                    ),
-                    "img_ids": img_ids,
-                    "joint_attention_kwargs": None,
-                    "return_dict": False,
-                }
-                if self.config.flux_attention_masked_training:
-                    flux_transformer_kwargs["attention_mask"] = batch[
-                        "encoder_attention_mask"
-                    ]
-                    if flux_transformer_kwargs["attention_mask"] is None:
-                        raise ValueError(
-                            "No attention mask was discovered when attempting validation - this means you need to recreate your text embed cache."
-                        )
-
-                model_pred = self.transformer(**flux_transformer_kwargs)[0]
-
-            elif self.config.model_family == "sd3":
-                # Stable Diffusion 3 uses a MM-DiT model where the VAE-produced
-                #  image embeds are passed in with the TE-produced text embeds.
-                model_pred = self.transformer(
-                    hidden_states=noisy_latents.to(
-                        device=self.accelerator.device,
-                        dtype=self.config.base_weight_dtype,
-                    ),
-                    timestep=timesteps,
-                    encoder_hidden_states=encoder_hidden_states.to(
-                        device=self.accelerator.device,
-                        dtype=self.config.base_weight_dtype,
-                    ),
-                    pooled_projections=add_text_embeds.to(
-                        device=self.accelerator.device,
-                        dtype=self.config.weight_dtype,
-                    ),
-                    return_dict=False,
-                )[0]
-            elif self.config.model_family == "pixart_sigma":
-                model_pred = self.transformer(
-                    noisy_latents,
-                    encoder_hidden_states=encoder_hidden_states,
-                    encoder_attention_mask=batch["encoder_attention_mask"],
-                    timestep=timesteps,
-                    added_cond_kwargs=added_cond_kwargs,
-                    return_dict=False,
-                )[0]
-                model_pred = model_pred.chunk(2, dim=1)[0]
-            elif self.config.model_family == "smoldit":
-                first_latent_shape = noisy_latents.shape
-                height = first_latent_shape[1] * 8
-                width = first_latent_shape[2] * 8
-                grid_height = height // 8 // self.transformer.config.patch_size
-                grid_width = width // 8 // self.transformer.config.patch_size
-                base_size = 512 // 8 // self.transformer.config.patch_size
-                grid_crops_coords = get_resize_crop_region_for_grid(
-                    (grid_height, grid_width), base_size
-                )
-                inputs = {
-                    "hidden_states": noisy_latents,
-                    "timestep": timesteps,
-                    "encoder_hidden_states": encoder_hidden_states,
-                    "encoder_attention_mask": batch["encoder_attention_mask"],
-                    "image_rotary_emb": get_2d_rotary_pos_embed(
-                        self.transformer.inner_dim
-                        // self.transformer.config.num_attention_heads,
-                        grid_crops_coords,
-                        (grid_height, grid_width),
-                    ),
-                }
-                model_pred = self.transformer(**inputs).sample
-            elif self.unet is not None:
-                if self.config.model_family == "legacy":
-                    # SD 1.5 or 2.x
-                    model_pred = self.unet(
-                        noisy_latents,
-                        timesteps,
-                        encoder_hidden_states,
-                    ).sample
-                else:
-                    # SDXL, Kolors, other default unet prediction.
-                    model_pred = self.unet(
-                        noisy_latents,
-                        timesteps,
-                        encoder_hidden_states,
-                        added_cond_kwargs=added_cond_kwargs,
-                    ).sample
             else:
-                raise Exception("Unknown error occurred, no prediction could be made.")
-
-            if self.config.model_family == "flux":
-                model_pred = unpack_latents(
-                    model_pred,
-                    height=latents.shape[2] * 8,
-                    width=latents.shape[3] * 8,
-                    vae_scale_factor=16,
+                model_pred = self.model.model_predict(
+                    prepared_batch=prepared_batch,
                 )
+
         else:
             # Dummy model prediction for debugging.
-            model_pred = torch.randn_like(noisy_latents)
+            model_pred = torch.randn_like(prepared_batch["noisy_latents"])
+
+        # x-prediction requires that we now subtract the noise residual from the prediction to get the target sample.
+        if (
+            hasattr(self.noise_scheduler, "config")
+            and hasattr(self.noise_scheduler.config, "prediction_type")
+            and self.noise_scheduler.config.prediction_type == "sample"
+        ):
+            model_pred = model_pred - prepared_batch["noise"]
 
         return model_pred
+
+    def _max_grad_value(self):
+        max_grad_value = float("-inf")  # Start with a very small number
+        for param in self._get_trainable_parameters():
+            if param.grad is not None:
+                max_grad_value = max(max_grad_value, param.grad.abs().max().item())
+
+        return max_grad_value
+
+    def prepare_batch(self, batch: dict):
+        """
+        Prepare a batch for the model prediction.
+
+        Args:
+            batch (dict): Batch from iterator_fn.
+
+        Returns:
+            batch (dict): Prepared batch.
+        """
+        if not batch:
+            training_logger.debug(
+                f"No batch was returned by the iterator_fn, returning {batch}"
+            )
+            return batch
+
+        prepared_batch = self.model.prepare_batch(batch, state=self.state)
+
+        if getattr(self, "distiller", None) is not None:
+            prepared_batch = self.distiller.prepare_batch(
+                prepared_batch, self.model, self.state
+            )
+
+        return prepared_batch
+
+    def get_prediction_target(self, prepared_batch: dict):
+        return self.model.get_prediction_target(prepared_batch)
+
+    def _calculate_loss(
+        self,
+        prepared_batch: dict,
+        model_pred,
+        target,
+        apply_conditioning_mask: bool = True,
+    ):
+        # Compute the per-pixel loss without reducing over spatial dimensions
+        if self.config.flow_matching:
+            # For flow matching, compute the per-pixel squared differences
+            loss = (
+                model_pred.float() - target.float()
+            ) ** 2  # Shape: (batch_size, C, H, W)
+        elif self.config.snr_gamma is None or self.config.snr_gamma == 0:
+            training_logger.debug("Calculating loss")
+            loss = self.config.snr_weight * F.mse_loss(
+                model_pred.float(), target.float(), reduction="none"
+            )  # Shape: (batch_size, C, H, W)
+        else:
+            # Compute loss-weights as per Section 3.4 of https://arxiv.org/abs/2303.09556.
+            # Since we predict the noise instead of x_0, the original formulation is slightly changed.
+            # This is discussed in Section 4.2 of the same paper.
+            training_logger.debug("Using min-SNR loss")
+            snr = compute_snr(prepared_batch["timesteps"], self.noise_scheduler)
+            snr_divisor = snr
+            if self.noise_scheduler.config.prediction_type == "v_prediction":
+                snr_divisor = snr + 1
+
+            training_logger.debug("Calculating MSE loss weights using SNR as divisor")
+            mse_loss_weights = (
+                torch.stack(
+                    [
+                        snr,
+                        self.config.snr_gamma
+                        * torch.ones_like(prepared_batch["timesteps"]),
+                    ],
+                    dim=1,
+                ).min(dim=1)[0]
+                / snr_divisor
+            )  # Shape: (batch_size,)
+
+            # Compute the per-pixel MSE loss without reduction
+            loss = F.mse_loss(
+                model_pred.float(), target.float(), reduction="none"
+            )  # Shape: (batch_size, C, H, W)
+
+            # Reshape mse_loss_weights for broadcasting and apply to loss
+            mse_loss_weights = mse_loss_weights.view(
+                -1, 1, 1, 1
+            )  # Shape: (batch_size, 1, 1, 1)
+            loss = loss * mse_loss_weights  # Shape: (batch_size, C, H, W)
+
+        # Mask the loss using any conditioning data
+        conditioning_type = prepared_batch.get("conditioning_type")
+        if conditioning_type == "mask" and apply_conditioning_mask:
+            # Adapted from:
+            # https://github.com/kohya-ss/sd-scripts/blob/main/library/custom_train_functions.py#L482
+            mask_image = (
+                prepared_batch["conditioning_pixel_values"]
+                .to(dtype=loss.dtype, device=loss.device)[:, 0]
+                .unsqueeze(1)
+            )  # Shape: (batch_size, 1, H', W')
+            mask_image = torch.nn.functional.interpolate(
+                mask_image, size=loss.shape[2:], mode="area"
+            )  # Resize to match loss spatial dimensions
+            mask_image = mask_image / 2 + 0.5  # Normalize to [0,1]
+            loss = loss * mask_image  # Element-wise multiplication
+
+        # Reduce the loss by averaging over channels and spatial dimensions
+        loss = loss.mean(dim=list(range(1, len(loss.shape))))  # Shape: (batch_size,)
+
+        # Further reduce the loss by averaging over the batch dimension
+        loss = loss.mean()  # Scalar value
+        return loss
+
+    def checkpoint_state_remove(self, output_dir, checkpoint):
+        removing_checkpoint = os.path.join(output_dir, checkpoint)
+        try:
+            logger.debug(f"Removing {removing_checkpoint}")
+            shutil.rmtree(removing_checkpoint, ignore_errors=True)
+        except Exception as e:
+            logger.error(f"Failed to remove directory: {removing_checkpoint}")
+            print(e)
+
+    def checkpoint_state_filter(self, output_dir, suffix=None):
+        checkpoints_keep = []
+        checkpoints = os.listdir(output_dir)
+        for checkpoint in checkpoints:
+            cs = checkpoint.split("-")
+            base = cs[0]
+            sfx = None
+            if len(cs) < 2:
+                continue
+            elif len(cs) > 2:
+                sfx = cs[2]
+
+            if base != "checkpoint":
+                continue
+            if suffix and sfx and suffix != sfx:
+                continue
+            if (suffix and not sfx) or (sfx and not suffix):
+                continue
+
+            checkpoints_keep.append(checkpoint)
+
+        return checkpoints_keep
+
+    def checkpoint_state_cleanup(self, output_dir, limit, suffix=None):
+        # remove any left over temp checkpoints (partially written, etc)
+        checkpoints = self.checkpoint_state_filter(output_dir, "tmp")
+        for removing_checkpoint in checkpoints:
+            self.checkpoint_state_remove(output_dir, removing_checkpoint)
+
+        # now remove normal checkpoints past the limit
+        checkpoints = self.checkpoint_state_filter(output_dir, suffix)
+        checkpoints = sorted(checkpoints, key=lambda x: int(x.split("-")[1]))
+
+        # before we save the new checkpoint, we need to have at _most_ `limit - 1` checkpoints
+        if len(checkpoints) < limit:
+            return
+
+        num_to_remove = len(checkpoints) - limit + 1
+        removing_checkpoints = checkpoints[0:num_to_remove]
+        logger.debug(
+            f"{len(checkpoints)} checkpoints already exist, removing {len(removing_checkpoints)} checkpoints"
+        )
+        logger.debug(f"removing checkpoints: {', '.join(removing_checkpoints)}")
+
+        for removing_checkpoint in removing_checkpoints:
+            self.checkpoint_state_remove(output_dir, removing_checkpoint)
+
+    def checkpoint_state_save(self, output_dir, suffix=None):
+        print("\n")
+
+        save_path = os.path.join(
+            output_dir,
+            f"checkpoint-{self.state['global_step']}",
+        )
+        if suffix:
+            save_path = f"{save_path}-{suffix}"
+
+        # A temporary directory should be used so that saving state is an atomic operation.
+        save_path_tmp = (
+            f"{save_path}-tmp" if self.config.checkpointing_use_tempdir else save_path
+        )
+
+        # schedulefree optim needs the optimizer to be in eval mode to save the state (and then back to train after)
+        self.mark_optimizer_eval()
+        self.accelerator.save_state(save_path_tmp)
+        self.mark_optimizer_train()
+        for _, backend in StateTracker.get_data_backends().items():
+            if "sampler" in backend:
+                logger.debug(f"Backend: {backend}")
+                backend["sampler"].save_state(
+                    state_path=os.path.join(
+                        save_path_tmp,
+                        self.model_hooks.training_state_path,
+                    ),
+                )
+        if save_path != save_path_tmp:
+            os.rename(save_path_tmp, save_path)
+
+    def checkpoint_state_latest(self, output_dir):
+        # both checkpoint-[0-9]+ and checkpoint-[0-9]-rolling are candidates
+        dirs = os.listdir(output_dir)
+        dirs = [d for d in dirs if d.startswith("checkpoint") and not d.endswith("tmp")]
+        dirs = sorted(dirs, key=lambda x: int(x.split("-")[1]))
+        return dirs[-1] if len(dirs) > 0 else None
 
     def train(self):
         self.init_trackers()
         self._train_initial_msg()
-
-        if self.config.validation_on_startup and self.state["global_step"] <= 1:
-            # Just in Case.
-            self.mark_optimizer_eval()
-            # normal run-of-the-mill validation on startup.
-            if self.validation is not None:
-                self.validation.run_validations(validation_type="base_model", step=0)
-
         self.mark_optimizer_train()
 
         # Only show the progress bar once on each machine.
@@ -2160,33 +2090,32 @@ class Trainer:
         current_epoch_step = None
         self.bf, fetch_thread = None, None
         iterator_fn = random_dataloader_iterator
-        for epoch in range(self.state["first_epoch"], self.config.num_train_epochs + 1):
-            if self.state["current_epoch"] > self.config.num_train_epochs + 1:
+        num_epochs_to_track = self.config.num_train_epochs + 1
+        if self.config.ignore_final_epochs:
+            num_epochs_to_track += 1000000
+        for epoch in range(self.state["first_epoch"], num_epochs_to_track):
+            if (
+                self.state["current_epoch"] > self.config.num_train_epochs + 1
+                and not self.config.ignore_final_epochs
+            ):
                 # This might immediately end training, but that's useful for simply exporting the model.
                 logger.info(
                     f"Training run is complete ({self.config.num_train_epochs}/{self.config.num_train_epochs} epochs, {self.state['global_step']}/{self.config.max_train_steps} steps)."
                 )
                 break
             self._epoch_rollover(epoch)
-            if self.config.controlnet:
-                self.controlnet.train()
-                training_models = [self.controlnet]
-            else:
-                if self.unet is not None:
-                    self.unet.train()
-                    training_models = [self.unet]
-                if self.transformer is not None:
-                    self.transformer.train()
-                    training_models = [self.transformer]
+            self.model.get_trained_component().train()
+            training_models = [self.model.get_trained_component()]
             if (
                 "lora" in self.config.model_type
                 and self.config.train_text_encoder
                 and "standard" in self.config.lora_type.lower()
             ):
-                self.text_encoder_1.train()
-                self.text_encoder_2.train()
-                training_models.append(self.text_encoder_1)
-                training_models.append(self.text_encoder_2)
+                for text_encoder in self.text_encoders:
+                    if "t5" in str(text_encoder.__class__):
+                        continue
+                    text_encoder.train()
+                    training_models.append(text_encoder)
 
             if current_epoch_step is not None:
                 # We are resetting to the next epoch, if it is not none.
@@ -2224,17 +2153,10 @@ class Trainer:
                 fetch_thread = self.bf.start_fetching()
                 iterator_fn = self.bf.next_response
 
-            pr = None
-            if os.environ.get('PROFILE_TRAINING_LOOP', None) is not None:
-                import cProfile, pstats, io
-                from pstats import SortKey
-                pr = cProfile.Profile()
-                pr.enable()
-
             while True:
                 self._exit_on_signal()
                 step += 1
-                batch = iterator_fn(step, *iterator_args)
+                prepared_batch = self.prepare_batch(iterator_fn(step, *iterator_args))
                 training_logger.debug(f"Iterator: {iterator_fn}")
                 if self.config.lr_scheduler == "cosine_with_restarts":
                     self.extra_lr_scheduler_kwargs["step"] = self.state["global_step"]
@@ -2245,11 +2167,11 @@ class Trainer:
                     )
 
                 # If we receive a False from the enumerator, we know we reached the next epoch.
-                if batch is False:
+                if prepared_batch is False:
                     logger.debug(f"Reached the end of epoch {epoch}")
                     break
 
-                if batch is None:
+                if prepared_batch is None:
                     import traceback
 
                     raise ValueError(
@@ -2257,363 +2179,91 @@ class Trainer:
                     )
 
                 # Add the current batch of training data's avg luminance to a list.
-                if "batch_luminance" in batch:
-                    training_luminance_values.append(batch["batch_luminance"])
+                if "batch_luminance" in prepared_batch:
+                    training_luminance_values.append(prepared_batch["batch_luminance"])
 
+                if getattr(self, "distiller", None) is not None:
+                    self.distiller.pre_training_step(self.model, step)
                 with self.accelerator.accumulate(training_models):
+                    bsz = prepared_batch["latents"].shape[0]
                     training_logger.debug("Sending latent batch to GPU.")
-                    latents = batch["latent_batch"].to(
-                        self.accelerator.device, dtype=self.config.weight_dtype
-                    )
 
-                    # Sample noise that we'll add to the latents - self.config.noise_offset might need to be set to 0.1 by default.
-                    noise = torch.randn_like(latents)
-                    if not self.config.flow_matching:
-                        if self.config.offset_noise:
-                            if (
-                                self.config.noise_offset_probability == 1.0
-                                or random.random()
-                                < self.config.noise_offset_probability
-                            ):
-                                noise = noise + self.config.noise_offset * torch.randn(
-                                    latents.shape[0],
-                                    latents.shape[1],
-                                    1,
-                                    1,
-                                    device=latents.device,
-                                )
-
-                    bsz = latents.shape[0]
                     if int(bsz) != int(self.config.train_batch_size):
                         logger.error(
                             f"Received {bsz} latents, but expected {self.config.train_batch_size}. Processing short batch."
                         )
                     training_logger.debug(f"Working on batch size: {bsz}")
-                    if self.config.flow_matching:
-                        if not self.config.flux_fast_schedule and not any(
-                            [
-                                self.config.flux_use_beta_schedule,
-                                self.config.flux_use_uniform_schedule,
-                            ]
-                        ):
-                            # imported from cloneofsimo's minRF trainer: https://github.com/cloneofsimo/minRF
-                            # also used by: https://github.com/XLabs-AI/x-flux/tree/main
-                            # and: https://github.com/kohya-ss/sd-scripts/commit/8a0f12dde812994ec3facdcdb7c08b362dbceb0f
-                            sigmas = torch.sigmoid(
-                                self.config.flow_matching_sigmoid_scale
-                                * torch.randn((bsz,), device=self.accelerator.device)
-                            )
-                            sigmas = apply_flux_schedule_shift(
-                                self.config, self.noise_scheduler, sigmas, noise
-                            )
-                        elif self.config.flux_use_uniform_schedule:
-                            sigmas = torch.rand((bsz,), device=self.accelerator.device)
-                            sigmas = apply_flux_schedule_shift(
-                                self.config, self.noise_scheduler, sigmas, noise
-                            )
-                        elif self.config.flux_use_beta_schedule:
-                            alpha = self.config.flux_beta_schedule_alpha
-                            beta = self.config.flux_beta_schedule_beta
-
-                            # Create a Beta distribution instance
-                            beta_dist = Beta(alpha, beta)
-
-                            # Sample from the Beta distribution
-                            sigmas = beta_dist.sample((bsz,)).to(
-                                device=self.accelerator.device
-                            )
-
-                            sigmas = apply_flux_schedule_shift(
-                                self.config, self.noise_scheduler, sigmas, noise
-                            )
-                        else:
-                            # fast schedule can only use these sigmas, and they can be sampled up to batch size times
-                            available_sigmas = [
-                                1.0,
-                                1.0,
-                                1.0,
-                                1.0,
-                                1.0,
-                                1.0,
-                                1.0,
-                                0.75,
-                                0.5,
-                                0.25,
-                            ]
-                            sigmas = torch.tensor(
-                                random.choices(available_sigmas, k=bsz),
-                                device=self.accelerator.device,
-                            )
-                        timesteps = sigmas * 1000.0
-                        sigmas = sigmas.view(-1, 1, 1, 1)
-                    else:
-                        # Sample a random timestep for each image, potentially biased by the timestep weights.
-                        # Biasing the timestep weights allows us to spend less time training irrelevant timesteps.
-                        weights = generate_timestep_weights(
-                            self.config, self.noise_scheduler.config.num_train_timesteps
-                        ).to(self.accelerator.device)
-                        # Instead of uniformly sampling the timestep range, we'll split our weights and schedule into bsz number of segments.
-                        # This enables more broad sampling and potentially more effective training.
-                        if (
-                            bsz > 1
-                            and not self.config.disable_segmented_timestep_sampling
-                        ):
-                            timesteps = segmented_timestep_selection(
-                                actual_num_timesteps=self.noise_scheduler.config.num_train_timesteps,
-                                bsz=bsz,
-                                weights=weights,
-                                use_refiner_range=StateTracker.is_sdxl_refiner()
-                                and not StateTracker.get_args().sdxl_refiner_uses_full_range,
-                            ).to(self.accelerator.device)
-                        else:
-                            timesteps = torch.multinomial(
-                                weights, bsz, replacement=True
-                            ).long()
-
                     # Prepare the data for the scatter plot
-                    for timestep in timesteps.tolist():
+                    for timestep in prepared_batch["timesteps"].tolist():
                         self.timesteps_buffer.append(
                             (self.state["global_step"], timestep)
                         )
 
-                    if self.config.input_perturbation != 0 and (
-                        not self.config.input_perturbation_steps
-                        or self.state["global_step"]
-                        < self.config.input_perturbation_steps
-                    ):
-                        input_perturbation = self.config.input_perturbation
-                        if self.config.input_perturbation_steps:
-                            input_perturbation *= 1.0 - (
-                                self.state["global_step"]
-                                / self.config.input_perturbation_steps
-                            )
-                        input_noise = noise + input_perturbation * torch.randn_like(
-                            latents
-                        )
-                    else:
-                        input_noise = noise
-
-                    if self.config.flow_matching:
-                        noisy_latents = (1 - sigmas) * latents + sigmas * input_noise
-                    else:
-                        # Add noise to the latents according to the noise magnitude at each timestep
-                        # (this is the forward diffusion process)
-                        noisy_latents = self.noise_scheduler.add_noise(
-                            latents.float(), input_noise.float(), timesteps
-                        ).to(
-                            device=self.accelerator.device,
-                            dtype=self.config.weight_dtype,
+                    if "encoder_hidden_states" in prepared_batch:
+                        encoder_hidden_states = prepared_batch["encoder_hidden_states"]
+                        training_logger.debug(
+                            f"Encoder hidden states: {encoder_hidden_states.shape}"
                         )
 
-                    encoder_hidden_states = batch["prompt_embeds"].to(
-                        dtype=self.config.weight_dtype, device=self.accelerator.device
-                    )
-                    training_logger.debug(
-                        f"Encoder hidden states: {encoder_hidden_states.shape}"
-                    )
-
-                    add_text_embeds = batch["add_text_embeds"]
-                    training_logger.debug(
-                        f"Pooled embeds: {add_text_embeds.shape if add_text_embeds is not None else None}"
-                    )
-                    # Get the target for loss depending on the prediction type
-                    if self.config.flow_matching:
-                        # This is the flow-matching target for vanilla SD3.
-                        # If self.config.flow_matching_loss == "diffusion", we will instead use v_prediction (see below)
-                        if self.config.flow_matching_loss == "diffusers":
-                            target = latents
-                        elif self.config.flow_matching_loss == "compatible":
-                            target = noise - latents
-                        elif self.config.flow_matching_loss == "sd35":
-                            sigma_reshaped = sigmas.view(
-                                -1, 1, 1, 1
-                            )  # Ensure sigma has the correct shape
-                            target = (noisy_latents - latents) / sigma_reshaped
-
-                    elif self.noise_scheduler.config.prediction_type == "epsilon":
-                        target = noise
-                    elif (
-                        self.noise_scheduler.config.prediction_type == "v_prediction"
-                        or (
-                            self.config.flow_matching
-                            and self.config.flow_matching_loss == "diffusion"
-                        )
-                    ):
-                        # When not using flow-matching, train on velocity prediction objective.
-                        target = self.noise_scheduler.get_velocity(
-                            latents, noise, timesteps
-                        )
-                    elif self.noise_scheduler.config.prediction_type == "sample":
-                        # We set the target to latents here, but the model_pred will return the noise sample prediction.
-                        # We will have to subtract the noise residual from the prediction to get the target sample.
-                        target = latents
-                    else:
-                        raise ValueError(
-                            f"Unknown prediction type {self.noise_scheduler.config.prediction_type}"
-                            "Supported types are 'epsilon', `sample`, and 'v_prediction'."
+                    if "add_text_embeds" in prepared_batch:
+                        add_text_embeds = prepared_batch["add_text_embeds"]
+                        training_logger.debug(
+                            f"Pooled embeds: {add_text_embeds.shape if add_text_embeds is not None else None}"
                         )
 
-                    added_cond_kwargs = None
                     # Predict the noise residual and compute loss
-                    if (
-                        StateTracker.get_model_family() == "sdxl"
-                        or self.config.model_family == "kolors"
-                    ):
-                        added_cond_kwargs = {
-                            "text_embeds": add_text_embeds.to(
-                                device=self.accelerator.device,
-                                dtype=self.config.weight_dtype,
-                            ),
-                            "time_ids": batch["batch_time_ids"].to(
-                                device=self.accelerator.device,
-                                dtype=self.config.weight_dtype,
-                            ),
-                        }
-                    elif (
-                        self.config.model_family == "pixart_sigma"
-                        or self.config.model_family == "smoldit"
-                    ):
-                        # pixart requires an input of {"resolution": .., "aspect_ratio": ..}
-                        if "batch_time_ids" in batch:
-                            added_cond_kwargs = batch["batch_time_ids"]
-                        batch["encoder_attention_mask"] = batch[
-                            "encoder_attention_mask"
-                        ].to(
-                            device=self.accelerator.device,
-                            dtype=self.config.weight_dtype,
-                        )
-
-                    # a marker to know whether we had a model capable of regularised data training.
-                    handled_regularisation = False
-                    is_regularisation_data = batch.get("is_regularisation_data", False)
+                    is_regularisation_data = prepared_batch.get(
+                        "is_regularisation_data", False
+                    )
                     if is_regularisation_data and self.config.model_type == "lora":
                         training_logger.debug("Predicting parent model residual.")
-                        handled_regularisation = True
                         with torch.no_grad():
                             if self.config.lora_type.lower() == "lycoris":
                                 training_logger.debug(
                                     "Detaching LyCORIS adapter for parent prediction."
                                 )
-                                self.accelerator._lycoris_wrapped_network.restore()
-                            else:
-                                raise ValueError(
-                                    f"Cannot train parent-student networks on {self.config.lora_type} model. Only LyCORIS is supported."
+                                self.accelerator._lycoris_wrapped_network.set_multiplier(
+                                    0.0
                                 )
-                            target = self.model_predict(
-                                batch=batch,
-                                latents=latents,
-                                noisy_latents=noisy_latents,
-                                encoder_hidden_states=encoder_hidden_states,
-                                added_cond_kwargs=added_cond_kwargs,
-                                add_text_embeds=add_text_embeds,
-                                timesteps=timesteps,
-                            )
+                            else:
+                                self.model.get_trained_component().disable_lora()
+                            prepared_batch["target"] = self.model_predict(
+                                prepared_batch=prepared_batch,
+                            )["model_prediction"]
                             if self.config.lora_type.lower() == "lycoris":
                                 training_logger.debug(
                                     "Attaching LyCORIS adapter for student prediction."
                                 )
-                                self.accelerator._lycoris_wrapped_network.apply_to()
+                                self.accelerator._lycoris_wrapped_network.set_multiplier(
+                                    1.0
+                                )
+                            else:
+                                self.model.get_trained_component().enable_lora()
 
-                    training_logger.debug("Predicting noise residual.")
+                    training_logger.debug("Predicting.")
                     model_pred = self.model_predict(
-                        batch=batch,
-                        latents=latents,
-                        noisy_latents=noisy_latents,
-                        encoder_hidden_states=encoder_hidden_states,
-                        added_cond_kwargs=added_cond_kwargs,
-                        add_text_embeds=add_text_embeds,
-                        timesteps=timesteps,
+                        prepared_batch=prepared_batch,
                     )
-
-                    # x-prediction requires that we now subtract the noise residual from the prediction to get the target sample.
-                    if (
-                        hasattr(self.noise_scheduler, "config")
-                        and hasattr(self.noise_scheduler.config, "prediction_type")
-                        and self.noise_scheduler.config.prediction_type == "sample"
-                    ):
-                        model_pred = model_pred - noise
-
-                    parent_loss = None
-
-                    # Compute the per-pixel loss without reducing over spatial dimensions
-                    if self.config.flow_matching:
-                        # For flow matching, compute the per-pixel squared differences
-                        loss = (
-                            model_pred.float() - target.float()
-                        ) ** 2  # Shape: (batch_size, C, H, W)
-                    elif self.config.snr_gamma is None or self.config.snr_gamma == 0:
-                        training_logger.debug("Calculating loss")
-                        loss = self.config.snr_weight * F.mse_loss(
-                            model_pred.float(), target.float(), reduction="none"
-                        )  # Shape: (batch_size, C, H, W)
-                    else:
-                        # Compute loss-weights as per Section 3.4 of https://arxiv.org/abs/2303.09556.
-                        # Since we predict the noise instead of x_0, the original formulation is slightly changed.
-                        # This is discussed in Section 4.2 of the same paper.
-                        training_logger.debug("Using min-SNR loss")
-                        snr = compute_snr(timesteps, self.noise_scheduler)
-                        snr_divisor = snr
-                        if (
-                            self.noise_scheduler.config.prediction_type
-                            == "v_prediction"
-                            or (
-                                self.config.flow_matching
-                                and self.config.flow_matching_loss == "diffusion"
-                            )
-                        ):
-                            snr_divisor = snr + 1
-
-                        training_logger.debug(
-                            "Calculating MSE loss weights using SNR as divisor"
+                    loss = self.model.loss(
+                        prepared_batch=prepared_batch,
+                        model_output=model_pred,
+                        apply_conditioning_mask=True,
+                    )
+                    loss, aux_loss_logs = self.model.auxiliary_loss(
+                        prepared_batch=prepared_batch,
+                        model_output=model_pred,
+                        loss=loss,
+                    )
+                    distill_logs = {}
+                    if self.config.distillation_method is not None:
+                        loss, distill_logs = self.distiller.compute_distill_loss(
+                            prepared_batch, model_pred, loss
                         )
-                        mse_loss_weights = (
-                            torch.stack(
-                                [
-                                    snr,
-                                    self.config.snr_gamma * torch.ones_like(timesteps),
-                                ],
-                                dim=1,
-                            ).min(dim=1)[0]
-                            / snr_divisor
-                        )  # Shape: (batch_size,)
-
-                        # Compute the per-pixel MSE loss without reduction
-                        loss = F.mse_loss(
-                            model_pred.float(), target.float(), reduction="none"
-                        )  # Shape: (batch_size, C, H, W)
-
-                        # Reshape mse_loss_weights for broadcasting and apply to loss
-                        mse_loss_weights = mse_loss_weights.view(
-                            -1, 1, 1, 1
-                        )  # Shape: (batch_size, 1, 1, 1)
-                        loss = loss * mse_loss_weights  # Shape: (batch_size, C, H, W)
-
-                    # Mask the loss using any conditioning data
-                    conditioning_type = batch.get("conditioning_type")
-                    if conditioning_type == "mask":
-                        # Adapted from:
-                        # https://github.com/kohya-ss/sd-scripts/blob/main/library/custom_train_functions.py#L482
-                        mask_image = None
-                        with torch.no_grad():
-                            mask_image = (
-                                batch["conditioning_pixel_values"]
-                                .to(dtype=loss.dtype, device=loss.device)[:, 0]
-                                .unsqueeze(1)
-                            )  # Shape: (batch_size, 1, H', W')
-                            mask_image = torch.nn.functional.interpolate(
-                                mask_image, size=loss.shape[2:], mode="area"
-                            )  # Resize to match loss spatial dimensions
-                            mask_image = mask_image / 2 + 0.5  # Normalize to [0,1]
-                        loss = loss * mask_image  # Element-wise multiplication
-
-                    # Reduce the loss by averaging over channels and spatial dimensions
-                    loss = loss.mean(
-                        dim=list(range(1, len(loss.shape)))
-                    )  # Shape: (batch_size,)
-
-                    # Further reduce the loss by averaging over the batch dimension
-                    loss = loss.mean()  # Scalar value
-
+                        loss, gen_logs = self.distiller.generator_loss_step(
+                            prepared_batch, model_pred, loss
+                        )
+                        distill_logs.update(gen_logs)
+                    parent_loss = None
                     if is_regularisation_data:
                         parent_loss = loss
 
@@ -2624,9 +2274,8 @@ class Trainer:
                     self.train_loss += (
                         avg_loss.item() / self.config.gradient_accumulation_steps
                     )
-
                     # Backpropagate
-                    grad_norm = None
+                    self.grad_norm = None
                     if not self.config.disable_accelerator:
                         training_logger.debug("Backwards pass.")
                         self.accelerator.backward(loss)
@@ -2640,15 +2289,31 @@ class Trainer:
                                 if param.grad is not None:
                                     param.grad.data = param.grad.data.to(torch.float32)
 
+                        self.grad_norm = self._max_grad_value()
                         if (
                             self.accelerator.sync_gradients
-                            and self.config.optimizer != "optimi-stableadamw"
+                            and self.config.optimizer
+                            not in ["optimi-stableadamw", "prodigy"]
                             and self.config.max_grad_norm > 0
                         ):
-                            # StableAdamW does not need clipping, similar to Adafactor.
-                            grad_norm = self.accelerator.clip_grad_norm_(
-                                self.params_to_optimize, self.config.max_grad_norm
-                            )
+                            # StableAdamW/Prodigy do not need clipping, similar to Adafactor.
+                            if self.config.grad_clip_method == "norm":
+                                self.grad_norm = self.accelerator.clip_grad_norm_(
+                                    self._get_trainable_parameters(),
+                                    self.config.max_grad_norm,
+                                )
+                            elif self.config.use_deepspeed_optimizer:
+                                # deepspeed can only do norm clipping (internally)
+                                pass
+                            elif self.config.grad_clip_method == "value":
+                                self.accelerator.clip_grad_value_(
+                                    self._get_trainable_parameters(),
+                                    self.config.max_grad_norm,
+                                )
+                            else:
+                                raise ValueError(
+                                    f"Unknown grad clip method: {self.config.grad_clip_method}. Supported methods: value, norm"
+                                )
                         training_logger.debug("Stepping components forward.")
                         if self.config.optimizer_release_gradients:
                             step_offset = 0  # simpletuner indexes steps from 1.
@@ -2666,12 +2331,23 @@ class Trainer:
                         self.optimizer.zero_grad(
                             set_to_none=self.config.set_grads_to_none
                         )
+                        if (
+                            getattr(self, "distiller", None) is not None
+                            and self.accelerator.sync_gradients  # run once per global step
+                        ):
+                            self.distiller.discriminator_step(
+                                prepared_batch=prepared_batch
+                            )
+                            self.distiller.post_training_step(self.model, step)
 
                 # Checks if the accelerator has performed an optimization step behind the scenes
                 wandb_logs = {}
                 if self.accelerator.sync_gradients:
                     try:
-                        if self.config.is_schedulefree:
+                        if "prodigy" in self.config.optimizer:
+                            self.lr_scheduler.step(**self.extra_lr_scheduler_kwargs)
+                            self.lr = self.optimizer.param_groups[0]["d"]
+                        elif self.config.is_lr_scheduler_disabled:
                             # hackjob method of retrieving LR from accelerated optims
                             self.lr = StateTracker.get_last_lr()
                         else:
@@ -2681,21 +2357,26 @@ class Trainer:
                         logger.error(
                             f"Failed to get the last learning rate from the scheduler. Error: {e}"
                         )
-                    wandb_logs = {
-                        "train_loss": self.train_loss,
-                        "optimization_loss": loss,
-                        "learning_rate": self.lr,
-                        "epoch": epoch,
-                    }
+                    wandb_logs.update(
+                        {
+                            "train_loss": self.train_loss,
+                            "optimization_loss": loss,
+                            "learning_rate": self.lr,
+                            "epoch": epoch,
+                        }
+                    )
+                    if distill_logs is not None:
+                        wandb_logs.update(distill_logs)
                     if parent_loss is not None:
                         wandb_logs["regularisation_loss"] = parent_loss
-                    if self.config.model_family == "flux" and self.guidance_values_list:
-                        # avg the values
-                        guidance_values = torch.tensor(self.guidance_values_list).mean()
-                        wandb_logs["mean_cfg"] = guidance_values.item()
-                        self.guidance_values_list = []
-                    if grad_norm is not None:
-                        wandb_logs["grad_norm"] = grad_norm
+                    if aux_loss_logs is not None:
+                        for key, value in aux_loss_logs.items():
+                            wandb_logs[f"aux_loss/{key}"] = value
+                    if self.grad_norm is not None:
+                        if self.config.grad_clip_method == "norm":
+                            wandb_logs["grad_norm"] = self.grad_norm
+                        else:
+                            wandb_logs["grad_absmax"] = self.grad_norm
                     if self.validation is not None and hasattr(
                         self.validation, "evaluation_result"
                     ):
@@ -2753,10 +2434,6 @@ class Trainer:
                     logger.debug(
                         f"Step {self.state['global_step']} of {self.config.max_train_steps}: loss {loss.item()}, lr {self.lr}, epoch {epoch}/{self.config.num_train_epochs}, ema_decay_value {ema_decay_value}, train_loss {self.train_loss}"
                     )
-                    self.accelerator.log(
-                        wandb_logs,
-                        step=self.state["global_step"],
-                    )
                     webhook_pending_msg = f"Step {self.state['global_step']} of {self.config.max_train_steps}: loss {round(loss.item(), 4)}, lr {self.lr}, epoch {epoch}/{self.config.num_train_epochs}, ema_decay_value {ema_decay_value}, train_loss {round(self.train_loss, 4)}"
 
                     # Reset some values for the next go.
@@ -2780,76 +2457,59 @@ class Trainer:
                         self._send_webhook_raw(
                             structured_data=structured_data, message_type="train"
                         )
-                    if self.state["global_step"] % self.config.checkpointing_steps == 0:
+
+                    if (
+                        self.config.checkpointing_steps
+                        and self.state["global_step"] % self.config.checkpointing_steps
+                        == 0
+                    ):
                         self._send_webhook_msg(
                             message=f"Checkpoint: `{webhook_pending_msg}`",
                             message_level="info",
                         )
-                        if self.accelerator.is_main_process:
+                        if (
+                            self.accelerator.is_main_process
+                            and self.config.checkpoints_total_limit is not None
+                        ):
                             # _before_ saving state, check if this save would set us over the `checkpoints_total_limit`
-                            if self.config.checkpoints_total_limit is not None:
-                                checkpoints = os.listdir(self.config.output_dir)
-                                checkpoints = [
-                                    d for d in checkpoints if d.startswith("checkpoint")
-                                ]
-                                checkpoints = sorted(
-                                    checkpoints, key=lambda x: int(x.split("-")[1])
-                                )
-
-                                # before we save the new checkpoint, we need to have at _most_ `checkpoints_total_limit - 1` checkpoints
-                                if (
-                                    len(checkpoints)
-                                    >= self.config.checkpoints_total_limit
-                                ):
-                                    num_to_remove = (
-                                        len(checkpoints)
-                                        - self.config.checkpoints_total_limit
-                                        + 1
-                                    )
-                                    removing_checkpoints = checkpoints[0:num_to_remove]
-                                    logger.debug(
-                                        f"{len(checkpoints)} checkpoints already exist, removing {len(removing_checkpoints)} checkpoints"
-                                    )
-                                    logger.debug(
-                                        f"removing checkpoints: {', '.join(removing_checkpoints)}"
-                                    )
-
-                                    for removing_checkpoint in removing_checkpoints:
-                                        removing_checkpoint = os.path.join(
-                                            self.config.output_dir, removing_checkpoint
-                                        )
-                                        try:
-                                            shutil.rmtree(
-                                                removing_checkpoint, ignore_errors=True
-                                            )
-                                        except Exception as e:
-                                            logger.error(
-                                                f"Failed to remove directory: {removing_checkpoint}"
-                                            )
-                                            print(e)
+                            self.checkpoint_state_cleanup(
+                                self.config.output_dir,
+                                self.config.checkpoints_total_limit,
+                            )
 
                         if (
                             self.accelerator.is_main_process
                             or self.config.use_deepspeed_optimizer
                         ):
-                            save_path = os.path.join(
+                            self.checkpoint_state_save(self.config.output_dir)
+                    elif (
+                        self.config.checkpointing_rolling_steps
+                        and self.state["global_step"]
+                        % self.config.checkpointing_rolling_steps
+                        == 0
+                    ):
+                        self._send_webhook_msg(
+                            message=f"Checkpoint: `{webhook_pending_msg}`",
+                            message_level="info",
+                        )
+                        if (
+                            self.accelerator.is_main_process
+                            and self.config.checkpoints_rolling_total_limit is not None
+                        ):
+                            # _before_ saving state, check if this save would set us over the `checkpoints_rolling_total_limit`
+                            self.checkpoint_state_cleanup(
                                 self.config.output_dir,
-                                f"checkpoint-{self.state['global_step']}",
+                                self.config.checkpoints_rolling_total_limit,
+                                "rolling",
                             )
-                            print("\n")
-                            # schedulefree optim needs the optimizer to be in eval mode to save the state (and then back to train after)
-                            self.mark_optimizer_eval()
-                            self.accelerator.save_state(save_path)
-                            self.mark_optimizer_train()
-                            for _, backend in StateTracker.get_data_backends().items():
-                                if "sampler" in backend:
-                                    logger.debug(f"Backend: {backend}")
-                                    backend["sampler"].save_state(
-                                        state_path=os.path.join(
-                                            save_path,
-                                            self.model_hooks.training_state_path,
-                                        ),
-                                    )
+
+                        if (
+                            self.accelerator.is_main_process
+                            or self.config.use_deepspeed_optimizer
+                        ):
+                            self.checkpoint_state_save(
+                                self.config.output_dir, "rolling"
+                            )
 
                     if (
                         self.config.accelerator_cache_clear_interval is not None
@@ -2859,20 +2519,60 @@ class Trainer:
                     ):
                         reclaim_memory()
 
+                    # here we might run eval loss calculations.
+                    if self.evaluation is not None and self.evaluation.would_evaluate(
+                        self.state
+                    ):
+                        self.mark_optimizer_eval()
+                        all_accumulated_losses = self.evaluation.execute_eval(
+                            prepare_batch=self.prepare_batch,
+                            model_predict=self.model_predict,
+                            calculate_loss=self.model.loss,
+                            get_prediction_target=self.get_prediction_target,
+                            noise_scheduler=self._get_noise_schedule(),
+                        )
+                        if all_accumulated_losses:
+                            tracker_table = self.evaluation.generate_tracker_table(
+                                all_accumulated_losses=all_accumulated_losses
+                            )
+                            logger.debug(f"Tracking information: {tracker_table}")
+                            wandb_logs.update(tracker_table)
+                        self.mark_optimizer_train()
+
+                    self.accelerator.log(
+                        wandb_logs,
+                        step=self.state["global_step"],
+                    )
+
                 logs = {
                     "step_loss": loss.detach().item(),
                     "lr": float(self.lr),
                 }
-                if "mean_cfg" in wandb_logs:
-                    logs["mean_cfg"] = wandb_logs["mean_cfg"]
+                if aux_loss_logs is not None:
+                    logs_to_print = {}
+                    for key, value in aux_loss_logs.items():
+                        logs_to_print[f"aux_loss/{key}"] = value
+                    training_logger.debug(f"Aux loss: {logs_to_print}")
+                if self.grad_norm is not None:
+                    if self.config.grad_clip_method == "norm":
+                        logs["grad_norm"] = float(self.grad_norm.clone().detach())
+                    elif self.config.grad_clip_method == "value":
+                        logs["grad_absmax"] = self.grad_norm
 
                 progress_bar.set_postfix(**logs)
-                self.mark_optimizer_eval()
+
                 if self.validation is not None:
+                    if self.validation.would_validate():
+                        self.mark_optimizer_eval()
+                        self.enable_sageattention_inference()
+                        self.disable_gradient_checkpointing()
                     self.validation.run_validations(
                         validation_type="intermediary", step=step
                     )
-                self.mark_optimizer_train()
+                    if self.validation.would_validate():
+                        self.disable_sageattention_inference()
+                        self.enable_gradient_checkpointing()
+                        self.mark_optimizer_train()
                 if (
                     self.config.push_to_hub
                     and self.config.push_checkpoints_to_hub
@@ -2896,34 +2596,19 @@ class Trainer:
                             )
                 self.accelerator.wait_for_everyone()
 
-                if (
-                    self.state["global_step"] >= self.config.max_train_steps
-                    or epoch > self.config.num_train_epochs
+                if self.state["global_step"] >= self.config.max_train_steps or (
+                    epoch > self.config.num_train_epochs
+                    and not self.config.ignore_final_epochs
                 ):
                     logger.info(
                         f"Training has completed."
                         f"\n -> global_step = {self.state['global_step']}, max_train_steps = {self.config.max_train_steps}, epoch = {epoch}, num_train_epochs = {self.config.num_train_epochs}",
                     )
                     break
-            if (
-                self.state["global_step"] >= self.config.max_train_steps
-                or epoch > self.config.num_train_epochs
+            if self.state["global_step"] >= self.config.max_train_steps or (
+                epoch > self.config.num_train_epochs
+                and not self.config.ignore_final_epochs
             ):
-                if os.environ.get('PROFILE_TRAINING_LOOP', None) is not None and pr is not None:
-                    name = os.environ.get('PROFILE_TRAINING_LOOP', '')
-                    pr.disable()
-                    s = io.StringIO()
-                    sortby = SortKey.CUMULATIVE
-                    ps = pstats.Stats(pr, stream=s).sort_stats(sortby)
-                    ps.print_stats()
-                    with open(f'v1_profile_{name}.txt', 'w') as f:
-                        f.write(s.getvalue())
-                    sortby = SortKey.TIME
-                    ps = pstats.Stats(pr, stream=s).sort_stats(sortby)
-                    ps.print_stats()
-                    with open(f'v1_profile_{name}.txt', 'w') as f:
-                        f.write(s.getvalue())
-
                 logger.info(
                     f"Exiting training loop. Beginning model unwind at epoch {epoch}, step {self.state['global_step']}"
                 )
@@ -2935,80 +2620,61 @@ class Trainer:
         if self.accelerator.is_main_process:
             self.mark_optimizer_eval()
             if self.validation is not None:
+                self.enable_sageattention_inference()
+                self.disable_gradient_checkpointing()
                 validation_images = self.validation.run_validations(
                     validation_type="final",
                     step=self.state["global_step"],
                     force_evaluation=True,
                     skip_execution=True,
                 ).validation_images
-            if self.unet is not None:
-                self.unet = unwrap_model(self.accelerator, self.unet)
-            if self.transformer is not None:
-                self.transformer = unwrap_model(self.accelerator, self.transformer)
+                # we don't have to do this but we will anyway.
+                self.disable_sageattention_inference()
+            if self.model.get_trained_component() is not None:
+                self.model.model = unwrap_model(self.accelerator, self.model.model)
             if (
                 "lora" in self.config.model_type
                 and "standard" == self.config.lora_type.lower()
             ):
-                if self.transformer is not None:
-                    transformer_lora_layers = get_peft_model_state_dict(
-                        self.transformer
-                    )
-                elif self.unet is not None:
-                    unet_lora_layers = convert_state_dict_to_diffusers(
-                        get_peft_model_state_dict(self.unet)
-                    )
-                else:
-                    raise Exception(
-                        "Couldn't locate the unet or transformer model for export."
-                    )
+                lora_save_kwargs = {
+                    "save_directory": self.config.output_dir,
+                    f"{self.model.MODEL_TYPE.value}_lora_layers": get_peft_model_state_dict(
+                        self.model.get_trained_component()
+                    ),
+                }
 
                 if self.config.train_text_encoder:
-                    self.text_encoder_1 = self.accelerator.unwrap_model(
-                        self.text_encoder_1
-                    )
-                    self.text_encoder_lora_layers = convert_state_dict_to_diffusers(
-                        get_peft_model_state_dict(self.text_encoder_1)
-                    )
-                    if self.text_encoder_2 is not None:
+                    if self.model.get_text_encoder(0) is not None:
+                        self.text_encoder_1 = self.accelerator.unwrap_model(
+                            self.model.get_text_encoder(0)
+                        )
+                        lora_save_kwargs["text_encoder_lora_layers"] = (
+                            convert_state_dict_to_diffusers(
+                                get_peft_model_state_dict(self.text_encoder_1)
+                            )
+                        )
+                    if self.model.get_text_encoder(1) is not None:
                         self.text_encoder_2 = self.accelerator.unwrap_model(
-                            self.text_encoder_2
+                            self.model.get_text_encoder(1)
                         )
-                        text_encoder_2_lora_layers = convert_state_dict_to_diffusers(
-                            get_peft_model_state_dict(self.text_encoder_2)
+                        lora_save_kwargs["text_encoder_2_lora_layers"] = (
+                            convert_state_dict_to_diffusers(
+                                get_peft_model_state_dict(self.text_encoder_2)
+                            )
                         )
-                        if self.text_encoder_3 is not None:
-                            text_encoder_3 = self.accelerator.unwrap_model(
-                                self.text_encoder_3
+                        if self.model.get_text_encoder(2) is not None:
+                            self.text_encoder_3 = self.accelerator.unwrap_model(
+                                self.model.get_text_encoder(2)
                             )
                 else:
                     text_encoder_lora_layers = None
                     text_encoder_2_lora_layers = None
 
-                if self.config.model_family == "flux":
-                    from diffusers.pipelines import FluxPipeline
+                from helpers.models.common import PipelineTypes
 
-                    FluxPipeline.save_lora_weights(
-                        save_directory=self.config.output_dir,
-                        transformer_lora_layers=transformer_lora_layers,
-                        text_encoder_lora_layers=text_encoder_lora_layers,
-                    )
-                elif self.config.model_family == "sd3":
-                    StableDiffusion3Pipeline.save_lora_weights(
-                        save_directory=self.config.output_dir,
-                        transformer_lora_layers=transformer_lora_layers,
-                        text_encoder_lora_layers=text_encoder_lora_layers,
-                        text_encoder_2_lora_layers=text_encoder_2_lora_layers,
-                    )
-                else:
-                    StableDiffusionXLPipeline.save_lora_weights(
-                        save_directory=self.config.output_dir,
-                        unet_lora_layers=unet_lora_layers,
-                        text_encoder_lora_layers=text_encoder_lora_layers,
-                        text_encoder_2_lora_layers=text_encoder_2_lora_layers,
-                    )
-
-                del self.unet
-                del self.transformer
+                self.model.PIPELINE_CLASSES[PipelineTypes.TEXT2IMG].save_lora_weights(
+                    **lora_save_kwargs,
+                )
                 del text_encoder_lora_layers
                 del text_encoder_2_lora_layers
                 reclaim_memory()
@@ -3049,241 +2715,22 @@ class Trainer:
                         )
 
             elif self.config.use_ema:
-                if self.unet is not None:
-                    self.ema_model.copy_to(self.unet.parameters())
-                if self.transformer is not None:
-                    self.ema_model.copy_to(self.transformer.parameters())
+                if self.model.get_trained_component() is not None:
+                    self.ema_model.copy_to(
+                        self.model.get_trained_component().parameters()
+                    )
 
             if self.config.model_type == "full":
-                # Now we build a full SDXL Pipeline to export the model with.
-                if self.config.model_family == "sd3":
-                    self.pipeline = StableDiffusion3Pipeline.from_pretrained(
-                        self.config.pretrained_model_name_or_path,
-                        text_encoder=self.text_encoder_1
-                        or (
-                            self.text_encoder_cls_1.from_pretrained(
-                                self.config.pretrained_model_name_or_path,
-                                subfolder="text_encoder",
-                                revision=self.config.revision,
-                                variant=self.config.variant,
-                            )
-                            if self.config.save_text_encoder
-                            else None
-                        ),
-                        tokenizer=self.tokenizer_1,
-                        text_encoder_2=self.text_encoder_2
-                        or (
-                            self.text_encoder_cls_2.from_pretrained(
-                                self.config.pretrained_model_name_or_path,
-                                subfolder="text_encoder_2",
-                                revision=self.config.revision,
-                                variant=self.config.variant,
-                            )
-                            if self.config.save_text_encoder
-                            else None
-                        ),
-                        tokenizer_2=self.tokenizer_2,
-                        text_encoder_3=self.text_encoder_3
-                        or (
-                            self.text_encoder_cls_3.from_pretrained(
-                                self.config.pretrained_model_name_or_path,
-                                subfolder="text_encoder_3",
-                                revision=self.config.revision,
-                                variant=self.config.variant,
-                            )
-                            if self.config.save_text_encoder
-                            else None
-                        ),
-                        tokenizer_3=self.tokenizer_3,
-                        vae=self.vae
-                        or (
-                            AutoencoderKL.from_pretrained(
-                                self.config.vae_path,
-                                subfolder=(
-                                    "vae"
-                                    if self.config.pretrained_vae_model_name_or_path
-                                    is None
-                                    else None
-                                ),
-                                revision=self.config.revision,
-                                variant=self.config.variant,
-                                force_upcast=False,
-                            )
-                        ),
-                        transformer=self.transformer,
-                    )
-                    if (
-                        self.config.flow_matching
-                        and self.config.flow_matching_loss == "diffusion"
-                    ):
-                        # Diffusion-based SD3 is currently fixed to a Euler v-prediction schedule.
-                        self.pipeline.scheduler = SCHEDULER_NAME_MAP[
-                            "euler"
-                        ].from_pretrained(
-                            self.config.pretrained_model_name_or_path,
-                            revision=self.config.revision,
-                            subfolder="scheduler",
-                            prediction_type="v_prediction",
-                            timestep_spacing=self.config.training_scheduler_timestep_spacing,
-                            rescale_betas_zero_snr=self.config.rescale_betas_zero_snr,
-                        )
-                        logger.debug(
-                            f"Setting scheduler to Euler for SD3. Config: {self.pipeline.scheduler.config}"
-                        )
-                elif self.config.model_family == "flux":
-                    from diffusers.pipelines import FluxPipeline
-
-                    self.pipeline = FluxPipeline.from_pretrained(
-                        self.config.pretrained_model_name_or_path,
-                        transformer=self.transformer,
-                        text_encoder=self.text_encoder_1
-                        or (
-                            self.text_encoder_cls_1.from_pretrained(
-                                self.config.pretrained_model_name_or_path,
-                                subfolder="text_encoder",
-                                revision=self.config.revision,
-                                variant=self.config.variant,
-                            )
-                            if self.config.save_text_encoder
-                            else None
-                        ),
-                        tokenizer=self.tokenizer_1,
-                        vae=self.vae,
-                    )
-                elif self.config.model_family == "legacy":
-                    from diffusers import StableDiffusionPipeline
-
-                    self.pipeline = StableDiffusionPipeline.from_pretrained(
-                        self.config.pretrained_model_name_or_path,
-                        text_encoder=self.text_encoder_1
-                        or (
-                            self.text_encoder_cls_1.from_pretrained(
-                                self.config.pretrained_model_name_or_path,
-                                subfolder="text_encoder",
-                                revision=self.config.revision,
-                                variant=self.config.variant,
-                            )
-                            if self.config.save_text_encoder
-                            else None
-                        ),
-                        tokenizer=self.tokenizer_1,
-                        vae=self.vae
-                        or (
-                            AutoencoderKL.from_pretrained(
-                                self.config.vae_path,
-                                subfolder=(
-                                    "vae"
-                                    if self.config.pretrained_vae_model_name_or_path
-                                    is None
-                                    else None
-                                ),
-                                revision=self.config.revision,
-                                variant=self.config.variant,
-                                force_upcast=False,
-                            )
-                        ),
-                        unet=self.unet,
-                        torch_dtype=self.config.weight_dtype,
-                    )
-                elif self.config.model_family == "smoldit":
-                    from helpers.models.smoldit import SmolDiTPipeline
-
-                    self.pipeline = SmolDiTPipeline(
-                        text_encoder=self.text_encoder_1
-                        or (
-                            self.text_encoder_cls_1.from_pretrained(
-                                self.config.pretrained_model_name_or_path,
-                                subfolder="text_encoder",
-                                revision=self.config.revision,
-                                variant=self.config.variant,
-                            )
-                            if self.config.save_text_encoder
-                            else None
-                        ),
-                        tokenizer=self.tokenizer_1,
-                        vae=self.vae
-                        or (
-                            AutoencoderKL.from_pretrained(
-                                self.config.vae_path,
-                                subfolder=(
-                                    "vae"
-                                    if self.config.pretrained_vae_model_name_or_path
-                                    is None
-                                    else None
-                                ),
-                                revision=self.config.revision,
-                                variant=self.config.variant,
-                                force_upcast=False,
-                            )
-                        ),
-                        transformer=self.transformer,
-                        scheduler=None,
-                    )
-
-                else:
-                    sdxl_pipeline_cls = StableDiffusionXLPipeline
-                    if self.config.model_family == "kolors":
-                        from helpers.kolors.pipeline import KolorsPipeline
-
-                        sdxl_pipeline_cls = KolorsPipeline
-                    self.pipeline = sdxl_pipeline_cls.from_pretrained(
-                        self.config.pretrained_model_name_or_path,
-                        text_encoder=(
-                            self.text_encoder_cls_1.from_pretrained(
-                                self.config.pretrained_model_name_or_path,
-                                subfolder="text_encoder",
-                                revision=self.config.revision,
-                                variant=self.config.variant,
-                            )
-                            if self.config.save_text_encoder
-                            else None
-                        ),
-                        text_encoder_2=(
-                            self.text_encoder_cls_2.from_pretrained(
-                                self.config.pretrained_model_name_or_path,
-                                subfolder="text_encoder_2",
-                                revision=self.config.revision,
-                                variant=self.config.variant,
-                            )
-                            if self.config.save_text_encoder
-                            else None
-                        ),
-                        tokenizer=self.tokenizer_1,
-                        tokenizer_2=self.tokenizer_2,
-                        vae=StateTracker.get_vae()
-                        or AutoencoderKL.from_pretrained(
-                            self.config.vae_path,
-                            subfolder=(
-                                "vae"
-                                if self.config.pretrained_vae_model_name_or_path is None
-                                else None
-                            ),
-                            revision=self.config.revision,
-                            variant=self.config.variant,
-                            force_upcast=False,
-                        ),
-                        unet=self.unet,
-                        revision=self.config.revision,
-                        add_watermarker=self.config.enable_watermark,
-                        torch_dtype=self.config.weight_dtype,
-                    )
-                if (
-                    not self.config.flow_matching
-                    and self.config.validation_noise_scheduler is not None
-                ):
-                    self.pipeline.scheduler = SCHEDULER_NAME_MAP[
-                        self.config.validation_noise_scheduler
-                    ].from_pretrained(
-                        self.config.pretrained_model_name_or_path,
-                        revision=self.config.revision,
-                        subfolder="scheduler",
-                        prediction_type=self.config.prediction_type,
-                        timestep_spacing=self.config.training_scheduler_timestep_spacing,
-                        rescale_betas_zero_snr=self.config.rescale_betas_zero_snr,
-                    )
-                self.pipeline.save_pretrained(
+                if self.config.save_text_encoder:
+                    self.model.load_text_encoder()
+                self.model.load_vae()
+                pipeline = self.model.get_pipeline()
+                pipeline.save_pretrained(
                     os.path.join(self.config.output_dir, "pipeline"),
                     safe_serialization=True,
+                )
+                logger.info(
+                    f"Wrote pipeline to disk: {self.config.output_dir}/pipeline"
                 )
 
             if self.config.push_to_hub and self.accelerator.is_main_process:

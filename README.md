@@ -4,13 +4,19 @@
 
 **SimpleTuner** is geared towards simplicity, with a focus on making the code easily understood. This codebase serves as a shared academic exercise, and contributions are welcome.
 
+If you'd like to join our community, we can be found [on Discord](https://discord.gg/uRZPwbPEGG) via Terminus Research Group.
+If you have any questions, please feel free to reach out to us there.
+
 ## Table of Contents
 
 - [Design Philosophy](#design-philosophy)
 - [Tutorial](#tutorial)
 - [Features](#features)
   - [Flux](#flux1)
+  - [Wan 2.1 Video](#wan-video)
+  - [LTX Video](#ltx-video)
   - [PixArt Sigma](#pixart-sigma)
+  - [NVLabs Sana](#nvlabs-sana)
   - [Stable Diffusion 2.0/2.1](#stable-diffusion-20--21)
   - [Stable Diffusion 3.0](#stable-diffusion-3)
   - [Kwai Kolors](#kwai-kolors)
@@ -44,8 +50,8 @@ For multi-node distributed training, [this guide](/documentation/DISTRIBUTED.md)
 ## Features
 
 - Multi-GPU training
-- Image and caption features (embeds) are cached to the hard drive in advance, so that training runs faster and with less memory consumption
-- Aspect bucketing: support for a variety of image sizes and aspect ratios, enabling widescreen and portrait training.
+- Image, video, and caption features (embeds) are cached to the hard drive in advance, so that training runs faster and with less memory consumption
+- Aspect bucketing: support for a variety of image/video sizes and aspect ratios, enabling widescreen and portrait training.
 - Refiner LoRA or full u-net training for SDXL
 - Most models are trainable on a 24G GPU, or even down to 16G at lower base resolutions.
   - LoRA/LyCORIS training for PixArt, SDXL, SD3, and SD 2.x that uses less than 16G VRAM
@@ -53,41 +59,96 @@ For multi-node distributed training, [this guide](/documentation/DISTRIBUTED.md)
 - Quantised NF4/INT8/FP8 LoRA training, using low-precision base model to reduce VRAM consumption.
 - Optional EMA (Exponential moving average) weight network to counteract model overfitting and improve training stability.
 - Train directly from an S3-compatible storage provider, eliminating the requirement for expensive local storage. (Tested with Cloudflare R2 and Wasabi S3)
-- For only SDXL and SD 1.x/2.x, full [ControlNet model training](/documentation/CONTROLNET.md) (not ControlLoRA or ControlLite)
+- For SDXL, SD 1.x/2.x, and Flux, full or LoRA based [ControlNet model training](/documentation/CONTROLNET.md) (not ControlLite)
 - Training [Mixture of Experts](/documentation/MIXTURE_OF_EXPERTS.md) for lightweight, high-quality diffusion models
 - [Masked loss training](/documentation/DREAMBOOTH.md#masked-loss) for superior convergence and reduced overfitting on any model
 - Strong [prior regularisation](/documentation/DATALOADER.md#is_regularisation_data) training support for LyCORIS models
 - Webhook support for updating eg. Discord channels with your training progress, validations, and errors
 - Integration with the [Hugging Face Hub](https://huggingface.co) for seamless model upload and nice automatically-generated model cards.
+  - Use the [datasets library](/documentation/data_presets/preset_subjects200k.md) ([more info](/documentation/HUGGINGFACE_DATASETS.md)) to load compatible datasets directly from the hub
+
+### HiDream
+
+Full training support for HiDream is included:
+
+- Custom ControlNet implementation for training via full-rank, LoRA or Lycoris
+- Memory-efficient training for NVIDIA GPUs (AMD support is planned)
+- Dev and Full both functioning and trainable. Fast is untested.
+- Optional MoEGate loss augmentation
+- Lycoris or full tuning via DeepSpeed ZeRO on a single GPU
+- Quantise the base model using `--base_model_precision` to `int8-quanto` or `fp8-quanto` for major memory savings
+- Quantise Llama LLM using `--text_encoder_4_precision` set to `int4-quanto` or `int8-quanto` to run on 24G cards.
+
+See [hardware requirements](#hidream) or the [quickstart guide](/documentation/quickstart/HIDREAM.md).
 
 ### Flux.1
 
 Full training support for Flux.1 is included:
 
+- Double the training speed of Flux.1 with the new `--fuse_qkv_projections` option, taking advantage of Flash Attention 3 on Hopper systems
+- ControlNet training via full-rank, LoRA or Lycoris
+- Instruct fine-tuning for the Kontext \[dev] editing model implementation generously provided by [Runware](https://runware.ai).
 - Classifier-free guidance training
   - Leave it disabled and preserve the dev model's distillation qualities
   - Or, reintroduce CFG to the model and improve its creativity at the cost of inference speed and training time.
 - (optional) T5 attention masked training for superior fine details and generalisation capabilities
 - LoRA or full tuning via DeepSpeed ZeRO on a single GPU
-- Quantise the base model using `--base_model_precision` to `int8-quanto` or `fp8-quanto` for major memory savings
+- Quantise the base model using `--base_model_precision` to `int8-quanto` or `fp8-torchao` for major memory savings
 
 See [hardware requirements](#flux1-dev-schnell) or the [quickstart guide](/documentation/quickstart/FLUX.md).
+
+### Wan Video
+
+SimpleTuner has preliminary training integration for Wan 2.1 which has a 14B and 1.3B type, both of which work.
+
+- Text to Video training is supported.
+- Image to Video training is not yet supported.
+- Text encoder training is not supported.
+- VAE training is not supported.
+- LyCORIS, PEFT, and full tuning all work as expected
+- ControlNet training is not yet supported
+
+See the [Wan Video Quickstart](/documentation/quickstart/WAN.md) guide to start training.
+
+### LTX Video
+
+SimpleTuner has preliminary training integration for LTX Video, efficiently training on less than 16G.
+
+- Text encoder training is not supported
+- VAE training is not supported
+- LyCORIS, PEFT, and full tuning all work as expected
+- ControlNet training is not yet supported
+
+See the [LTX Video Quickstart](/documentation/quickstart/LTXVIDEO.md) guide to start training.
 
 ### PixArt Sigma
 
 SimpleTuner has extensive training integration with PixArt Sigma - both the 600M & 900M models load without modification.
 
-- Text encoder training is not supported, as T5 is enormous.
+- Text encoder training is not supported
 - LyCORIS and full tuning both work as expected
-- ControlNet training is not yet supported
+- ControlNet training is supported for full and PEFT LoRA training
 - [Two-stage PixArt](https://huggingface.co/ptx0/pixart-900m-1024-ft-v0.7-stage1) training support (see: [MIXTURE_OF_EXPERTS](/documentation/MIXTURE_OF_EXPERTS.md))
 
 See the [PixArt Quickstart](/documentation/quickstart/SIGMA.md) guide to start training.
 
+### NVLabs Sana
+
+SimpleTuner has extensive training integration with NVLabs Sana.
+
+This is a lightweight, fun, and fast model that makes getting into model training highly accessible to a wider audience.
+
+- LyCORIS and full tuning both work as expected.
+- Text encoder training is not supported.
+- PEFT Standard LoRA is not supported.
+- ControlNet training is not yet supported
+
+See the [NVLabs Sana Quickstart](/documentation/quickstart/SANA.md) guide to start training.
+
 ### Stable Diffusion 3
 
 - LoRA and full finetuning are supported as usual.
-- ControlNet is not yet implemented.
+- ControlNet training via full-rank, PEFT LoRA, or Lycoris
 - Certain features such as segmented timestep selection and Compel long prompt weighting are not yet supported.
 - Parameters have been optimised to get the best results, validated through from-scratch training of SD3 models
 
@@ -123,6 +184,15 @@ LoRA and full-rank tuning are tested to work on an M3 Max with 128G memory, taki
   - You likely need a 24G or greater machine for machine learning with M-series hardware due to the lack of memory-efficient attention.
   - Subscribing to Pytorch issues for MPS is probably a good idea, as random bugs will make training stop working.
 
+### HiDream [dev, full]
+
+- A100-80G (Full tune with DeepSpeed)
+- A100-40G (LoRA, LoKr)
+- 3090 24G (LoRA, LoKr)
+
+HiDream has not been tested on 16G cards, but with aggressive quantisation and pre-caching of embeds, you might make it work, though even 24G is pushing limits.
+
+
 ### Flux.1 [dev, schnell]
 
 - A100-80G (Full tune with DeepSpeed)
@@ -132,6 +202,16 @@ LoRA and full-rank tuning are tested to work on an M3 Max with 128G memory, taki
 - 4070 Super 12G, 3080 10G, 3060 12GB (nf4, LoRA, LoKr)
 
 Flux prefers being trained with multiple large GPUs but a single 16G card should be able to do it with quantisation of the transformer and text encoders.
+
+Kontext requires a bit beefier compute and memory allocation; a 4090 will go from ~3 to ~6 seconds per step when it is enabled.
+
+### Auraflow
+
+- A100-80G (Full tune with DeepSpeed)
+- A100-40G (LoRA, LoKr)
+- 3090 24G (LoRA, LoKr)
+- 4060 Ti 16G, 4070 Ti 16G, 3080 16G (int8, LoRA, LoKr)
+- 4070 Super 12G, 3080 10G, 3060 12GB (nf4, LoRA, LoKr)
 
 ### SDXL, 1024px
 
@@ -161,7 +241,3 @@ Enable debug logs for a more detailed insight by adding `export SIMPLETUNER_LOG_
 For performance analysis of the training loop, setting `SIMPLETUNER_TRAINING_LOOP_LOG_LEVEL=DEBUG` will have timestamps that highlight any issues in your configuration.
 
 For a comprehensive list of options available, consult [this documentation](/OPTIONS.md).
-
-## Discord
-
-For more help or to discuss training with like-minded folks, join [our Discord server](https://discord.gg/cSmvcU9Me9)

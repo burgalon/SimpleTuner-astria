@@ -19,7 +19,7 @@ import torch
 
 from diffusers.callbacks import MultiPipelineCallbacks, PipelineCallback
 from diffusers.image_processor import PipelineImageInput, VaeImageProcessor
-from diffusers.loaders import StableDiffusionXLLoraLoaderMixin
+from helpers.models.sdxl.pipeline import StableDiffusionXLLoraLoaderMixin
 from diffusers.models import AutoencoderKL, UNet2DConditionModel
 from diffusers.models.attention_processor import (
     AttnProcessor2_0,
@@ -1249,10 +1249,21 @@ class KolorsImg2ImgPipeline(
             # unscale/denormalize the latents
             latents = latents / self.vae.config.scaling_factor
 
+            if hasattr(torch.nn.functional, "scaled_dot_product_attention_sdpa"):
+                # we have SageAttention loaded. fallback to SDPA for decode.
+                torch.nn.functional.scaled_dot_product_attention = (
+                    torch.nn.functional.scaled_dot_product_attention_sdpa
+                )
+
             image = self.vae.decode(
-                latents.to(device=self.vae.device, dtype=self.vae.dtype),
-                return_dict=False,
+                latents.to(device=self.vae.device), return_dict=False
             )[0]
+
+            if hasattr(torch.nn.functional, "scaled_dot_product_attention_sdpa"):
+                # reenable SageAttention for training.
+                torch.nn.functional.scaled_dot_product_attention = (
+                    torch.nn.functional.scaled_dot_product_attention_sage
+                )
 
             # cast back to fp16 if needed
             if needs_upcasting:
@@ -1341,7 +1352,10 @@ class KolorsPipeline(
         )
         self.image_processor = VaeImageProcessor(vae_scale_factor=self.vae_scale_factor)
 
-        self.default_sample_size = self.unet.config.sample_size
+        if self.unet is None:
+            self.default_sample_size = 128
+        else:
+            self.default_sample_size = self.unet.config.sample_size
 
     def encode_prompt(
         self,
@@ -1421,9 +1435,7 @@ class KolorsPipeline(
 
                 # [max_sequence_length, batch, hidden_size] -> [batch, max_sequence_length, hidden_size]
                 # clone to have a contiguous tensor
-                print(f"Shape A: {[o.shape for o in output.hidden_states]}")
                 prompt_embeds = output.hidden_states[-2].permute(1, 0, 2).clone()
-                print(f"Shape B: {prompt_embeds.shape}")
                 # [max_sequence_length, batch, hidden_size] -> [batch, hidden_size]
                 pooled_prompt_embeds = output.hidden_states[-1][-1, :, :].clone()
                 bs_embed, seq_len, _ = prompt_embeds.shape
@@ -1431,7 +1443,6 @@ class KolorsPipeline(
                 prompt_embeds = prompt_embeds.view(
                     bs_embed * num_images_per_prompt, seq_len, -1
                 )
-                print(f"Shape C: {prompt_embeds.shape}")
 
                 prompt_embeds_list.append(prompt_embeds)
 

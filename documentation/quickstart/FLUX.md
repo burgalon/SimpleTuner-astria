@@ -26,7 +26,7 @@ Luckily, these are readily available through providers such as [LambdaLabs](http
 
 ### Prerequisites
 
-Make sure that you have python installed; SimpleTuner does well with 3.10 or 3.11. **Python 3.12 should not be used**.
+Make sure that you have python installed; SimpleTuner does well with 3.10 through 3.12.
 
 You can check this by running:
 
@@ -34,15 +34,15 @@ You can check this by running:
 python --version
 ```
 
-If you don't have python 3.11 installed on Ubuntu, you can try the following:
+If you don't have python 3.12 installed on Ubuntu, you can try the following:
 
 ```bash
-apt -y install python3.11 python3.11-venv
+apt -y install python3.12 python3.12-venv
 ```
 
 #### Container image dependencies
 
-For Vast, RunPod, and TensorDock (among others), the following will work on a CUDA 12.2-12.4 image:
+For Vast, RunPod, and TensorDock (among others), the following will work on a CUDA 12.2-12.8 image:
 
 ```bash
 apt -y install nvidia-cuda-toolkit libgl1-mesa-glx
@@ -75,11 +75,11 @@ poetry config virtualenvs.create false
 Depending on your system, you will run one of 3 commands:
 
 ```bash
+# Linux with NVIDIA
+poetry install
+
 # MacOS
 poetry install -C install/apple
-
-# Linux
-poetry install
 
 # Linux with ROCM
 poetry install -C install/rocm
@@ -128,7 +128,9 @@ There, you will possibly need to modify the following variables:
 
 - `model_type` - Set this to `lora`.
 - `model_family` - Set this to `flux`.
+- `offload_during_startup` - Set this to `true` if you run out of memory during VAE encodes.
 - `pretrained_model_name_or_path` - Set this to `black-forest-labs/FLUX.1-dev`.
+- `pretrained_vae_model_name_or_path` - Set this to `black-forest-labs/FLUX.1-dev`.
   - Note that you will need to log in to Huggingface and be granted access to download this model. We will go over logging in to Huggingface later in this tutorial.
 - `output_dir` - Set this to the directory where you want to store your checkpoints and validation images. It's recommended to use a full path here.
 - `train_batch_size` - this should be kept at 1, especially if you have a very small dataset.
@@ -144,6 +146,8 @@ There, you will possibly need to modify the following variables:
   - This option causes update steps to be accumulated over several steps. This will increase the training runtime linearly, such that a value of 2 will make your training run half as quickly, and take twice as long.
 - `optimizer` - Beginners are recommended to stick with adamw_bf16, though optimi-lion and optimi-stableadamw are also good choices.
 - `mixed_precision` - Beginners should keep this in `bf16`
+- `gradient_checkpointing` - set this to true in practically every situation on every device
+- `gradient_checkpointing_interval` - this could be set to a value of 2 or higher on larger GPUs to only checkpoint every _n_ blocks. A value of 2 would checkpoint half of the blocks, and 3 would be one-third.
 
 Multi-GPU users can reference [this document](/OPTIONS.md#environment-configuration-variables) for information on configuring the number of GPUs to use.
 
@@ -195,6 +199,10 @@ A set of diverse prompt will help determine whether the model is collapsing as i
 
 If you wish to enable evaluations to score the model's performance, see [this document](/documentation/evaluation/CLIP_SCORES.md) for information on configuring and interpreting CLIP scores.
 
+# Stable evaluation loss
+
+If you wish to use stable MSE loss to score the model's performance, see [this document](/documentation/evaluation/EVAL_LOSS.md) for information on configuring and interpreting evaluation loss.
+
 #### Flux time schedule shifting
 
 Flow-matching models such as Flux and SD3 have a property called "shift" that allows us to shift the trained portion of the timestep schedule using a simple decimal value.
@@ -203,15 +211,15 @@ Flow-matching models such as Flux and SD3 have a property called "shift" that al
 By default, no schedule shift is applied to flux, which results in a sigmoid bell-shape to the timestep sampling distribution. This is unlikely to be the ideal approach for Flux, but it results in a greater amount of learning in a shorter period of time than auto-shift.
 
 ##### Auto-shift
-A commonly-recommended approach is to follow several recent works and enable resolution-dependent timestep shift, `--flux_schedule_auto_shift` which uses higher shift values for larger images, and lower shift values for smaller images. This results in stable but potentially mediocre training results.
+A commonly-recommended approach is to follow several recent works and enable resolution-dependent timestep shift, `--flow_schedule_auto_shift` which uses higher shift values for larger images, and lower shift values for smaller images. This results in stable but potentially mediocre training results.
 
 ##### Manual specification
 _Thanks to General Awareness from Discord for the following examples_
 
-When using a `--flux_schedule_shift` value of 0.1 (a very low value), only the finer details of the image are affected:
+When using a `--flow_schedule_shift` value of 0.1 (a very low value), only the finer details of the image are affected:
 ![image](https://github.com/user-attachments/assets/991ca0ad-e25a-4b13-a3d6-b4f2de1fe982)
 
-When using a `--flux_schedule_shift` value of 4.0 (a very high value), the large compositional features and potentially colour space of the model becomes impacted:
+When using a `--flow_schedule_shift` value of 4.0 (a very high value), the large compositional features and potentially colour space of the model becomes impacted:
 ![image](https://github.com/user-attachments/assets/857a1f8a-07ab-4b75-8e6a-eecff616a28d)
 
 
@@ -219,11 +227,7 @@ When using a `--flux_schedule_shift` value of 4.0 (a very high value), the large
 
 Tested on Apple and NVIDIA systems, Hugging Face Optimum-Quanto can be used to reduce the precision and VRAM requirements, training Flux on just 16GB.
 
-Inside your SimpleTuner venv:
 
-```bash
-pip install optimum-quanto
-```
 
 For `config.json` users:
 ```json
@@ -406,7 +410,7 @@ Currently, the lowest VRAM utilisation (9090M) can be attained with:
 - OS: Ubuntu Linux 24
 - GPU: A single NVIDIA CUDA device (10G, 12G)
 - System memory: 50G of system memory approximately
-- Base model precision: `bnb-nf4`
+- Base model precision: `nf4-bnb`
 - Optimiser: Lion 8Bit Paged, `bnb-lion8bit-paged`
 - Resolution: 512px
   - 1024px requires >= 12G VRAM
@@ -414,8 +418,18 @@ Currently, the lowest VRAM utilisation (9090M) can be attained with:
 - DeepSpeed: disabled / unconfigured
 - PyTorch: 2.6 Nightly (Sept 29th build)
 - Using `--quantize_via=cpu` to avoid outOfMemory error during startup on <=16G cards.
+- With `--attention_mechanism=sageattention` to further reduce VRAM by 0.1GB and improve training validation image generation speed.
+- Be sure to enable `--gradient_checkpointing` or nothing you do will stop it from OOMing
+
+**NOTE**: Pre-caching of VAE embeds and text encoder outputs may use more memory and still OOM. If so, text encoder quantisation and VAE tiling can be enabled via `--vae_enable_tiling=true`. Further memory can be saved on startup with `--offload_during_startup=true`.
 
 Speed was approximately 1.4 iterations per second on a 4090.
+
+### SageAttention
+
+When using `--attention_mechanism=sageattention`, inference can be sped-up at validation time.
+
+**Note**: This isn't compatible with _every_ model configuration, but it's worth trying.
 
 ### NF4-quantised training
 
@@ -428,6 +442,7 @@ In early tests, the following holds true:
 - NF4, AdamW8bit, and a higher batch size all help to overcome the stability issues, at the cost of more time spent training or VRAM used
 - Upping the resolution from 512px to 1024px slows training down from, for example, 1.4 seconds per step to 3.5 seconds per step (batch size of 1, 4090)
 - Anything that's difficult to train on int8 or bf16 becomes harder in NF4
+- It's less compatible with options like SageAttention
 
 NF4 does not work with torch.compile, so whatever you get for speed is what you get.
 
