@@ -217,6 +217,7 @@ def train_no_catch(tune: JsonObj):
     os.environ['CUDA_VISIBLE_DEVICES'] = CUDA_VISIBLE_DEVICES
     os.environ['DEBUG_LOG_FILENAME'] = f"{output_dir}/debug.log"
     os.environ['WANDB_DIR'] = output_dir
+    os.environ['TORCHINDUCTOR_CACHE_DIR'] = "/data/cache/torchinductor_cache"
     if tune.preprocessing=='2' or tune.preprocessing=='3':
         tail_lines = run_with_output([
             'accelerate',
@@ -271,7 +272,7 @@ def train_no_catch(tune: JsonObj):
             # '--training_scheduler_timestep_spacing=trailing', # defaults
             '--report_to', tune.report_to or 'none',
             # '--allow_tf32', # deprecated
-            # '--mixed_precision=bf16',
+            # '--mixed_precision=fp8',
             # *([f'--base_model_precision={os.environ.get("BASE_MODEL_PRECISION")}'] if os.environ.get("BASE_MODEL_PRECISION") else []),
             *([f'--base_model_precision={tune.base_model_precision}'] if tune.base_model_precision else []),
             # helps see that we're not destroying the priors
@@ -296,6 +297,8 @@ def train_no_catch(tune: JsonObj):
             # '--image_processing_batch_size=32',
             # '--vae_batch_size=1',
             # '--validation_prompt="ohwx woman holding flowers, red sweater, studio photography, plain white background"',
+            *(['--flow_schedule_auto_shift'] if tune.flux_schedule_auto_shift else []),
+            '--flow_schedule_shift', str(tune.flux_schedule_shift if tune.flux_schedule_shift is not None else 0),
             '--num_validation_images=1',
             '--validation_num_inference_steps=28',
             '--validation_seed=42',
