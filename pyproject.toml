@@ -8,7 +8,7 @@ readme = "README.md"
 dependencies = [
     "torch>=2.7.0,<3",
     "torchvision>=0.22.0,<0.23",
-    "diffusers>=0.33.1,<0.34",
+    "diffusers",
     "transformers==4.46.2",
     "datasets>=3.0.1,<4",
     "bitsandbytes>=0.45.0,<0.46",
@@ -33,7 +33,7 @@ dependencies = [
     "torchmetrics>=1.1.1,<2",
     "colorama>=0.4.6,<0.5",
     "numpy==1.26.3",
-    "peft>=0.14.0,<0.15",
+    "peft",
     "tensorboard>=2.18.0,<3",
     "triton>=3.1.0,<4",
     "sentencepiece>=0.2.0,<0.3",
@@ -63,6 +63,9 @@ dependencies = [
     "onnxruntime==1.20.1",
     "segment-anything>=1.0",
     "groundingdino-py>=0.4.0",
+    "atomicwrites>=1.4.1",
+    "prodigy-plus-schedule-free>=1.9.2",
+    "flashattn-hopper",
 ]
 
 [dependency-groups]
@@ -87,6 +90,7 @@ optimum-quanto = { git = "https://github.com/huggingface/optimum-quanto" }
 lycoris-lora = { git = "https://github.com/kohakublueleaf/lycoris", rev = "dev" }
 diffsynth = { git = "https://github.com/modelscope/DiffSynth-Studio.git", rev = "39890f023f64bdf2a71c09ae32b242784b8a6dbf" }
 easy-dwpose = { git = "https://github.com/carpedm20/easy_dwpose.git", rev = "3eccc2bbdb1db1f01c9b867be92fce23d54c5558" }
+flashattn-hopper = { path = "wheels/flashattn_hopper-3.0.0b1-cp312-cp312-linux_x86_64.whl" }
 
 [build-system]
 requires = ["hatchling"]

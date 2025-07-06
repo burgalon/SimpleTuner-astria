@@ -252,6 +252,7 @@ def train_no_catch(tune: JsonObj):
             '--data_backend_config', data_backend_config,
             '--aspect_bucket_rounding=2',
             '--num_train_epochs=0',
+            # '--fuse_qkv_projections',
             f'--max_train_steps={steps}',
             '--fuse_qkv_projections',
             # '--metadata_update_interval=65', # ?
@@ -311,8 +312,6 @@ def train_no_catch(tune: JsonObj):
             '--validation_guidance=3.5',
             '--validation_guidance_rescale=0.0',
             '--disable_benchmark',
-            *(['--flow_schedule_shift'] if tune.flux_schedule_auto_shift else []),
-            '--flow_schedule_shift', str(tune.flux_schedule_shift if tune.flux_schedule_shift is not None else 0),
             '--skip_file_discovery=aspect,metadata',
             *(['--prepend_instance_prompt'] if caption_strategy == "textfile" else []),
         ])
@@ -338,6 +337,7 @@ def train_no_catch(tune: JsonObj):
             '--snr_gamma=5',
             '--data_backend_config', data_backend_config,
             '--num_train_epochs=0',
+            # '--fuse_qkv_projections',
             f'--max_train_steps={steps}',
             '--metadata_update_interval=65',
             # https://wandb.ai/astria/lora-training/runs/b94a195701ed0a7d7b53e6c9771c4388?nw=nwuserburgalonastria
