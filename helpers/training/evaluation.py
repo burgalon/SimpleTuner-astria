@@ -56,6 +56,7 @@ class CLIPModelEvaluator(ModelEvaluator):
 
 class FaceModelEvaluator(ModelEvaluator):
     def __init__(self, pretrained_model_name_or_path='buffalo_l', **kwargs):
+        # ── 1) Initialize InsightFace ───────────────────────────────
         self.app = FaceAnalysis(
             name=pretrained_model_name_or_path or 'buffalo_l',
             root='./faceanalysis',
@@ -63,42 +64,78 @@ class FaceModelEvaluator(ModelEvaluator):
         )
         self.app.prepare(ctx_id=0, det_size=(640, 640))
 
+        # ── 2) Build baseline embedding with retry logic ────────────
         baseline_images = kwargs["baseline_images"]
         embeds = []
-        for baseline_image in tqdm.tqdm(baseline_images, desc="Generating baseline face embeds..."):
-            image = cv2.imread(baseline_image)
-            faces = self.app.get(image)
-
-            # Ignore missing faces
-            try:
-                faceid_embed_gt = torch.from_numpy(faces[0].normed_embedding).unsqueeze(0)
-            except IndexError:
+        for img_path in tqdm.tqdm(baseline_images, desc="Generating baseline face embeds..."):
+            img_bgr = cv2.imread(img_path)
+            faces = self._detect_with_retry(img_bgr)
+            if not faces:
                 continue
-            embeds.append(faceid_embed_gt)
+            embed = torch.from_numpy(faces[0].normed_embedding).unsqueeze(0)
+            embeds.append(embed)
 
+        if not embeds:
+            raise RuntimeError("No faces detected in any baseline image!")
+
+        # average baseline
         self.faceid_embed_gt = torch.stack(embeds, dim=0).mean(0)
+
+    def _detect_with_retry(self, img_bgr: np.ndarray) -> list:
+        """
+        Try face detection on img_bgr; if no faces found, 'zoom out'
+        by 16px increments (shrink + pad) up to 5 times.
+        """
+        # 1) First try at original resolution
+        faces = self.app.get(img_bgr)
+        if faces:
+            return faces
+
+        h0, w0 = img_bgr.shape[:2]
+        for i in range(0, 5):
+            shrink = 16 * i
+            new_h = max(1, h0 - shrink)
+            new_w = max(1, w0 - shrink)
+            # shrink the image
+            resized = cv2.resize(img_bgr, (new_w, new_h))
+            # compute padding to restore original size
+            delta_h = h0 - new_h
+            delta_w = w0 - new_w
+            top    = delta_h // 2
+            bottom = delta_h - top
+            left   = delta_w // 2
+            right  = delta_w - left
+            padded = cv2.copyMakeBorder(
+                resized,
+                top, bottom, left, right,
+                borderType=cv2.BORDER_CONSTANT,
+                value=[0, 0, 0],
+            )
+            faces = self.app.get(padded)
+            if faces:
+                return faces
+
+        return []
 
     def evaluate(self, images, prompts, **kwargs):
         assert len(images) == 1, 'too many images passed to FaceModelEvaluator'
-        experimental_img_bgr = None
-        if isinstance(images[0], Image.Image):
-            experimental_img = np.array(images[0])  # now shape: (H, W, 3), RGB
-            experimental_img_bgr = cv2.cvtColor(experimental_img, cv2.COLOR_RGB2BGR)
-        elif isinstance(images[0], np.ndarray):
-            # If it's already a NumPy array, we must ensure it's in BGR for FaceAnalysis
-            # E.g., if it is RGB, we convert:
-            # experimental_img_bgr = cv2.cvtColor(images[0], cv2.COLOR_RGB2BGR)
-            # Otherwise, if it's already BGR, skip the conversion.
-            experimental_img_bgr = images[0]
-        else:
-            raise ValueError("Unsupported image type for `images[0]`. "
-                             "Must be PIL.Image or NumPy array.")
-        faces = self.app.get(experimental_img_bgr)
 
-        # Ignore missing faces
-        try:
-            faceid_embed_exp = torch.from_numpy(faces[0].normed_embedding).unsqueeze(0)
-        except IndexError:
+        # ── 1) Prepare a BGR numpy image ─────────────────────────────
+        img0 = images[0]
+        if isinstance(img0, Image.Image):
+            arr = np.array(img0.convert("RGB"))
+            img_bgr = cv2.cvtColor(arr, cv2.COLOR_RGB2BGR)
+        elif isinstance(img0, np.ndarray):
+            img_bgr = img0
+        else:
+            raise ValueError("Unsupported image type; must be PIL.Image or NumPy array")
+
+        # ── 2) Detect (with zoom‐out retries) ────────────────────────
+        faces = self._detect_with_retry(img_bgr)
+        if not faces:
             return 0.0
 
-        return F.cosine_similarity(self.faceid_embed_gt, faceid_embed_exp).cpu().detach().item()
+        # ── 3) Embed & compare ───────────────────────────────────────
+        embed_exp = torch.from_numpy(faces[0].normed_embedding).unsqueeze(0)
+        score = F.cosine_similarity(self.faceid_embed_gt, embed_exp, dim=1)
+        return score.cpu().item()

@@ -4,83 +4,76 @@ import os
 import shutil
 import time
 import sys
+import threading
+import uvicorn
+import requests
+import concurrent.futures
+import base64
+from pathlib import Path
 
 import torch
 import torch.distributed as dist
 
+from tqdm import tqdm
+
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from diffusers import FluxTransformer2DModel
+# --- Import your FastAPI app ---
+from astria.preprocess_server import BASE_PREPROCESS_PORT, app as fastapi_app
+
 from helpers.training.trainer import Trainer
 
 from sig_listener import set_trainer_instance
+from astria.dummy_training import create_dummy_data_config
 from astria.train import download_dev2pro, create_prompt_library, parse_env_args, parse_args
+from astria.download_training_local_api import run_v1_processing, run_v2_v3_processing
 from astria_utils import run, run_with_output, MODELS_DIR, EPHEMERAL_MODELS_DIR, \
-    download_model_from_server, JsonObj, cleanup_models, CUDA_VISIBLE_DEVICES, upload_to_sync
+    download_model_from_server, JsonObj, cleanup_models, CUDA_VISIBLE_DEVICES, upload_to_sync, HUMAN_CLASS_NAMES
 from cleanup_directory import cleanup_directory
-from download_training_v1 import create_data_config_v1
-from download_training_v2 import create_data_config_v2
-from download_training_v3 import create_data_config_v3
-from dummy_training import create_dummy_data_config
+
 
 from astria_tests.fixtures.worker_fixtures import (
-    JOB_STR_1,
-    JOB_STR_2,
-    JOB_STR_3,
-    JOB_STR_4,
-    JOB_STR_5,
+    JOB_STR_1, JOB_STR_2, JOB_STR_3, JOB_STR_4, JOB_STR_5, JOB_STR_HAIR
 )
 
-
-BATCH_IMG_SIZES = [
-    (1, 512), (2, 512)
-]
 MEGA_CACHE_PATH = "/data/cache/flux_transformer_mega_cache.bin"
 NUM_GPUS = torch.cuda.device_count()
 GPU_MEMORY_GB = torch.cuda.get_device_properties(0).total_memory / 1024**3
 
-
 def is_rank0() -> bool:
     return (not dist.is_initialized()) or dist.get_rank() == 0
-
 
 def is_rank1() -> bool:
     return dist.is_initialized() and dist.get_rank() == 1
 
 
-def extract_learning_rate(job_json: str) -> float|None:
-    """
-    Pull the `learning_rate` value from a job-spec JSON string.
+def list_full_paths(directory: str) -> list[str]:
+    """Lists full paths of image files in a directory."""
+    return [os.path.join(os.path.abspath(directory), f) for f in os.listdir(directory) if f.endswith(('.png', '.jpg'))]
 
-    Parameters
-    ----------
-    job_json : str
-        The raw JSON text shown in your example.
-
-    Returns
-    -------
-    float | None
-        The numeric learning-rate if it was present, otherwise ``None``.
-    """
-    # 1) Parse the JSON text into a Python dict
-    job: dict = json.loads(job_json)
-
-    # 2) Grab the free-form "args" field, if any
-    args: str | None = job.get("args")
-    if not args:
-        return None
-
-    # 3) Look for  learning_rate=...  (supports scientific notation, e.g. 5e-4)
-    m = re.search(r"\blearning_rate\s*=\s*([0-9]*\.?[0-9]+(?:[eE][-+]?\d+)?)", args)
-    if not m:
-        return None
-
-    # 4) Convert to float and return
-    return float(m.group(1))
-
+def write_aspect_ratio_metadata(training_dir: str, resolution: int, cache_file_suffix: str):
+    """Generates the aspect ratio bucket metadata files required by the trainers."""
+    files = sorted(list_full_paths(training_dir))
+    metadata = {
+        fn: {
+            "original_size": [resolution, resolution], "crop_coordinates": [0, 0],
+            "target_size": [resolution, resolution], "intermediary_size": [resolution, resolution],
+            "aspect_ratio": 1.0, "luminance": 100.0
+        } for fn in files
+    }
+    indices = {
+        "config": { "resolution": resolution, "instance_data_dir": training_dir },
+        "aspect_ratio_bucket_indices": { "1.0": files }
+    }
+    with open(f'{training_dir}/aspect_ratio_bucket_metadata_{cache_file_suffix}.json', "w") as f:
+        json.dump(metadata, f)
+    with open(f'{training_dir}/aspect_ratio_bucket_indices_{cache_file_suffix}.json', "w") as f:
+        json.dump(indices, f, indent=4)
 
 class Worker:
     def __init__(self):
+        self.preprocess_server_ports = [BASE_PREPROCESS_PORT + i for i in range(NUM_GPUS)]
+
         # load config/warmup.json
         os.environ['SIMPLETUNER_CONFIG_BACKEND'] = 'json'
         os.environ['SIMPLETUNER_ENVIRONMENT'] = 'warmup'
@@ -90,26 +83,41 @@ class Worker:
             skip_unload_supporting_models=True,
             torch_compile_transformer=os.environ.get('TORCH_COMPILE_TRANSFORMER', False),
         )
+
+        self._start_preprocessing_server()
+
         set_trainer_instance(self.trainer)
         os.environ['SIMPLETUNER_CONFIG_BACKEND'] = 'cmd'
         os.environ['SIMPLETUNER_ENVIRONMENT'] = ''
         os.environ['TORCHINDUCTOR_CACHE_DIR'] = '/data/cache/torchinductor_cache'
-        # os.environ['TORCH_COMPILE_DEBUG'] = "1"
-
+        
         start = time.time()
         self.setup_trainer(dummy_config=True)
         self.run()
         self.trainer.cleanup_for_next_lora()
         print('Trainer setup and pre-warmed in', time.time() - start)
         
-        if self.trainer.accelerator.is_main_process:
-            if not self.load_mega_cache():
-                self.save_mega_cache()
+        if os.environ.get('TORCH_COMPILE_TRANSFORMER', False):
+            if self.trainer.accelerator.is_main_process:
+                if not self.load_mega_cache():
+                    self.save_mega_cache()
+            self.load_mega_cache()
 
-        self.load_mega_cache()
+    def _start_preprocessing_server(self):
+        """Starts the FastAPI server in a background daemon thread for each worker process."""
+        rank = dist.get_rank() if dist.is_initialized() else 0
+        port = BASE_PREPROCESS_PORT + rank
+
+        def run_server():
+            print(f"[GPU-{rank}] Starting preprocess server on port {port}...")
+            uvicorn.run(fastapi_app, host="0.0.0.0", port=port, log_level="warning")
+
+        server_thread = threading.Thread(target=run_server, daemon=True)
+        server_thread.start()
+        time.sleep(2)
 
     def load_mega_cache(self, pth=MEGA_CACHE_PATH):
-        if os.path.exists(pth):
+        if Path(pth).exists():
             artifact_bytes = open(pth, "rb").read()
             torch.compiler.load_cache_artifacts(artifact_bytes)
             print(f"[mega-cache] Loaded cache from {pth}")
@@ -124,68 +132,6 @@ class Worker:
             with open(pth, "wb") as f:
                 f.write(artifact_bytes)
             print(f"[mega-cache] Saved cache to {pth}")
-            # Optional: inspect cache_info if you want statistics
-            # print(cache_info)
-
-    def generate_graphs_if_not_exist(self):
-        dtype = torch.bfloat16
-        device = self.trainer.accelerator.device
-        vae_scale = 16
-
-        cfg = {
-            "attention_head_dim": 128,
-            "guidance_embeds": True,
-            "in_channels": 64,
-            "joint_attention_dim": 4096,
-            "num_attention_heads": 24,
-            "num_layers": 4,
-            "num_single_layers": 8,
-            "patch_size": 1,
-            "pooled_projection_dim": 768,
-        }
-
-        patch_size      = cfg["patch_size"]
-        in_channels     = cfg["in_channels"]
-        joint_dim       = cfg["joint_attention_dim"]
-        pooled_dim      = cfg["pooled_projection_dim"]
-        text_seq_len    = 512  # or whatever your tokenizer outputs
-
-        for bs, sz in BATCH_IMG_SIZES:
-            H = W = sz // patch_size // vae_scale
-            image_seq_len = H * W
-
-            # Hidden states: (bs, image_seq_len, in_channels)
-            hidden_states = torch.randn(bs, image_seq_len, in_channels,
-                                        device=device, dtype=dtype)
-
-            # Encoder (text) states: (bs, text_seq_len, joint_attention_dim)
-            encoder_hidden_states = torch.randn(bs, text_seq_len, joint_dim,
-                                                device=device, dtype=dtype)
-
-            # pooled projections: (bs, pooled_projection_dim)
-            pooled_projections = torch.randn(bs, pooled_dim,
-                                            device=device, dtype=dtype)
-
-            # timestep & guidance: (bs,)
-            timestep = torch.rand(bs, device=device, dtype=torch.float32)
-            guidance = torch.rand(bs, device=device, dtype=torch.float32)
-
-            # txt_ids & img_ids: concatenated positions for rotary embeddings
-            # model does `ids = torch.cat((txt_ids, img_ids), dim=0)` so shape must be:
-            #  txt_ids: (text_seq_len, 3); img_ids: (image_seq_len, 3)
-            txt_ids = torch.arange(text_seq_len * 3, device=device).reshape(text_seq_len, 3)
-            img_ids = torch.arange(image_seq_len * 3, device=device).reshape(image_seq_len, 3)
-
-            # 4a) forward without any joint_attention_kwargs
-            _ = self.trainer.transformer(
-                hidden_states=hidden_states,
-                encoder_hidden_states=encoder_hidden_states,
-                pooled_projections=pooled_projections,
-                timestep=timestep,
-                img_ids=img_ids,
-                txt_ids=txt_ids,
-                guidance=guidance,
-            )
 
     def setup_trainer(self, job: str=JOB_STR_3, dummy_config=False):
         tune = json.loads(job, object_hook=lambda d: JsonObj(**d))
@@ -228,20 +174,17 @@ class Worker:
         print(f"output_dir={output_dir} steps={steps}")
         self.trainer.accelerator.wait_for_everyone()
 
-        if is_rank0() and not dummy_config:
-            preproc_start = time.time()
-            if tune.preprocessing=='3':
-                print("Using preprocessing v3")
-                data_backend_config, resolution = create_data_config_v3(tune, output_dir)
-            elif tune.preprocessing=='2':
-                print("Using preprocessing v2")
-                data_backend_config, resolution = create_data_config_v2(tune, output_dir)
+        print(f"[GPU-{self.trainer.accelerator.process_index}] Waiting for preprocessing to finish...")
+        data_backend_config = None
+        if self.trainer.accelerator.is_main_process:
+            if not dummy_config:
+                version = getattr(tune, 'preprocessing', '2') # Default to v2
+                if version == '1':
+                    data_backend_config = run_v1_processing(tune, output_dir, self.preprocess_server_ports)
+                else: # v2 or v3
+                    data_backend_config = run_v2_v3_processing(tune, output_dir, version, self.preprocess_server_ports)
             else:
-                print("Using preprocessing v1")
-                data_backend_config, resolution = create_data_config_v1(tune, output_dir)
-            print('Finished preprocessing in', time.time() - preproc_start)
-        elif is_rank0() and dummy_config:
-            create_dummy_data_config(output_dir)
+                data_backend_config, _ = create_dummy_data_config(output_dir)
 
         # TODO
         resolution = 512
@@ -259,9 +202,8 @@ class Worker:
             tune.steps = 1
             steps = 1
 
-        if is_rank0():
-            print('Training with per GPU batch size of:', train_batch)
-            print('Effective batch size:', train_batch * NUM_GPUS)
+        print('Training with per GPU batch size of:', train_batch)
+        print('Effective batch size:', train_batch * NUM_GPUS)
 
         # Launching
         # export CUDA_VISIBLE_DEVICES="0,1"
@@ -349,7 +291,7 @@ class Worker:
             '--minimum_image_size=0',
             f'--resolution={resolution}',
             '--validation_resolution=1024x1024',
-            '--resolution_type=pixel_area',
+            '--resolution_type=pixel',
             '--checkpointing_steps', str(tune.checkpointing_steps or 1000),
             '--checkpoints_total_limit=10',
             '--validation_steps', str(tune.validation_steps) if tune.validation_steps else '5000',
@@ -375,18 +317,19 @@ class Worker:
 
     def run(self):
         self.trainer.run()
+        self.trainer.accelerator.wait_for_everyone()
 
-# PYTHONPATH=$PWD accelerate launch --gpu_ids 0 --mixed_precision=no --num_processes=1 --num_machines=1 --dynamo_backend=no  astria/worker.py
+
 if __name__ == "__main__":
     worker = Worker()
     start1 = time.time()
-    worker.setup_trainer(JOB_STR_3)
+    worker.setup_trainer(JOB_STR_HAIR)
     worker.run()
     end1 = time.time()
 
     start2 = time.time()
     worker.trainer.cleanup_for_next_lora()
-    worker.setup_trainer(JOB_STR_4)
+    worker.setup_trainer(JOB_STR_3)
     worker.run()
 
     if worker.trainer.accelerator.is_main_process:

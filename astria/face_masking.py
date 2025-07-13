@@ -35,10 +35,11 @@ from astria_utils import CACHE_DIR
 # 14: neck
 # 15: necklace
 # 16: cloth
-# 17: ??? (sometimes used for “hat,” depending on model)
+# 17: ??? (sometimes used for “hat,” or "hair," depending on model)
 # 18: ??? (sometimes used for “mask” or unknown region)
 BG_LABELS_WITH_NECK = [0, 7, 8, 9, 15, 16, 17, 18]
 BG_LABELS_NO_NECK = [0, 7, 8, 9, 14, 15, 16, 17, 18]
+BG_LABELS_WITH_NECK_AND_HAIR = [0, 7, 8, 15, 16, 18]
 
 # Example color palette for 19 classes (0..18).
 # You can pick any colors you like; these are just sample RGBs.
@@ -98,6 +99,16 @@ def visualize_parsing(parsing_map: np.ndarray, pil_image: Image.Image, alpha=0.5
     x_offset = 10
     box_size = 20
 
+    for label_id in np.unique(parsing_map):
+        ys, xs = np.where(parsing_map == label_id)
+        if ys.size == 0:
+            continue
+        y, x = int(ys.mean()), int(xs.mean())
+        # choose white or black text depending on underlying brightness
+        pixel = orig_np[y, x].mean()
+        text_color = (0,0,0) if pixel > 128 else (255,255,255)
+        draw.text((x, y), str(label_id), fill=text_color)
+
     for label_id, color in enumerate(LABEL_COLORS):
         # (1) Draw a small color box
         box_coords = [
@@ -145,6 +156,7 @@ class FaceMaskGenerator:
         pil_image: Image.Image,
         expansion_factor=0.35,
         include_neck=True,
+        include_hair=False,
     ) -> np.ndarray:
         """
         Detects the largest face in the image, parses it to get a binary mask
@@ -220,6 +232,8 @@ class FaceMaskGenerator:
         BG_LABELS = BG_LABELS_WITH_NECK
         if not include_neck:
             BG_LABELS = BG_LABELS_NO_NECK
+        if include_hair:
+            BG_LABELS = BG_LABELS_WITH_NECK_AND_HAIR
 
         mask_crop = np.full_like(parsing_map, 255, dtype=np.uint8)
         for bg_id in BG_LABELS:
@@ -233,22 +247,51 @@ class FaceMaskGenerator:
 
 
 if __name__ == '__main__':
-    """
-    Example usage:
-    -------------
-      1. Create the FaceMaskGenerator.
-      2. Load a PIL image.
-      3. Get the face mask.
-      4. Save or use it for blending.
-    """
+    # 1) Initialize the generator
     face_masker = FaceMaskGenerator(device='cuda')  # or 'cpu'
     
-    input_image = Image.open('astria_tests/fixtures/pexels-leonardo-goncalves-wild-1485542730-30569335.jpg')
-    mask = face_masker.get_face_mask(input_image)
-
-    # `mask` is now a numpy array (H, W) of 0 or 255.
-    # Save it with Pillow:
-    out_pil = Image.fromarray(mask)
-    out_pil.save('face_mask.png')
-
-    print("Mask saved to face_mask.png")
+    # 2) Load your input image
+    input_path = '/ephemeral-data/models/2821958-faces/ngy4w7ol8xyuwkdcvn9q0b7smtsg-center-crop.png'
+    pil_img = Image.open(input_path).convert("RGB")
+    
+    # 3) Run face detection + parsing
+    full_mask, parsing_map, face_crop_img = face_masker.get_face_mask(
+        pil_img,
+        include_neck=True,
+        include_hair=False,
+    )
+    
+    # 4) Visualize the parsing on the cropped face region
+    debug_vis = visualize_parsing(
+        parsing_map,
+        face_crop_img,
+        alpha=0.6
+    )
+    debug_vis.save("parsing_debug.png")
+    debug_vis.show()
+    print("Saved visualization to parsing_debug.png")
+    
+    # 5) Now produce versions with different BG_LABELS masked out
+    bg_variants = {
+        "with_neck": BG_LABELS_WITH_NECK,
+        "no_neck": BG_LABELS_NO_NECK,
+        "with_neck_and_hair": BG_LABELS_WITH_NECK_AND_HAIR,
+    }
+    
+    # Convert the PIL crop to a NumPy array once
+    crop_np = np.array(face_crop_img)
+    Hc, Wc = parsing_map.shape
+    
+    for variant, bg_labels in bg_variants.items():
+        # build a boolean mask: True where label is background
+        bg_mask = np.isin(parsing_map, bg_labels)
+        
+        # apply: zero out background pixels
+        out_np = crop_np.copy()
+        out_np[bg_mask] = 0
+        
+        # save
+        out_pil = Image.fromarray(out_np)
+        fname = f"mask_{variant}.png"
+        out_pil.save(fname)
+        print(f"Saved masked face ({variant}) to {fname}")
