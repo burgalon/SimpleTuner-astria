@@ -69,6 +69,198 @@
     "prompts": []
   },
   {
+    "id": 992696107,
+    "name": "man",
+    "created_at": "2025-06-04T09:43:33.158Z",
+    "updated_at": "2025-07-06T05:58:25.669Z",
+    "user_id": 2,
+    "trained_at": "2025-06-04T09:53:50.044Z",
+    "started_training_at": "2025-07-06T05:58:25.669Z",
+    "steps": 300,
+    "title": "alon Jun/2026",
+    "branch": "wan-t2v-14b",
+    "callback": null,
+    "process_ip": "akash-22266362-0",
+    "trials": 183,
+    "num_prompts": 0,
+    "is_api": false,
+    "base_tune_id": null,
+    "token": "ohwx",
+    "args": "learning_rate=5e-4 lora_rank=16 lora_alpha=16 train_batch=4 lr_scheduler=polynomial segmentation=1 only_face=true wan_lora_target=attention",
+    "cost": null,
+    "expires_at": "2025-08-03T09:53:50.044Z",
+    "emailed_notice": false,
+    "public_at": null,
+    "face_crop": true,
+    "checkpoint_deleted": false,
+    "checkpoint_deleted_at": null,
+    "failed_at": null,
+    "model_type": "lora",
+    "sha256": null,
+    "model_url": null,
+    "description_url": null,
+    "cost_mc": 150000,
+    "training_face_correct": false,
+    "eta": "2025-06-04T09:53:33.943Z",
+    "base_pack_id": null,
+    "characteristics": null,
+    "prompts_callback": null,
+    "auto_extend": false,
+    "orig_images": [
+      "https://sdbooth2-production.s3.amazonaws.com/wd67ld1jyafk3t580cc4s47itzo6",
+      "https://sdbooth2-production.s3.amazonaws.com/t95eam4wepwm4xl2ejt9q3w9plvs",
+      "https://sdbooth2-production.s3.amazonaws.com/66jfb0q1z7zhyb16yw0ornjqny7y",
+      "https://sdbooth2-production.s3.amazonaws.com/oz7g51yxnau490lakgau2o1b70nq"
+    ],
+    "file_names": [
+      {
+        "filename": "lueurph70qqzuqs7zl399mbrqsx1.jpg",
+        "url": "https://sdbooth2-production.s3.amazonaws.com/wd67ld1jyafk3t580cc4s47itzo6"
+      },
+      {
+        "filename": "tqqaynhcu3ne5onxg1jsrqpvtzv4.jpg",
+        "url": "https://sdbooth2-production.s3.amazonaws.com/t95eam4wepwm4xl2ejt9q3w9plvs"
+      },
+      {
+        "filename": "66gr44co9wa17nis5l5dnt3mg7gl.jpg",
+        "url": "https://sdbooth2-production.s3.amazonaws.com/66jfb0q1z7zhyb16yw0ornjqny7y"
+      },
+      {
+        "filename": "mlgrx6bfadoo20c17oj8u50h70ol.jpg",
+        "url": "https://sdbooth2-production.s3.amazonaws.com/oz7g51yxnau490lakgau2o1b70nq"
+      }
+    ],
+    "resolution": null,
+    "user": {
+      "create_ckpt": false,
+      "backend_version": null
+    },
+    "prompts": []
+  },
+  {
+    "id": 991858416,
+    "name": "woman",
+    "created_at": "2024-12-03T08:40:18.994Z",
+    "updated_at": "2024-12-11T12:27:23.064Z",
+    "user_id": 2,
+    "trained_at": "2024-12-06T09:36:00.000Z",
+    "started_training_at": "2024-12-11T12:27:23.063Z",
+    "steps": 305,
+    "title": "irit preset=portrait",
+    "branch": "wan-t2v-14b",
+    "callback": null,
+    "process_ip": "akash-19180702-0",
+    "trials": 19,
+    "num_prompts": 0,
+    "is_api": false,
+    "base_tune_id": null,
+    "token": "ohwx",
+    "args": "learning_rate=5e-4 lora_rank=16 lora_alpha=16 train_batch=4 lr_scheduler=polynomial preprocessing=2",
+    "cost": null,
+    "expires_at": "2025-01-05T09:36:00.000Z",
+    "emailed_notice": false,
+    "public_at": null,
+    "face_crop": true,
+    "checkpoint_deleted": false,
+    "checkpoint_deleted_at": null,
+    "failed_at": "2024-12-03T10:20:01.543Z",
+    "model_type": "lora",
+    "sha256": "",
+    "model_url": "",
+    "description_url": "",
+    "cost_mc": 0,
+    "training_face_correct": false,
+    "eta": "2024-12-06T10:00:55.196Z",
+    "base_pack_id": null,
+    "characteristics": null,
+    "prompts_callback": null,
+    "orig_images": [
+      "https://sdbooth2-production.s3.amazonaws.com/jwaiky6g9b0ryqadm9gryz6wkykg",
+      "https://sdbooth2-production.s3.amazonaws.com/uhtm480bwovnt4yi92eswipcjwqj",
+      "https://sdbooth2-production.s3.amazonaws.com/hn2s2c5y461a5ve6y1266xgcc04c",
+      "https://sdbooth2-production.s3.amazonaws.com/4skf7x147wrf9hjp61t8nvmrn9kj",
+      "https://sdbooth2-production.s3.amazonaws.com/7jfx87xfrsl9hpp1jiiw3i2l440s",
+      "https://sdbooth2-production.s3.amazonaws.com/37ebu983vz9kyeecjsg82f3wj23c",
+      "https://sdbooth2-production.s3.amazonaws.com/cnt2pm2k4lg4933uy1w90fdr2jth",
+      "https://sdbooth2-production.s3.amazonaws.com/6weh50yrdjly9utdwekemdmupocq",
+      "https://sdbooth2-production.s3.amazonaws.com/bj8w0bwbrurt5cqzhsp99x27ffjc",
+      "https://sdbooth2-production.s3.amazonaws.com/nvtmizkfjqh1hyfrgsjwoqq09zle",
+      "https://sdbooth2-production.s3.amazonaws.com/4xvtx0n6529m6t8qhbzaz9xmekul",
+      "https://sdbooth2-production.s3.amazonaws.com/602vsmswolbe9k2xde1if8uc0is4",
+      "https://sdbooth2-production.s3.amazonaws.com/jn5ca51yn64u8mpx0eieqyeh3kid",
+      "https://sdbooth2-production.s3.amazonaws.com/fiwba1158oocltizejyff86duhn9",
+      "https://sdbooth2-production.s3.amazonaws.com/oomcupi58rxezfthrcx5d3oljj8x"
+    ],
+    "file_names": [
+      {
+        "filename": "ohwx (5).png",
+        "url": "https://sdbooth2-production.s3.amazonaws.com/jwaiky6g9b0ryqadm9gryz6wkykg"
+      },
+      {
+        "filename": "ohwx (15).JPG",
+        "url": "https://sdbooth2-production.s3.amazonaws.com/uhtm480bwovnt4yi92eswipcjwqj"
+      },
+      {
+        "filename": "ohwx (8).jpg",
+        "url": "https://sdbooth2-production.s3.amazonaws.com/hn2s2c5y461a5ve6y1266xgcc04c"
+      },
+      {
+        "filename": "ohwx (6).jpg",
+        "url": "https://sdbooth2-production.s3.amazonaws.com/4skf7x147wrf9hjp61t8nvmrn9kj"
+      },
+      {
+        "filename": "ohwx (7).jpg",
+        "url": "https://sdbooth2-production.s3.amazonaws.com/7jfx87xfrsl9hpp1jiiw3i2l440s"
+      },
+      {
+        "filename": "ohwx (1).jpg",
+        "url": "https://sdbooth2-production.s3.amazonaws.com/37ebu983vz9kyeecjsg82f3wj23c"
+      },
+      {
+        "filename": "ohwx (9).jpg",
+        "url": "https://sdbooth2-production.s3.amazonaws.com/cnt2pm2k4lg4933uy1w90fdr2jth"
+      },
+      {
+        "filename": "ohwx (14).jpg",
+        "url": "https://sdbooth2-production.s3.amazonaws.com/6weh50yrdjly9utdwekemdmupocq"
+      },
+      {
+        "filename": "ohwx (12).jpg",
+        "url": "https://sdbooth2-production.s3.amazonaws.com/bj8w0bwbrurt5cqzhsp99x27ffjc"
+      },
+      {
+        "filename": "ohwx (11).jpg",
+        "url": "https://sdbooth2-production.s3.amazonaws.com/nvtmizkfjqh1hyfrgsjwoqq09zle"
+      },
+      {
+        "filename": "ohwx (3).jpg",
+        "url": "https://sdbooth2-production.s3.amazonaws.com/4xvtx0n6529m6t8qhbzaz9xmekul"
+      },
+      {
+        "filename": "ohwx (10).jpg",
+        "url": "https://sdbooth2-production.s3.amazonaws.com/602vsmswolbe9k2xde1if8uc0is4"
+      },
+      {
+        "filename": "ohwx (4).jpg",
+        "url": "https://sdbooth2-production.s3.amazonaws.com/jn5ca51yn64u8mpx0eieqyeh3kid"
+      },
+      {
+        "filename": "ohwx (2).jpg",
+        "url": "https://sdbooth2-production.s3.amazonaws.com/fiwba1158oocltizejyff86duhn9"
+      },
+      {
+        "filename": "ohwx (13).jpg",
+        "url": "https://sdbooth2-production.s3.amazonaws.com/oomcupi58rxezfthrcx5d3oljj8x"
+      }
+    ],
+    "resolution": null,
+    "user": {
+      "create_ckpt": false,
+      "backend_version": null
+    },
+    "prompts": []
+  },
+  {
     "id": 1815518,
     "name": "man",
     "created_at": "2024-11-16T15:28:28.283Z",

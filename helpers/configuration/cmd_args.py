@@ -206,6 +206,18 @@ def get_argument_parser():
         ),
     )
     parser.add_argument(
+        "--wan_lora_target",
+        type=str,
+        choices=[
+            "all",
+            "portrait",
+        ],
+        default="all",
+        help=(
+            "This option only applies to Standard LoRA, not Lycoris. wan has single and joint attention blocks."
+        ),
+    )
+    parser.add_argument(
         "--flow_sigmoid_scale",
         type=float,
         default=1.0,
@@ -2779,7 +2791,7 @@ def parse_cmdline_args(input_args=None, exit_on_error: bool = False):
         )
 
     if args.validation_guidance_skip_layers is not None:
-        if args.model_family not in ["sd3", "wan"]:
+        if args.model_family not in ["sd3", "wan", "wan_t2i"]:
             raise ValueError(
                 "Currently, skip-layer guidance is not supported for {}".format(
                     args.model_family

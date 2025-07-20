@@ -58,6 +58,7 @@ env_to_args_map = {
     "LR_END": "--lr_end",
     "FLUX_GUIDANCE_VALUE": "--flux_guidance_value",
     "FLUX_LORA_TARGET": "--flux_lora_target",
+    "WAN_LORA_TARGET": "--wan_lora_target",
     "VALIDATION_NEGATIVE_PROMPT": "--validation_negative_prompt",
     "METADATA_UPDATE_INTERVAL": "--metadata_update_interval",
     "READ_BATCH_SIZE": "--read_batch_size",

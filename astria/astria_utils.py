@@ -237,6 +237,16 @@ def download_model_from_server(model_name: str, convert_xl_to_diffusers = True):
                               )
             Path(f"{model_path}/do_not_delete").touch()
         return model_path
+    if model_name == "wan-t2v-14b":
+        model_path = f"{MODELS_DIR}/{model_name}"
+        if not os.path.exists(model_path):
+            from huggingface_hub import snapshot_download
+            snapshot_download('Wan-AI/Wan2.1-T2V-14B-Diffusers',
+                local_dir=model_path
+            )
+            Path(f"{model_path}/do_not_delete").touch()
+        Path(f"{model_path}/do_not_delete").touch()
+        return model_path
     raise NotImplementedError(f"model_name={model_name}")
 
 

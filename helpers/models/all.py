@@ -5,6 +5,7 @@ from helpers.models.sdxl.model import SDXL
 from helpers.models.kolors.model import Kolors
 from helpers.models.flux.model import Flux
 from helpers.models.wan.model import Wan
+from helpers.models.wan_t2i.model import Wan as WanT2I
 from helpers.models.ltxvideo.model import LTXVideo
 from helpers.models.sd1x.model import StableDiffusion1, StableDiffusion2
 from helpers.models.pixart.model import PixartSigma
@@ -24,6 +25,7 @@ model_families = {
     "kolors": Kolors,
     "flux": Flux,
     "wan": Wan,
+    "wan_t2i": WanT2I,
     "ltxvideo": LTXVideo,
     "pixart_sigma": PixartSigma,
     "omnigen": OmniGen,

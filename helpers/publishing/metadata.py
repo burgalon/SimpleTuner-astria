@@ -377,7 +377,7 @@ def _model_card_family_tag(model_family: str):
     if model_family == "ltxvideo":
         # the hub has a hyphen.
         return "ltx-video"
-    if model_family == "wan":
+    if model_family == "wan" or model_family == "wan_t2i":
         return "WanPipeline"
     return model_family
 

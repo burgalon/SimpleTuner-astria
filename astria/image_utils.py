@@ -6,6 +6,7 @@ import pillow_avif
 from pillow_heif import register_heif_opener
 register_heif_opener()
 
+import imageio.v2 as iio
 import os
 import cv2
 import numpy as np
@@ -158,3 +159,20 @@ def load_image(image: Union[str, PIL.Image.Image], convert = 'RGB') -> PIL.Image
 
 def save_img(image: Image, fn: str, format="PNG") -> str:
     return image.save(fn, format=format, optimize=False, compression=0)
+
+
+def save_img_as_video(image: Image, fn: str) -> str:
+    frame = np.array(image)  # (H, W, 3), uint8
+
+    writer = iio.get_writer(
+        fn,
+        fps=1,                # 1 frame → 1s duration
+        codec='libx264',      # H.264
+        ffmpeg_params=[
+            '-crf', '0',
+            '-pix_fmt', 'yuv444p'
+        ],
+    )
+    writer.append_data(frame)
+    writer.close()
+    return fn

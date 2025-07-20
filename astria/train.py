@@ -22,6 +22,7 @@ from sig_listener import is_terminated
 from download_training_v1 import create_data_config_v1
 from download_training_v2 import create_data_config_v2
 from download_training_v3 import create_data_config_v3
+from download_training_wan_t2i import create_data_config_wan
 
 GPU_MEMORY_GB = torch.cuda.get_device_properties(0).total_memory / 1024**3
 
@@ -40,7 +41,8 @@ def create_prompt_library(tune: JsonObj, output_dir: str):
             "city": f"A detailed, high-quality photo of an {tune.token} {tune.name} wearing a quarter-zip sweater, making eye-contact with the camera and striking a natural pose. The photo is shot with an 85mm lens at f/1.8 with a Canon 5D camera and ZEISS lens, taken in a vibrant urban city setting. Use a shallow depth of field and bright, natural lighting to focus attention on the subject",
             # "flowers": f"{tune.name} holding flowers, red sweater, studio photography, plain white background",
             # "ohwx_rembrandt": f"a portrait of {tune.token} {tune.name} in the style of Rembrandt",
-            # "rembrandt": f"a portrait of {tune.name} in the style of Rembrandt",
+            "rembrandt": f"a portrait of {tune.name} in the style of Rembrandt",
+            "horse": f"A detailed, high-quality photo of an {tune.token} {tune.name} riding a horse in the desert, buildings behind him are on fire, it's night time",
         }
     elif tune.name == 'girl':
         data = {
@@ -158,8 +160,20 @@ def download_dev2pro():
 def train_no_catch(tune: JsonObj):
     cleanup_models()
     parse_args(tune)
+
     # Download base model flux from huggingface hub
-    model_path = download_model_from_server(f"{tune.base_tune_id}-{tune.branch}")
+    print('TUNE MODELS', tune.base_tune_id, tune.branch)
+    if tune.base_tune_id is not None:
+        model_path = download_model_from_server(f"{tune.base_tune_id}-{tune.branch}")
+    else:
+        print('DOWNLOADING tune.branch')
+        model_path = download_model_from_server(tune.branch)
+
+    if tune.branch == "wan-t2v-14b":
+        tune.model_family = "wan_t2i"
+        tune.preprocessing = "wan_t2i"
+        tune.gradient_checkpointing = True
+
     timestamp = time.strftime("%Y%m%d-%H%M%S")
 
     cleanup_directory(EPHEMERAL_MODELS_DIR)
@@ -195,6 +209,9 @@ def train_no_catch(tune: JsonObj):
     elif tune.preprocessing=='2':
         print("Using preprocessing v2")
         data_backend_config, resolution = create_data_config_v2(tune, output_dir)
+    elif tune.preprocessing=='wan_t2i':
+        print("Using preprocessing wan")
+        data_backend_config, resolution = create_data_config_wan(tune, output_dir)
     else:
         print("Using preprocessing v1")
         data_backend_config, resolution = create_data_config_v1(tune, output_dir)
@@ -218,7 +235,7 @@ def train_no_catch(tune: JsonObj):
     os.environ['DEBUG_LOG_FILENAME'] = f"{output_dir}/debug.log"
     os.environ['WANDB_DIR'] = output_dir
     os.environ['TORCHINDUCTOR_CACHE_DIR'] = "/data/cache/torchinductor_cache"
-    if tune.preprocessing=='2' or tune.preprocessing=='3':
+    if tune.preprocessing != '1':
         tail_lines = run_with_output([
             'accelerate',
             'launch',
@@ -261,11 +278,13 @@ def train_no_catch(tune: JsonObj):
             *([f'--max_grad_norm={tune.max_grad_norm}'] if tune.max_grad_norm else []),
             f'--optimizer={tune.optimizer or "adamw"}', # previously, adamw_bf16
             f'--lora_type', tune.lora_type or 'standard',
+            # '--validation_on_startup',
             '--init_lokr_norm', str(tune.init_lokr_norm or 1e-3),
             # "--lycoris_config=config/lycoris_config.json",
             f'--learning_rate={tune.learning_rate or 1e-4}',
             '--lr_scheduler', tune.lr_scheduler or 'constant_with_warmup',
             '--seed=42',
+            '--grad_clip_method=norm',
             '--lr_warmup_steps=10',
             '--output_dir', output_dir,
             # '--inference_scheduler_timestep_spacing=trailing', # defaults
@@ -284,7 +303,7 @@ def train_no_catch(tune: JsonObj):
             f'--lora_rank={tune.lora_rank or 64}',
             f'--lora_alpha={tune.lora_alpha or 64}',
             *(['--user_prompt_library', create_prompt_library(tune, output_dir)] if tune.report_to else []),
-            '--model_family=flux',
+            f'--model_family={tune.model_family or "flux"}',
             f'--train_batch={train_batch}',
             # '--max_workers=1',
             # '--read_batch_size=1',
@@ -297,7 +316,7 @@ def train_no_catch(tune: JsonObj):
             # '--image_processing_batch_size=32',
             # '--vae_batch_size=1',
             # '--validation_prompt="ohwx woman holding flowers, red sweater, studio photography, plain white background"',
-            *(['--flow_schedule_auto_shift'] if tune.flux_schedule_auto_shift else []),
+            # *(['--flow_schedule_auto_shift'] if tune.flux_schedule_auto_shift else []),
             '--flow_schedule_shift', str(tune.flux_schedule_shift if tune.flux_schedule_shift is not None else 0),
             '--num_validation_images=1',
             '--validation_num_inference_steps=28',
@@ -349,6 +368,7 @@ def train_no_catch(tune: JsonObj):
             *(['--use_prodigy_optimizer'] if tune.optimizer=='prodigy' else []),
             # ["mmdit", "context", "all"]
             *([f'--flux_lora_target={tune.flux_lora_target}'] if tune.flux_lora_target else []),
+            *([f'--wan_lora_target={tune.wan_lora_target}'] if tune.wan_lora_target else []),
             f'--learning_rate={tune.learning_rate or 1e-4}',
             '--lr_scheduler=constant_with_warmup',
             '--seed=42',

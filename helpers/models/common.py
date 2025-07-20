@@ -1776,3 +1776,60 @@ class VideoModelFoundation(ImageModelFoundation):
         # B, F, C, H, W = tensor.shape
         # return tensor.view(B * F, C, H, W)
         return tensor
+
+
+class VideoImageModelFoundation(ImageModelFoundation):
+    """
+    Base class for video models. Provides default 5D handling and optional
+    text encoder instantiation. The actual text encoder classes and their
+    attributes can be stored in a hardcoded dict if needed. This base class
+    does not do it by default.
+    """
+
+    def __init__(self, config, accelerator):
+        """
+        :param config: The training configuration object/dict.
+        """
+        super().__init__(config, accelerator)
+        self.config = config
+        # Optionally, store or initialize text encoders here.
+        # But do NOT automatically do it unless your code requires it.
+
+        # For example, if you have a dictionary of text-encoder descriptors:
+        # self.text_encoders = {
+        #     "encoder1": {"class": MyTextEncoderClass, "attr_name": "text_encoder_1"},
+        #     "encoder2": {"class": AnotherTextEncoder, "attr_name": "text_encoder_2"},
+        # }
+        # The trainer or child class might call self._init_text_encoders() at the right time.
+
+    def get_transforms(self, dataset_type: str = "image"):
+        return transforms.Compose(
+            [
+                VideoToTensor() if dataset_type == "video" else transforms.ToTensor(),
+            ]
+        )
+
+    def expand_sigmas(self, batch):
+        if len(batch["latents"].shape) == 5:
+            # ltxvideo and others with 5D tensors need expansion to match dims here i think
+            logger.debug(
+                f"Latents shape vs sigmas, timesteps: {batch['latents'].shape}, {batch['sigmas'].shape}, {batch['timesteps'].shape}"
+            )
+            batch["sigmas"] = batch["sigmas"].reshape(
+                batch["latents"].shape[0], 1, 1, 1, 1
+            )
+
+    def apply_i2v_augmentation(self, batch):
+        pass
+
+    def prepare_5d_inputs(self, tensor):
+        """
+        Example method to handle default 5D shape. The typical shape might be:
+        (batch_size, frames, channels, height, width).
+
+        You can reshape or permute as needed for the underlying model.
+        """
+        # Pseudocode for typical flattening:
+        # B, F, C, H, W = tensor.shape
+        # return tensor.view(B * F, C, H, W)
+        return tensor

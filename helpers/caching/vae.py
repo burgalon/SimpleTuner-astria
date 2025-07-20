@@ -21,7 +21,7 @@ from hashlib import sha256
 from helpers.training import image_file_extensions
 from helpers.webhooks.mixin import WebhookMixin
 from helpers.models.ltxvideo import normalize_ltx_latents
-from helpers.models.wan import compute_wan_posterior
+from helpers.models.wan_t2i import compute_wan_posterior
 
 logger = logging.getLogger("VAECache")
 logger.setLevel(os.environ.get("SIMPLETUNER_LOG_LEVEL", "INFO"))
@@ -315,7 +315,7 @@ class VAECache(WebhookMixin):
             from diffusers import AutoencoderDC as AutoencoderClass
         elif StateTracker.get_args().model_family == "ltxvideo":
             from diffusers import AutoencoderKLLTXVideo as AutoencoderClass
-        elif StateTracker.get_args().model_family == "wan":
+        elif StateTracker.get_args().model_family == "wan" or StateTracker.get_args().model_family == "wan_t2i":
             from diffusers import AutoencoderKLWan as AutoencoderClass
         else:
             from diffusers import AutoencoderKL as AutoencoderClass
@@ -480,7 +480,7 @@ class VAECache(WebhookMixin):
         return relevant_files
 
     def prepare_video_latents(self, samples):
-        if StateTracker.get_model_family() in ["ltxvideo", "wan"]:
+        if StateTracker.get_model_family() in ["ltxvideo", "wan", "wan_t2i"]:
             if samples.ndim == 4:
                 original_shape = samples.shape
                 samples = samples.unsqueeze(2)
@@ -537,7 +537,7 @@ class VAECache(WebhookMixin):
             logger.debug(f"Video latent processing results: {output_cache_entry}")
             # we'll now overwrite the latents after logging.
             output_cache_entry["latents"] = latents_uncached
-        elif StateTracker.get_model_family() in ["wan"]:
+        elif StateTracker.get_model_family() in ["wan", "wan_t2i"]:
             logger.debug(
                 f"Shape for Wan VAE encode: {latents_uncached.shape} with latents_mean: {self.vae.latents_mean} and latents_std: {self.vae.latents_std}"
             )
@@ -656,7 +656,7 @@ class VAECache(WebhookMixin):
                 latents_uncached = self.vae.encode(processed_images)
 
                 # For Wan, get the raw parameters (32 channels)
-                if StateTracker.get_model_family() in ["wan", "cosmos2image"]:
+                if StateTracker.get_model_family() in ["wan", "wan_t2i", "cosmos2image"]:
                     if hasattr(latents_uncached, "latent_dist"):
                         # This is 32 channels (mu + logvar)
                         latents_uncached = latents_uncached.latent_dist.parameters
@@ -737,6 +737,7 @@ class VAECache(WebhookMixin):
                 raise ValueError(
                     f"Unknown handler for latent encoding type: {type(latents_uncached)}"
                 )
+
         return latents
 
     def _write_latents_in_batch(self, input_latents: list = None):

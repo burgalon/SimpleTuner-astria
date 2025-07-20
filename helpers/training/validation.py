@@ -10,7 +10,7 @@ import sys
 import numpy as np
 from tqdm import tqdm
 from helpers.training.wrappers import unwrap_model
-from helpers.models.common import VideoModelFoundation, ImageModelFoundation
+from helpers.models.common import VideoModelFoundation, ImageModelFoundation, VideoImageModelFoundation
 from helpers.models.common import ModelFoundation
 
 try:
@@ -1188,6 +1188,10 @@ class Validation:
             if distillation_scheduler is not None:
                 self.model.pipeline.scheduler = distillation_scheduler
                 return distillation_scheduler
+            
+        if isinstance(self.model, VideoImageModelFoundation):
+            return self.model.pipeline.scheduler
+
         scheduler_args = {
             "prediction_type": self.config.prediction_type,
         }
