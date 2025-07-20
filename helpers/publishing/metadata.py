@@ -519,8 +519,8 @@ The text encoder {'**was**' if train_text_encoder else '**was not**'} trained.
   - Number of GPUs: {StateTracker.get_accelerator().num_processes}
 - Gradient checkpointing: {StateTracker.get_args().gradient_checkpointing}
 - Prediction type: {model.PREDICTION_TYPE.value}{model.custom_model_card_schedule_info()}
-- Optimizer: {StateTracker.get_args().optimizer}{optimizer_config if optimizer_config is not None else ''}
-- Trainable parameter precision: {'Pure BF16' if torch.backends.mps.is_available() or StateTracker.get_args().mixed_precision == "bf16" else 'FP32'}
+- Optimizer: {StateTracker.get_args().optimizer}{f' (config={optimizer_config})' if optimizer_config is not None else ''}
+- Trainable parameter precision: {'Pure BF16' if torch.backends.mps.is_available() or StateTracker.get_args().mixed_precision == "bf16" else StateTracker.get_args().mixed_precision}
 - Base model precision: `{args.base_model_precision}`
 - Caption dropout probability: {StateTracker.get_args().caption_dropout_probability or 0.0 * 100}%
 {'- Xformers: Enabled' if StateTracker.get_args().attention_mechanism == 'xformers' else ''}
