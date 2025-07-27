@@ -329,7 +329,7 @@ def train_no_catch(tune: JsonObj):
             '--checkpoints_total_limit=10',
             '--validation_steps', str(tune.validation_steps) if tune.validation_steps else '5000',
             f'--tracker_run_name={tune.id}-{tune.branch}-{os.environ.get("TRACKER_NAME", timestamp)} {tune.title} {tune.args}',
-            # *(['--evaluation_type=face'] if tune.report_to and tune.face_crop else []),
+            *(['--evaluation_type=face'] if tune.report_to and tune.face_crop else []),
             '--tracker_project_name=flux-lora',
             '--validation_guidance=3.5',
             '--validation_guidance_rescale=0.0',

@@ -1253,7 +1253,20 @@ class Trainer:
             from helpers.training.validation import Evaluation
 
             self.evaluation = Evaluation(accelerator=self.accelerator)
-        model_evaluator = ModelEvaluator.from_config(args=self.config)
+
+        first_backend_key = sorted(list(
+            filter(
+                lambda name: 'mask' not in name,
+                StateTracker.get_data_backends().keys(),
+            )))[0]
+        imgs_eval = StateTracker.get_image_files(
+            data_backend_id=first_backend_key,
+        )
+
+        model_evaluator = ModelEvaluator.from_config(
+            args=self.config,
+            baseline_images=imgs_eval,
+        )
         self.validation = Validation(
             trainable_parameters=self._get_trainable_parameters,
             accelerator=self.accelerator,
