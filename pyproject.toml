@@ -76,6 +76,9 @@ dependencies = [
     "hf-xet>=1.1.5,<2",
     "nvidia-cudnn-cu12",
     "nvidia-nccl-cu12",
+    "hf-xet>=1.1.5",
+    "peft-singlora>=0.2.0",
+    "pillow-jxl-plugin==1.3.1",
 ]
 
 [dependency-groups]

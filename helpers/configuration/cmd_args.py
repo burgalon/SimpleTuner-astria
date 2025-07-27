@@ -26,36 +26,34 @@ from helpers.models.all import (
 model_family_choices = list(model_families.keys())
 
 logger = logging.getLogger("ArgsParser")
-# Are we the primary process?
-is_primary_process = True
-if os.environ.get("RANK") is not None:
-    if int(os.environ.get("RANK")) != 0:
-        is_primary_process = False
-logger.setLevel(
-    os.environ.get("SIMPLETUNER_LOG_LEVEL", "INFO" if is_primary_process else "ERROR")
-)
+from helpers.training.multi_process import should_log
+
+if should_log():
+    logger.setLevel(os.environ.get("SIMPLETUNER_LOG_LEVEL", "INFO"))
+else:
+    logger.setLevel("ERROR")
 
 if torch.cuda.is_available():
     os.environ["NCCL_SOCKET_NTIMEO"] = "2000000"
 
 
 def print_on_main_thread(message):
-    if is_primary_process:
+    if should_log():
         print(message)
 
 
 def info_log(message):
-    if is_primary_process:
+    if should_log():
         logger.info(message)
 
 
 def warning_log(message):
-    if is_primary_process:
+    if should_log():
         logger.warning(message)
 
 
 def error_log(message):
-    if is_primary_process:
+    if should_log():
         logger.error(message)
 
 
@@ -185,6 +183,7 @@ def get_argument_parser():
             "tiny",
             "nano",
             # control / controlnet
+            "controlnet",
             "all+ffs+embedder",
             "all+ffs+embedder+controlnet",
             "84",
@@ -403,6 +402,25 @@ def get_argument_parser():
         help=(
             "When training using --model_type=lora, you may specify a different type of LoRA to train here."
             " standard refers to training a vanilla LoRA via PEFT, lycoris refers to training with KohakuBlueleaf's library of the same name."
+        ),
+    )
+    parser.add_argument(
+        "--peft_lora_mode",
+        type=str.lower,
+        choices=["standard", "singlora"],
+        default="standard",
+        help=(
+            "When training using --model_type=lora, you may specify a different type of LoRA to train here."
+            " standard refers to training a vanilla LoRA via PEFT, singlora refers to training with SingLoRA, a more efficient representation."
+        ),
+    )
+    parser.add_argument(
+        "--singlora_ramp_up_steps",
+        type=int,
+        default=0,
+        help=(
+            "When using SingLoRA, this specifies the number of ramp-up steps."
+            " For diffusion models, it seems that ramp-up steps are harmful to training. (default: 0)"
         ),
     )
     parser.add_argument(

@@ -69,3 +69,5 @@ images/
 datasets/
 
 astria/ragdiffusion/editor/node_modules/
+.test_runner_state
+.test_runner_state.json

@@ -30,13 +30,13 @@ from torchvision import transforms
 from PIL import Image
 
 logger = logging.getLogger(__name__)
-is_primary_process = True
-if os.environ.get("RANK") is not None:
-    if int(os.environ.get("RANK")) != 0:
-        is_primary_process = False
-logger.setLevel(
-    os.environ.get("SIMPLETUNER_LOG_LEVEL", "INFO") if is_primary_process else "ERROR"
-)
+from helpers.training.multi_process import should_log
+
+if should_log():
+    logger.setLevel(os.environ.get("SIMPLETUNER_LOG_LEVEL", "INFO"))
+else:
+    logger.setLevel("ERROR")
+
 
 flow_matching_model_families = ["flux", "sana", "ltxvideo", "wan", "sd3"]
 upstream_config_sources = {
@@ -110,6 +110,7 @@ class ModelFoundation(ABC):
 
     MODEL_LICENSE = "other"
     CONTROLNET_LORA_STATE_DICT_PREFIX = "controlnet"
+    MAXIMUM_CANVAS_SIZE = None
 
     def __init__(self, config: dict, accelerator):
         self.config = config
@@ -484,9 +485,9 @@ class ModelFoundation(ABC):
         Moves the model to the target device.
         """
         if self.model is not None:
-            self.model.to(target_device)
+            self.unwrap_model(model=self.model).to(target_device)
         if self.controlnet is not None:
-            self.controlnet.to(target_device)
+            self.unwrap_model(model=self.controlnet).to(target_device)
         if self.vae is not None and self.vae.device != "meta":
             self.vae.to(target_device)
         if self.text_encoders is not None:
@@ -532,10 +533,6 @@ class ModelFoundation(ABC):
                     **self.config.vae_kwargs
                 )
             except Exception as e:
-                logger.warning(
-                    "Couldn't load VAE with default path. Trying without a subfolder.."
-                )
-                logger.error(e)
                 self.config.vae_kwargs["subfolder"] = None
                 self.vae = self.AUTOENCODER_CLASS.from_pretrained(
                     **self.config.vae_kwargs
@@ -832,7 +829,7 @@ class ModelFoundation(ABC):
                 self.model, "set_gradient_checkpointing_interval"
             ):
                 logger.info("Setting gradient checkpointing interval..")
-                self.model.set_gradient_checkpointing_interval(
+                self.unwrap_model(model=self.model).set_gradient_checkpointing_interval(
                     int(self.config.gradient_checkpointing_interval)
                 )
         self.fuse_qkv_projections()
@@ -917,7 +914,7 @@ class ModelFoundation(ABC):
                 setattr(
                     active_pipelines[pipeline_type],
                     "controlnet",
-                    self.controlnet,
+                    self.unwrap_model(model=self.controlnet),
                 )
             return active_pipelines[pipeline_type]
 
@@ -992,7 +989,11 @@ class ModelFoundation(ABC):
             and getattr(possibly_cached_pipeline, self.MODEL_TYPE.value, None) is None
         ):
             # if the transformer or unet aren't in the cached pipeline, we'll add it.
-            setattr(possibly_cached_pipeline, self.MODEL_TYPE.value, self.model)
+            setattr(
+                possibly_cached_pipeline,
+                self.MODEL_TYPE.value,
+                self.unwrap_model(model=self.model),
+            )
         # attach the vae to the cached pipeline.
         setattr(possibly_cached_pipeline, "vae", self.get_vae())
         if self.text_encoders is not None:
@@ -1634,7 +1635,20 @@ class ImageModelFoundation(ModelFoundation):
             )
         else:
             # Standard LoRA for everything else
-            self.lora_config = LoraConfig(
+            lora_config_cls = LoraConfig
+            lora_config_kwargs = {}
+            if self.config.peft_lora_mode is not None:
+                if self.config.peft_lora_mode.lower() == "singlora":
+                    from peft_singlora import setup_singlora, SingLoRAConfig
+
+                    lora_config_cls = SingLoRAConfig
+                    lora_config_kwargs = {
+                        "ramp_up_steps": self.config.singlora_ramp_up_steps or 100,
+                    }
+
+                    logger.info("Enabling SingLoRA for LoRA training.")
+                    setup_singlora()
+            self.lora_config = lora_config_cls(
                 r=self.config.lora_rank,
                 lora_alpha=(
                     self.config.lora_alpha
@@ -1646,6 +1660,7 @@ class ImageModelFoundation(ModelFoundation):
                 target_modules=target_modules,
                 modules_to_save=save_modules,
                 use_dora=self.config.use_dora,
+                **lora_config_kwargs,
             )
 
         # Apply adapter

@@ -91,11 +91,14 @@ def prompt_library_injection(new_prompts: dict) -> dict:
 
 import logging
 from helpers.data_backend.base import BaseDataBackend
+from helpers.training.multi_process import _get_rank
 from tqdm import tqdm
 import os
 
 logger = logging.getLogger("PromptHandler")
-logger.setLevel(os.environ.get("SIMPLETUNER_LOG_LEVEL", "INFO"))
+logger.setLevel(
+    os.environ.get("SIMPLETUNER_LOG_LEVEL", "INFO") if _get_rank() == 0 else "ERROR"
+)
 
 
 class CaptionNotFoundError(Exception):
@@ -428,16 +431,16 @@ class PromptHandler:
         caption_strategy: str,
         instance_prompt: str = None,
     ) -> list:
-
+        logger.debug(
+            "Gathering captions for data backend. "
+            f"Parameters: {instance_data_dir=} {use_captions=} {prepend_instance_prompt=} {data_backend=} {caption_strategy=} {instance_prompt=}"
+        )
         captions = []
         images_missing_captions = []
         all_image_files = StateTracker.get_image_files(
             data_backend_id=data_backend.id
         ) or data_backend.list_files(
             instance_data_dir=instance_data_dir, file_extensions=image_file_extensions
-        )
-        backend_config = StateTracker.get_data_backend_config(
-            data_backend_id=data_backend.id
         )
         if (
             isinstance(all_image_files, list)
