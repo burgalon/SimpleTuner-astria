@@ -318,6 +318,15 @@ def train_no_catch(tune: JsonObj):
             # '--validation_prompt="ohwx woman holding flowers, red sweater, studio photography, plain white background"',
             # *(['--flow_schedule_auto_shift'] if tune.flux_schedule_auto_shift else []),
             '--flow_schedule_shift', str(tune.flux_schedule_shift if tune.flux_schedule_shift is not None else 0),
+            f'--tread_config={json.dumps({
+                'routes': [
+                    {
+                        'start_layer_idx': 8,
+                        'end_layer_idx': -8,
+                        'selection_ratio': 0.5,
+                    },
+                ],
+            })}',
             '--num_validation_images=1',
             '--validation_num_inference_steps=28',
             '--validation_seed=42',
