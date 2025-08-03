@@ -169,6 +169,42 @@ class Wan(VideoImageModelFoundation):
             return_dict=False,
         )[0]
 
+        # For masking with TREAD, avoid dropping any tokens that are in the mask
+        if (
+            getattr(self.config, "tread_config", None) is not None
+            and self.config.tread_config is not None
+            and "conditioning_pixel_values" in prepared_batch
+            and prepared_batch["conditioning_pixel_values"] is not None
+            and prepared_batch.get("conditioning_type") in ("mask", "segmentation")
+        ):
+            with torch.no_grad():
+                # For video: B, C, T, H, W
+                b, c, t, h, w = prepared_batch["latents"].shape
+                # Wan uses patch_size (1, 2, 2), so token dimensions are:
+                t_tokens = t // 1  # temporal patches
+                h_tokens = h // 2  # height patches
+                w_tokens = w // 2  # width patches
+
+                mask_vid = prepared_batch[
+                    "conditioning_pixel_values"
+                ]  # (B,C,T,H,W) for video
+                # fuse channels → single channel, map to [0,1]
+                mask_vid = (mask_vid.mean(1, keepdim=True) + 1) / 2
+                # downsample to match token dimensions
+                mask_tok = F.interpolate(
+                    mask_vid,
+                    size=(t_tokens, h_tokens, w_tokens),
+                    mode="trilinear",
+                    align_corners=False,
+                )  # (B,1,t_tok,h_tok,w_tok)
+                # Flatten in the same order as patch_embedding
+                # After conv3d: (B, D, T', H', W')
+                # After flatten(2): (B, D, T'*H'*W') with order T->H->W
+                # After transpose(1,2): (B, T'*H'*W', D)
+                # So we flatten the mask with the same T->H->W order
+                force_keep = mask_tok.squeeze(1).flatten(1) > 0.5  # (B, S_vid)
+                wan_transformer_kwargs["force_keep_mask"] = force_keep
+
         return {
             "model_prediction": model_pred,
         }

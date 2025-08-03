@@ -43,6 +43,38 @@ from diffusers.models.normalization import FP32LayerNorm
 logger = logging.get_logger(__name__)  # pylint: disable=invalid-name
 
 
+def _apply_rotary_emb_anyshape(x, rotary_emb, use_real=False):
+    """
+    Apply rotary embeddings that may be batched.
+    Adapted for Wan's specific rotary embedding format.
+
+    Wan's rotary embeddings encode 3D positions (T,H,W) with separate
+    frequency components for each dimension. This function handles both
+    the original single-batch format and the routed multi-batch format.
+    """
+    if rotary_emb.ndim == 4:  # (B, 1, S, D) - batched case for routed tokens
+        rotary_emb = rotary_emb.squeeze(1)  # (B, S, D)
+        # Convert to complex for Wan's rotary application
+        x_rotated = torch.view_as_complex(
+            x.to(
+                torch.float32 if torch.backends.mps.is_available() else torch.float64
+            ).unflatten(3, (-1, 2))
+        )
+        # Expand rotary_emb for heads dimension
+        rotary_emb_exp = rotary_emb.unsqueeze(1).expand(-1, x.size(1), -1, -1)
+        x_out = torch.view_as_real(x_rotated * rotary_emb_exp).flatten(3, 4)
+        return x_out.type_as(x)
+    else:  # Original case - (1, 1, S, D)
+        # Use original Wan rotary embedding application
+        x_rotated = torch.view_as_complex(
+            x.to(
+                torch.float32 if torch.backends.mps.is_available() else torch.float64
+            ).unflatten(3, (-1, 2))
+        )
+        x_out = torch.view_as_real(x_rotated * rotary_emb).flatten(3, 4)
+        return x_out.type_as(x)
+
+
 class WanAttnProcessor2_0:
     def __init__(self):
         if not hasattr(F, "scaled_dot_product_attention"):
@@ -79,20 +111,9 @@ class WanAttnProcessor2_0:
         value = value.unflatten(2, (attn.heads, -1)).transpose(1, 2)
 
         if rotary_emb is not None:
-
-            def apply_rotary_emb(hidden_states: torch.Tensor, freqs: torch.Tensor):
-                x_rotated = torch.view_as_complex(
-                    hidden_states.to(
-                        torch.float32
-                        if torch.backends.mps.is_available()
-                        else torch.float64
-                    ).unflatten(3, (-1, 2))
-                )
-                x_out = torch.view_as_real(x_rotated * freqs).flatten(3, 4)
-                return x_out.type_as(hidden_states)
-
-            query = apply_rotary_emb(query, rotary_emb)
-            key = apply_rotary_emb(key, rotary_emb)
+            # Use the new function that handles batched rotary embeddings
+            query = _apply_rotary_emb_anyshape(query, rotary_emb)
+            key = _apply_rotary_emb_anyshape(key, rotary_emb)
 
         # I2V task
         hidden_states_img = None
@@ -389,6 +410,8 @@ class WanTransformer3DModel(
     """
 
     _supports_gradient_checkpointing = True
+    _tread_router: Optional[TREADRouter] = None
+    _tread_routes: Optional[List[Dict[str, Any]]] = None
     _skip_layerwise_casting_patterns = ["patch_embedding", "condition_embedder", "norm"]
     _no_split_modules = ["WanTransformerBlock"]
     _keep_in_fp32_modules = [
@@ -465,6 +488,38 @@ class WanTransformer3DModel(
 
         self.gradient_checkpointing = False
 
+    def set_router(self, router: TREADRouter, routes: List[Dict[str, Any]]):
+        """Set the TREAD router and routing configuration."""
+        self._tread_router = router
+        self._tread_routes = routes
+
+    @staticmethod
+    def _route_rope(rope, info, keep_len: int, batch: int):
+        """
+        Apply the router's (ids_shuffle → slice) transform to rotary embeddings.
+        Adapted for Wan's rotary embedding format which encodes 3D position (T,H,W).
+
+        Note: Wan's rotary embeddings encode temporal, height, and width positions
+        separately in different dimensions of the embedding. When routing, we maintain
+        the correspondence between tokens and their 3D positional encoding.
+        """
+
+        # rope is a tensor of shape (1, 1, S, D) for Wan
+        # where S = t_tokens * h_tokens * w_tokens
+        def _route_one(r: torch.Tensor) -> torch.Tensor:
+            # Remove the batch dimensions temporarily
+            r_squeeze = r.squeeze(0).squeeze(0)  # (S, D)
+            # Expand to batch size
+            rB = r_squeeze.unsqueeze(0).expand(batch, -1, -1)  # (B, S, D)
+            # Apply shuffle - this maintains the token-position correspondence
+            shuf = torch.take_along_dim(
+                rB, info.ids_shuffle.unsqueeze(-1).expand_as(rB), dim=1
+            )
+            # Keep only the selected tokens and add back the extra dimension
+            return shuf[:, :keep_len, :].unsqueeze(1)  # (B, 1, keep_len, D)
+
+        return _route_one(rope)
+
     def forward(
         self,
         hidden_states: torch.Tensor,
@@ -474,6 +529,7 @@ class WanTransformer3DModel(
         skip_layers: Optional[List[int]] = None,
         return_dict: bool = True,
         attention_kwargs: Optional[Dict[str, Any]] = None,
+        force_keep_mask: Optional[torch.Tensor] = None,
     ) -> Union[torch.Tensor, Dict[str, torch.Tensor]]:
         if attention_kwargs is not None:
             attention_kwargs = attention_kwargs.copy()
@@ -516,25 +572,101 @@ class WanTransformer3DModel(
                 [encoder_hidden_states_image, encoder_hidden_states], dim=1
             )
 
-        # 4. Transformer blocks
-        if torch.is_grad_enabled() and self.gradient_checkpointing:
-            for block in self.blocks:
-                hidden_states = self._gradient_checkpointing_func(
-                    block,
-                    hidden_states,
-                    encoder_hidden_states,
-                    timestep_proj,
-                    rotary_emb,
+        # TREAD initialization
+        # Note: In Wan, video tokens and text tokens are kept separate
+        # - hidden_states contains video tokens (B, S_video, D)
+        # - encoder_hidden_states contains text tokens (B, S_text, D)
+        # We only route video tokens, text tokens remain unchanged
+        routes = self._tread_routes or []
+        router = self._tread_router
+        use_routing = self.training and len(routes) > 0 and torch.is_grad_enabled()
+        route_ptr = 0
+        routing_now = False
+        tread_mask_info = None
+        saved_tokens = None
+        current_rope = rotary_emb
+
+        # Handle negative route indices
+        if routes:
+            total_layers = len(self.blocks)
+
+            def _to_pos(idx):
+                return idx if idx >= 0 else total_layers + idx
+
+            routes = [
+                {
+                    **r,
+                    "start_layer_idx": _to_pos(r["start_layer_idx"]),
+                    "end_layer_idx": _to_pos(r["end_layer_idx"]),
+                }
+                for r in routes
+            ]
+
+        # Transformer blocks with TREAD routing
+        for i, block in enumerate(self.blocks):
+            # TREAD: START a route?
+            if (
+                use_routing
+                and route_ptr < len(routes)
+                and i == routes[route_ptr]["start_layer_idx"]
+            ):
+                mask_ratio = routes[route_ptr]["selection_ratio"]
+
+                # Apply routing to video tokens only
+                # Note: encoder_hidden_states (text) is never routed, only passed to cross-attention
+                tread_mask_info = router.get_mask(
+                    hidden_states,  # (B, S_video, D) where S_video = T*H*W tokens
+                    mask_ratio=mask_ratio,
+                    force_keep=force_keep_mask,
                 )
-        else:
-            for i, block in enumerate(self.blocks):
-                if skip_layers is not None and i in skip_layers:
-                    continue
-                hidden_states = block(
-                    hidden_states, encoder_hidden_states, timestep_proj, rotary_emb
+                saved_tokens = hidden_states.clone()
+                hidden_states = router.start_route(hidden_states, tread_mask_info)
+                routing_now = True
+
+                # Route the rotary embeddings to match the selected video tokens
+                # This preserves the 3D positional information for kept tokens
+                current_rope = self._route_rope(
+                    rotary_emb,
+                    tread_mask_info,
+                    keep_len=hidden_states.size(1),
+                    batch=hidden_states.size(0),
                 )
 
-        # 5. Output norm, projection & unpatchify
+            # Skip layers if specified
+            if skip_layers is not None and i in skip_layers:
+                continue
+
+            # Apply transformer block
+            # Each block does:
+            # 1. Self-attention on video tokens (with rotary embeddings)
+            # 2. Cross-attention from video to text tokens
+            # 3. Feed-forward on video tokens
+            # Only video tokens are routed; text tokens always remain full sequence
+            if torch.is_grad_enabled() and self.gradient_checkpointing:
+                hidden_states = self._gradient_checkpointing_func(
+                    block,
+                    hidden_states,  # video tokens (possibly routed)
+                    encoder_hidden_states,  # text tokens (always full sequence)
+                    timestep_proj,
+                    current_rope,  # rotary embeddings (possibly routed)
+                )
+            else:
+                hidden_states = block(
+                    hidden_states, encoder_hidden_states, timestep_proj, current_rope
+                )
+
+            # TREAD: END the current route?
+            if routing_now and i == routes[route_ptr]["end_layer_idx"]:
+                hidden_states = router.end_route(
+                    hidden_states,
+                    tread_mask_info,
+                    original_x=saved_tokens,
+                )
+                routing_now = False
+                route_ptr += 1
+                current_rope = rotary_emb
+
+        # Output processing remains the same
         shift, scale = (self.scale_shift_table + temb.unsqueeze(1)).chunk(2, dim=1)
 
         # Move the shift and scale tensors to the same device as hidden_states.

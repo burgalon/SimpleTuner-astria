@@ -1,5 +1,5 @@
 version = 1
-revision = 2
+revision = 3
 requires-python = "==3.12.*"
 resolution-markers = [
     "platform_machine == 'x86_64' and sys_platform == 'linux'",
@@ -1300,7 +1300,7 @@ wheels = [
 
 [[package]]
 name = "huggingface-hub"
-version = "0.27.1"
+version = "0.30.2"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "filelock", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
@@ -1311,9 +1311,9 @@ dependencies = [
     { name = "tqdm", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
     { name = "typing-extensions", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/e1/d2/d6976de7542792fc077b498d64af64882b6d8bb40679284ec0bff77d5929/huggingface_hub-0.27.1.tar.gz", hash = "sha256:c004463ca870283909d715d20f066ebd6968c2207dae9393fdffb3c1d4d8f98b", size = 379407, upload-time = "2025-01-06T12:04:23.156Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/df/22/8eb91736b1dcb83d879bd49050a09df29a57cc5cd9f38e48a4b1c45ee890/huggingface_hub-0.30.2.tar.gz", hash = "sha256:9a7897c5b6fd9dad3168a794a8998d6378210f5b9688d0dfc180b1a228dc2466", size = 400868, upload-time = "2025-04-08T08:32:45.26Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/6c/3f/50f6b25fafdcfb1c089187a328c95081abf882309afd86f4053951507cd1/huggingface_hub-0.27.1-py3-none-any.whl", hash = "sha256:1c5155ca7d60b60c2e2fc38cbb3ffb7f7c3adf48f824015b219af9061771daec", size = 450658, upload-time = "2025-01-06T12:04:19.689Z" },
+    { url = "https://files.pythonhosted.org/packages/93/27/1fb384a841e9661faad1c31cbfa62864f59632e876df5d795234da51c395/huggingface_hub-0.30.2-py3-none-any.whl", hash = "sha256:68ff05969927058cfa41df4f2155d4bb48f5f54f719dd0390103eefa9b191e28", size = 481433, upload-time = "2025-04-08T08:32:43.305Z" },
 ]
 
 [package.optional-dependencies]
@@ -3335,15 +3335,16 @@ wheels = [
 
 [[package]]
 name = "safetensors"
-version = "0.4.5"
+version = "0.5.3"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/cb/46/a1c56ed856c6ac3b1a8b37abe5be0cac53219367af1331e721b04d122577/safetensors-0.4.5.tar.gz", hash = "sha256:d73de19682deabb02524b3d5d1f8b3aaba94c72f1bbfc7911b9b9d5d391c0310", size = 65702, upload-time = "2024-09-05T13:48:58.68Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/71/7e/2d5d6ee7b40c0682315367ec7475693d110f512922d582fef1bd4a63adc3/safetensors-0.5.3.tar.gz", hash = "sha256:b6b0d6ecacec39a4fdd99cc19f4576f5219ce858e6fd8dbe7609df0b8dc56965", size = 67210, upload-time = "2025-02-26T09:15:13.155Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/58/2b/ffe7c86a277e6c1595fbdf415cfe2903f253f574a5405e93fda8baaa582c/safetensors-0.4.5-cp312-cp312-manylinux_2_17_armv7l.manylinux2014_armv7l.whl", hash = "sha256:b3139098e3e8b2ad7afbca96d30ad29157b50c90861084e69fcb80dec7430461", size = 438467, upload-time = "2024-09-05T13:47:00.612Z" },
-    { url = "https://files.pythonhosted.org/packages/67/9c/f271bd804e08c7fda954d17b70ff281228a88077337a9e70feace4f4cc93/safetensors-0.4.5-cp312-cp312-manylinux_2_17_ppc64le.manylinux2014_ppc64le.whl", hash = "sha256:65573dc35be9059770808e276b017256fa30058802c29e1038eb1c00028502ea", size = 476566, upload-time = "2024-09-05T13:47:02.433Z" },
-    { url = "https://files.pythonhosted.org/packages/4c/ad/4cf76a3e430a8a26108407fa6cb93e6f80d996a5cb75d9540c8fe3862990/safetensors-0.4.5-cp312-cp312-manylinux_2_17_s390x.manylinux2014_s390x.whl", hash = "sha256:fd33da8e9407559f8779c82a0448e2133737f922d71f884da27184549416bfed", size = 492253, upload-time = "2024-09-05T13:47:03.84Z" },
-    { url = "https://files.pythonhosted.org/packages/d9/40/a6f75ea449a9647423ec8b6f72c16998d35aa4b43cb38536ac060c5c7bf5/safetensors-0.4.5-cp312-cp312-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:3685ce7ed036f916316b567152482b7e959dc754fcc4a8342333d222e05f407c", size = 434769, upload-time = "2024-09-05T13:47:05.433Z" },
-    { url = "https://files.pythonhosted.org/packages/22/4d/b6208d918e83daa84b424c0ac3191ae61b44b3191613a3a5a7b38f94b8ad/safetensors-0.4.5-cp312-cp312-musllinux_1_1_x86_64.whl", hash = "sha256:3a6ba28118636a130ccbb968bc33d4684c48678695dba2590169d5ab03a45646", size = 605390, upload-time = "2024-09-05T13:47:09.372Z" },
+    { url = "https://files.pythonhosted.org/packages/df/5c/bf2cae92222513cc23b3ff85c4a1bb2811a2c3583ac0f8e8d502751de934/safetensors-0.5.3-cp38-abi3-manylinux_2_17_armv7l.manylinux2014_armv7l.whl", hash = "sha256:4a243be3590bc3301c821da7a18d87224ef35cbd3e5f5727e4e0728b8172411e", size = 472400, upload-time = "2025-02-26T09:14:53.549Z" },
+    { url = "https://files.pythonhosted.org/packages/58/11/7456afb740bd45782d0f4c8e8e1bb9e572f1bf82899fb6ace58af47b4282/safetensors-0.5.3-cp38-abi3-manylinux_2_17_ppc64le.manylinux2014_ppc64le.whl", hash = "sha256:8bd84b12b1670a6f8e50f01e28156422a2bc07fb16fc4e98bded13039d688a0d", size = 522891, upload-time = "2025-02-26T09:14:55.717Z" },
+    { url = "https://files.pythonhosted.org/packages/57/3d/fe73a9d2ace487e7285f6e157afee2383bd1ddb911b7cb44a55cf812eae3/safetensors-0.5.3-cp38-abi3-manylinux_2_17_s390x.manylinux2014_s390x.whl", hash = "sha256:391ac8cab7c829452175f871fcaf414aa1e292b5448bd02620f675a7f3e7abb9", size = 537694, upload-time = "2025-02-26T09:14:57.036Z" },
+    { url = "https://files.pythonhosted.org/packages/a6/f8/dae3421624fcc87a89d42e1898a798bc7ff72c61f38973a65d60df8f124c/safetensors-0.5.3-cp38-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:cead1fa41fc54b1e61089fa57452e8834f798cb1dc7a09ba3524f1eb08e0317a", size = 471642, upload-time = "2025-02-26T09:15:00.544Z" },
+    { url = "https://files.pythonhosted.org/packages/82/5a/c116111d8291af6c8c8a8b40628fe833b9db97d8141c2a82359d14d9e078/safetensors-0.5.3-cp38-abi3-musllinux_1_2_armv7l.whl", hash = "sha256:df26da01aaac504334644e1b7642fa000bfec820e7cef83aeac4e355e03195ff", size = 734013, upload-time = "2025-02-26T09:15:07.892Z" },
+    { url = "https://files.pythonhosted.org/packages/40/ad/2b113098e69c985a3d8fbda4b902778eae4a35b7d5188859b4a63d30c161/safetensors-0.5.3-cp38-abi3-musllinux_1_2_x86_64.whl", hash = "sha256:37f1521be045e56fc2b54c606d4455573e717b2d887c579ee1dbba5f868ece04", size = 643147, upload-time = "2025-02-26T09:15:11.185Z" },
 ]
 
 [[package]]
@@ -3585,18 +3586,18 @@ requires-dist = [
     { name = "accelerate" },
     { name = "atomicwrites", specifier = ">=1.4.1" },
     { name = "beautifulsoup4", specifier = ">=4.12.3,<5" },
-    { name = "bitsandbytes", specifier = ">=0.45.0,<0.46" },
-    { name = "boto3", specifier = ">=1.35.24,<2" },
-    { name = "botocore", specifier = ">=1.35.24,<2" },
+    { name = "bitsandbytes", specifier = ">=0.45.0" },
+    { name = "boto3", specifier = ">=1.35.83,<2.0.0" },
+    { name = "botocore", specifier = ">=1.35.83,<2.0.0" },
     { name = "clip-interrogator", specifier = ">=0.6.0,<0.7" },
     { name = "colorama", specifier = ">=0.4.6,<0.5" },
     { name = "comet-ml", specifier = ">=3.44.4,<4" },
-    { name = "compel", specifier = ">=2.0.1,<3" },
+    { name = "compel", specifier = ">=2.1.1,<3.0.0" },
     { name = "controlnet-aux", specifier = ">=0.0.7,<0.0.8" },
     { name = "datasets", specifier = ">=3.0.1,<4" },
     { name = "deepspeed", specifier = ">=0.15.1,<0.16" },
     { name = "diffsynth", git = "https://github.com/modelscope/DiffSynth-Studio.git?rev=39890f023f64bdf2a71c09ae32b242784b8a6dbf" },
-    { name = "diffusers" },
+    { name = "diffusers", specifier = ">=0.34.0" },
     { name = "easy-dwpose", git = "https://github.com/carpedm20/easy_dwpose.git?rev=3eccc2bbdb1db1f01c9b867be92fce23d54c5558" },
     { name = "einops", specifier = ">=0.8.0,<0.9" },
     { name = "fastapi", extras = ["standard"], specifier = ">=0.115.0,<0.116.0" },
@@ -3604,7 +3605,7 @@ requires-dist = [
     { name = "groundingdino-py", specifier = ">=0.4.0" },
     { name = "hf-xet", specifier = ">=1.1.5" },
     { name = "hf-xet", specifier = ">=1.1.5,<2" },
-    { name = "huggingface-hub", extras = ["hf-transfer"], specifier = ">=0.27.1,<0.28" },
+    { name = "huggingface-hub", extras = ["hf-transfer"], specifier = ">=0.30.2,<0.31.0" },
     { name = "imagehash", specifier = ">=4.3.2,<5" },
     { name = "imageio", extras = ["pyav"], specifier = ">=2.37.0,<3" },
     { name = "imageio-ffmpeg", specifier = ">=0.6.0,<1" },
@@ -3622,9 +3623,9 @@ requires-dist = [
     { name = "opencv-python", specifier = ">=4.10.0.84,<5" },
     { name = "optimum-quanto", git = "https://github.com/huggingface/optimum-quanto" },
     { name = "pandas", specifier = ">=2.2.3,<3" },
-    { name = "peft" },
+    { name = "peft", specifier = ">=0.16.0,<0.17.0" },
     { name = "peft-singlora", specifier = ">=0.2.0" },
-    { name = "pillow", specifier = ">=11.0.0,<12" },
+    { name = "pillow", specifier = ">=11.3.0,<12.0.0" },
     { name = "pillow-avif-plugin", specifier = ">=1.4.6,<2" },
     { name = "pillow-heif", specifier = ">=0.18.0,<0.19" },
     { name = "pillow-jxl-plugin", specifier = "==1.3.1" },
@@ -3633,7 +3634,7 @@ requires-dist = [
     { name = "requests", specifier = ">=2.28.1,<3" },
     { name = "rollbar", specifier = ">=1.0.0,<2" },
     { name = "runpod", specifier = ">=1.7.0,<2" },
-    { name = "safetensors", specifier = ">=0.4.5,<0.5" },
+    { name = "safetensors", specifier = ">=0.5.3,<0.6.0" },
     { name = "sageattention" },
     { name = "scipy", specifier = ">=1.11.1,<2" },
     { name = "segment-anything", specifier = ">=1.0" },
@@ -3642,19 +3643,19 @@ requires-dist = [
     { name = "tensorizer", specifier = ">=2.9.1,<3" },
     { name = "tokenizers", specifier = ">=0.21.0,<1" },
     { name = "toml", specifier = ">=0.10.2,<0.11" },
-    { name = "torch", specifier = ">=2.7.0,<3", index = "https://download.pytorch.org/whl/cu128" },
+    { name = "torch", specifier = ">=2.7.1,<3", index = "https://download.pytorch.org/whl/cu128" },
     { name = "torch-optimi", specifier = ">=0.2.1,<0.3" },
-    { name = "torchao", specifier = ">=0.10.0,<0.11" },
+    { name = "torchao", specifier = ">=0.12.0,<0.13.0" },
     { name = "torchaudio", specifier = ">=2.4.1" },
     { name = "torchmetrics", specifier = ">=1.1.1,<2" },
-    { name = "torchsde", specifier = ">=0.2.5,<0.3" },
-    { name = "torchvision", specifier = ">=0.22.0", index = "https://download.pytorch.org/whl/cu128" },
+    { name = "torchsde", specifier = ">=0.2.6,<0.3.0" },
+    { name = "torchvision", specifier = ">=0.22.1", index = "https://download.pytorch.org/whl/cu128" },
     { name = "transformers", specifier = "==4.46.2" },
-    { name = "triton", specifier = ">=3.1.0,<4", index = "https://download.pytorch.org/whl/cu128" },
+    { name = "triton", specifier = ">=3.3.0,<4.0.0", index = "https://download.pytorch.org/whl/cu128" },
     { name = "triton-library", specifier = ">=1.0.0rc4,<2" },
     { name = "ultralytics", specifier = ">=8.3.27,<9" },
     { name = "urllib3", specifier = "<1.27" },
-    { name = "wandb", specifier = ">=0.19.4,<0.20" },
+    { name = "wandb", specifier = ">=0.19.4" },
 ]
 
 [package.metadata.requires-dev]
@@ -4040,11 +4041,10 @@ wheels = [
 
 [[package]]
 name = "torchao"
-version = "0.10.0"
-source = { registry = "https://pypi.org/simple" }
+version = "0.12.0+cu128"
+source = { registry = "https://download.pytorch.org/whl/cu128" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/7a/30/ffceb0340ea16324a175cff4a3903b2946e7fdcf8a72a7a1ab94244ca749/torchao-0.10.0-cp39-abi3-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:8d984f39246817ac43b46549759af6fa09b3bf70e00f0cff3bd48978777a10e6", size = 5450290, upload-time = "2025-04-07T18:41:17.162Z" },
-    { url = "https://files.pythonhosted.org/packages/da/3a/afb970951d5512d22d0288016ef737afb4ee5af159823c5886dbb3ede1d4/torchao-0.10.0-py3-none-any.whl", hash = "sha256:9489b71259a7e29ee5ad391c333046adeb47888b6d84cfd0111adcf439f829a9", size = 746628, upload-time = "2025-04-07T18:41:18.97Z" },
+    { url = "https://download.pytorch.org/whl/cu128/torchao-0.12.0%2Bcu128-cp39-abi3-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:d0cd62cfc72694e64f5dcb37ec5886bdff6e5fd4dd704d1be45e63659db8f5fc" },
 ]
 
 [[package]]
