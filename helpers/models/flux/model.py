@@ -378,9 +378,6 @@ class Flux(ImageModelFoundation):
         sampling_mode = state.get("args", {}).get(
             "conditioning_multidataset_sampling", "random"
         )
-        logger.debug(
-            f"Now we have kontext shapes: {packed_cond.shape} {packed_cond.dtype}"
-        )
 
         if sampling_mode == "random" and isinstance(cond, list) and len(cond) >= 1:
             # Random mode should have selected just one

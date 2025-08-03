@@ -39,6 +39,8 @@ from diffusers.models.modeling_outputs import Transformer2DModelOutput
 from diffusers.models.modeling_utils import ModelMixin
 from diffusers.models.normalization import FP32LayerNorm
 
+from helpers.training.tread import TREADRouter
+
 
 logger = logging.get_logger(__name__)  # pylint: disable=invalid-name
 

@@ -226,15 +226,15 @@ def train_no_catch(tune: JsonObj):
     else:
         train_batch = max(1, (min(min(4, len(tune.orig_images)), 4))) // num_gpus
 
-    # tune.tread_config = json.dumps({
-    #     'routes': [
-    #         {
-    #             'start_layer_idx': 8,
-    #             'end_layer_idx': -8,
-    #             'selection_ratio': 0.0,
-    #         },
-    #     ],
-    # })
+    tune.tread_config = json.dumps({
+        'routes': [
+            {
+                'start_layer_idx': 8,
+                'end_layer_idx': -8,
+                'selection_ratio': 0.0,
+            },
+        ],
+    })
 
     caption_strategy = tune.caption_strategy or "instanceprompt"
 
@@ -280,6 +280,7 @@ def train_no_catch(tune: JsonObj):
             '--snr_gamma', str(tune.snr_gamma or 5),
             '--data_backend_config', data_backend_config,
             '--aspect_bucket_rounding=2',
+            '--model_flavour=dev',
             '--num_train_epochs=0',
             # '--fuse_qkv_projections',
             f'--max_train_steps={steps}',
