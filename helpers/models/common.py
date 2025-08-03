@@ -1208,6 +1208,8 @@ class ModelFoundation(ABC):
                     self.config.flow_sigmoid_scale
                     * torch.randn((bsz,), device=self.accelerator.device)
                 )
+                if self.config.flow_clip_high_and_low_noise:
+                    batch["sigmas"] = batch["sigmas"].clamp_(0.1, 0.8)
                 batch["sigmas"] = apply_flow_schedule_shift(
                     self.config, self.noise_schedule, batch["sigmas"], batch["noise"]
                 )

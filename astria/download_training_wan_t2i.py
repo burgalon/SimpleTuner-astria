@@ -3,7 +3,9 @@ import os
 import shutil
 import time
 import cv2
+
 from dataclasses import dataclass
+from functools import partial
 
 import numpy as np
 import torch
@@ -13,8 +15,119 @@ from ultralytics import YOLO
 
 from astria_utils import run, run_with_output, EPHEMERAL_MODELS_DIR, JsonObj, device, HUMAN_CLASS_NAMES
 from birefnet.BiRefNet_node import BiRefNet_node
-from image_utils import io2img, save_img
+from image_utils import io2img, save_img as save_img_base
 from inpaint_face_mixin import ultralytics_predict, filter_by_ratio, filter_k_largest, YOLO_FACE_MODEL
+
+import albumentations as A
+
+
+def fit_img(im, size):                     # bicubic is fine for RGB photos
+    return ImageOps.fit(im, size, method=Image.BICUBIC)
+
+def fit_mask(m, size):                     # nearest-neighbour for labels
+    return ImageOps.fit(m, size, method=Image.NEAREST)
+
+def pad_img(im, size):
+    return ImageOps.pad(im, size, method=Image.BICUBIC)
+
+def pad_mask(m, size):
+    return ImageOps.pad(m, size, method=Image.NEAREST)
+
+
+# Build one global augmenter (square output = `resolution × resolution`)
+def build_augmenter(resolution: int) -> A.Compose:
+    return A.Compose(
+        [
+            A.RandomResizedCrop(
+                size=(resolution, resolution),
+                scale=(0.7, 1.), ratio=(1., 1.), p=0.9,
+                interpolation=cv2.INTER_LINEAR,          # ↙ image
+                mask_interpolation=cv2.INTER_NEAREST,    # ↙ mask
+            ),
+            A.Affine(scale=(0.8, 1.15), fit_output=True, p=0.9,
+                balanced_scale=True, keep_ratio=True,
+                interpolation=cv2.INTER_LINEAR,          # ↙ image
+                mask_interpolation=cv2.INTER_NEAREST,    # ↙ mask),
+            ),
+            A.CLAHE(clip_limit=2, p=0.5),
+            A.ColorJitter(
+                brightness=(0.8, 1.2),
+                contrast=(0.8, 1.5),
+                saturation=0.05,
+                hue=0.0,
+                p=0.8,
+            ),
+            A.Lambda(
+                mask=lambda m, **k: (
+                    ((m > 0.5) if m.dtype != np.uint8 else (m > 127))
+                    .astype("uint8") * 255
+                ),
+                p=1.0,
+            ),
+            A.Resize(
+                resolution, resolution, always_apply=True,
+                interpolation=cv2.INTER_LINEAR,
+                mask_interpolation=cv2.INTER_NEAREST,
+            ),
+        ],
+        additional_targets={"mask": "mask"},
+    )
+
+
+def save_img_augs(
+    img: Image.Image,
+    path: str,
+    *,
+    mask: Image.Image | None = None,
+    mask_dir: str | None = None,
+    n_aug: int = 8,
+    keep_original: bool = True,
+    augmenter: A.Compose | None = None,
+):
+    """
+    Save `img` (and optional `mask`) plus `n_aug` augmented variants.
+
+    Parameters
+    ----------
+    img : PIL.Image
+    path : str
+        Where the *original* image should be saved (e.g. ".../foo.png").
+    mask : PIL.Image | None
+        Aligned mask to transform identically.  If given you must also
+        provide `mask_dir` (directory to write the files to).
+    mask_dir : str | None
+        Directory for mask files.  Filename will mirror `path`:
+        ".../foo.png" → f"{mask_dir}/foo.png" for the original and
+        ".../foo_aug07.png" for each augmentation.
+    """
+    from image_utils import save_img as _save_img_orig   # your current helper
+
+    if augmenter is None:
+        raise ValueError("Pass an Albumentations augmenter")
+
+    base_dir, filename = os.path.split(path)
+    stem, ext = os.path.splitext(filename)
+    # --- 0) save the un-augmented image/mask -----------------
+    if keep_original:
+        save_img_base(img, path)
+        if mask is not None:
+            save_img_base(mask, os.path.join(mask_dir, filename))
+
+    # --- 1) create N augments --------------------------------
+    img_np  = np.array(img)
+    mask_np = np.array(mask) if mask is not None else None
+
+    for k in range(n_aug):
+        out = augmenter(image=img_np, mask=mask_np)
+        aug_img  = Image.fromarray(out["image"])
+        aug_path = os.path.join(base_dir, f"{stem}_aug{k:02d}{ext}")
+        save_img_base(aug_img, aug_path)
+
+        if mask is not None:
+            aug_mask = Image.fromarray(out["mask"])
+            aug_mask_path = os.path.join(mask_dir, f"{stem}_aug{k:02d}{ext}")
+            save_img_base(aug_mask, aug_mask_path)
+
 
 
 def list_full_paths(directory: str) -> list[str]:
@@ -294,97 +407,113 @@ def download_training(tune: JsonObj, one_dir=False):
         if tune.black_mask:
             image = Image.composite(image, Image.new('RGB', image.size, (0, 0, 0)), mask)
 
-        # 1. Center crop to resolution or Face crop
+        augmenter = build_augmenter(resolution)
+        save_pair = partial(
+            save_img_augs,
+            augmenter=augmenter,
+            mask_dir=mask_dir)
+
+        # 1. Center crop to resolution or Face crop\
+        bbox = None
         if face_crop:
             bbox, orig_bbox = get_face_bbox(image, yolo)
+
+            # ---------- original bookkeeping (kept intact) --------------------------
             if is_slr(image):
                 blur_factors_map[fn] = 200
                 print(f"Detected SLR image {fn}")
             elif bbox and tune.name in HUMAN_CLASS_NAMES:
-                bbox_size = (bbox[2] - bbox[0]) * (bbox[3] - bbox[1])
+                bbox_size  = (bbox[2] - bbox[0]) * (bbox[3] - bbox[1])
                 image_size = image.width * image.height
                 bbox_ratio = bbox_size / image_size
-                cropped_face = ImageOps.fit(image.crop(orig_bbox), (512, 512))
+
+                cropped_face = fit_img(image.crop(orig_bbox), (512, 512))
                 print(f"bbox_ratio={bbox_ratio} fn={fn}")
-                blur_factor = is_blurry(cropped_face)
-                joint_factor = (bbox_ratio + blur_factor) / 2
-                print(f"{fn=} bbox_ratio={bbox_ratio:.2f} blur_factor={blur_factor:.2f} joint_factor={joint_factor:.2f}")
+                blur_factor   = is_blurry(cropped_face)
+                joint_factor  = (bbox_ratio + blur_factor) / 2
+                print(
+                    f"{fn=} bbox_ratio={bbox_ratio:.2f} "
+                    f"blur_factor={blur_factor:.2f} joint_factor={joint_factor:.2f}"
+                )
                 blur_factors_map[fn] = blur_factor
             else:
-                blur_factors_map[fn] = 200 # high value to ensure that None values are at the end
+                blur_factors_map[fn] = 200
+            # -----------------------------------------------------------------------
 
-            if bbox:
-                save_img(
-                    ImageOps.fit(image.crop(bbox), (resolution, resolution)),
-                    f"{face_dir}/{fn}-center-crop.png"
-                )
+            if bbox:                                   # ---- face found -------------
+                img_crop = fit_img(image.crop(bbox), (resolution, resolution))
 
-                # checking for HUMAN_CLASS_NAMES can be important to avoid cropping one face for class_name=couple
+                # build corresponding mask crop
                 if tune.only_face and tune.name in HUMAN_CLASS_NAMES:
-                    # Train only on the face
-                    # We want to keep the size of the original face image so that the model doesn't
-                    # generate full closeups all the time
                     center_crop_mask = Image.new('L', mask.size)
-                    center_crop_mask.paste(mask.crop(orig_bbox), (int(orig_bbox[0]), int(orig_bbox[1])))
+                    center_crop_mask.paste(
+                        mask.crop(orig_bbox),
+                        (int(orig_bbox[0]), int(orig_bbox[1]))
+                    )
                 else:
                     center_crop_mask = mask
-                save_img(
-                    ImageOps.fit(center_crop_mask.crop(bbox) if face_crop else mask, (resolution, resolution)),
-                    f"{mask_dir}/{os.path.splitext(fn)[0]}-center-crop.png"
+
+                mask_crop = fit_mask(
+                    center_crop_mask.crop(bbox),
+                    (resolution, resolution)
                 )
-            elif tune.name not in HUMAN_CLASS_NAMES:
-                print(f"Failed to find face for {fn}")
-                save_img(
-                    ImageOps.fit(image, (resolution, resolution)),
-                    f"{face_dir}/{fn}-center-crop.png"
+
+                save_pair(
+                    img_crop,
+                    f"{face_dir}/{fn}-center-crop.png",
+                    mask=mask_crop
                 )
-                save_img(
-                    ImageOps.fit(mask, (resolution, resolution)),
-                    f"{mask_dir}/{os.path.splitext(fn)[0]}-center-crop.png"
+
+            elif tune.name not in HUMAN_CLASS_NAMES:   # ---- non-human class --------
+                save_pair(
+                    fit_img(image, (resolution, resolution)),
+                    f"{face_dir}/{fn}-center-crop.png",
+                    mask=fit_mask(mask, (resolution, resolution))
                 )
-            else:
+
+            else:                                      # ---- human but no face ------
                 skipped_images.append(orig_fn)
                 del blur_factors_map[fn]
                 print(f"Skipping {fn} as no face was found")
-        else:
-            save_img(
-                ImageOps.fit(image, (resolution, resolution)),
-                f"{face_dir}/{fn}-center-crop.png"
-            )
-            save_img(
-                ImageOps.fit(mask, (resolution, resolution)),
-                f"{mask_dir}/{os.path.splitext(fn)[0]}-center-crop.png"
+
+        else:                                          # ---- no face-crop mode ------
+            save_pair(
+                fit_img(image, (resolution, resolution)),
+                f"{face_dir}/{fn}-center-crop.png",
+                mask=fit_mask(mask, (resolution, resolution))
             )
 
-
-
-        # If face detection is enabled but no face was found, skip this image
-        # This helps with cases of users uploading images by mistake of screenshots or pets that
-        # should not be part of the training set and are a plain mistake
+        # 2. Optional padded copy for masked-loss training ---------------------------
         if (not face_crop) or bbox or (tune.name not in HUMAN_CLASS_NAMES):
-            # providing padded images without segmentation black border frames to show
             if tune.segmentation:
-                # Pad to resolution
-                save_img(
-                    ImageOps.pad(image, (resolution, resolution)),
-                    f"{training_dir}/{fn}-padded.png"
-                )
-                # checking for HUMAN_CLASS_NAMES can be important to avoid cropping one face for class_name=couple
-                if face_crop and bbox and tune.only_face and tune.name in HUMAN_CLASS_NAMES:
-                    # Train only on the face
+                img_pad = pad_img(image, (resolution, resolution))
+
+                # make mask consistent with only-face logic
+                if (
+                    face_crop and bbox and tune.only_face
+                    and tune.name in HUMAN_CLASS_NAMES
+                ):
                     new_mask = Image.new('L', mask.size)
-                    new_mask.paste(mask.crop(orig_bbox), (int(orig_bbox[0]), int(orig_bbox[1])))
-                    mask = new_mask
-                save_img(
-                    ImageOps.pad(mask, (resolution, resolution)),
-                    f"{mask_dir}/{os.path.splitext(fn)[0]}-padded.png"
+                    new_mask.paste(
+                        mask.crop(orig_bbox),
+                        (int(orig_bbox[0]), int(orig_bbox[1]))
+                    )
+                    mask_for_pad = new_mask
+                else:
+                    mask_for_pad = mask
+
+                mask_pad = pad_mask(mask_for_pad, (resolution, resolution))
+
+                save_pair(
+                    img_pad,
+                    f"{training_dir}/{fn}-padded.png",
+                    mask=mask_pad
                 )
             else:
-                save_img(
-                    ImageOps.fit(image, (resolution, resolution)),
+                save_pair(
+                    fit_img(image, (resolution, resolution)),
                     f"{training_dir}/{fn}-padded.png"
                 )
-
 
     # remove skipped images from orig_images so that train_batch calculation in train.py is correct
     if len(skipped_images):

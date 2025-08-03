@@ -231,6 +231,14 @@ def get_argument_parser():
         ),
     )
     parser.add_argument(
+        "--flow_clip_high_and_low_noise",
+        default=False,
+        action="store_true",
+        help=(
+            "Whether or not to clip the high or low noise timesteps."
+        ),
+    )
+    parser.add_argument(
         "--flow_use_uniform_schedule",
         default=False,
         action="store_true",

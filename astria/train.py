@@ -169,7 +169,7 @@ def train_no_catch(tune: JsonObj):
         print('DOWNLOADING tune.branch')
         model_path = download_model_from_server(tune.branch)
 
-    if tune.branch == "wan-t2v-14b":
+    if tune.branch == "wan-t2v-14b" or tune.branch == "wan-t2v-14b-2.2":
         tune.model_family = "wan_t2i"
         tune.preprocessing = "wan_t2i"
         tune.gradient_checkpointing = True
@@ -306,6 +306,7 @@ def train_no_catch(tune: JsonObj):
             # '--mixed_precision=fp8',
             # *([f'--base_model_precision={os.environ.get("BASE_MODEL_PRECISION")}'] if os.environ.get("BASE_MODEL_PRECISION") else []),
             *([f'--base_model_precision={tune.base_model_precision}'] if tune.base_model_precision else []),
+            *([f'--flow_clip_high_and_low_noise'] if tune.flow_clip_high_and_low_noise else []),
             # helps see that we're not destroying the priors
             # '--validation_disable_unconditional',
             # '--i_know_what_i_am_doing',
@@ -329,7 +330,7 @@ def train_no_catch(tune: JsonObj):
             # '--vae_batch_size=1',
             # '--validation_prompt="ohwx woman holding flowers, red sweater, studio photography, plain white background"',
             # *(['--flow_schedule_auto_shift'] if tune.flux_schedule_auto_shift else []),
-            '--flow_schedule_shift', str(tune.flux_schedule_shift if tune.flux_schedule_shift is not None else 0),
+            '--flow_schedule_shift', str(tune.flow_schedule_shift if tune.flow_schedule_shift is not None else 0),
             '--num_validation_images=1',
             '--validation_num_inference_steps=28',
             '--validation_seed=42',
