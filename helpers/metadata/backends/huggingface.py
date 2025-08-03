@@ -17,10 +17,7 @@ import numpy as np
 
 logger = logging.getLogger("HuggingfaceMetadataBackend")
 from helpers.training.multi_process import should_log
-<<<<<<< HEAD
-=======
 import cv2
->>>>>>> bghira/main
 
 if should_log():
     logger.setLevel(os.environ.get("SIMPLETUNER_LOG_LEVEL", "INFO"))
@@ -133,15 +130,10 @@ class HuggingfaceMetadataBackend(MetadataBackend):
         with accelerator.main_process_first():
             self.caption_cache = self._extract_captions_to_dict()
         accelerator.wait_for_everyone()
-<<<<<<< HEAD
-        self.reload_cache()
-        self.load_image_metadata()
-=======
         with accelerator.main_process_first():
             self.reload_cache()
             self.load_image_metadata()
         accelerator.wait_for_everyone()
->>>>>>> bghira/main
 
     def _extract_captions_to_dict(self) -> Dict[str, Union[str, List[str]]]:
         """Extract captions from the dataset into a fast lookup dict, using cache if available."""
@@ -166,21 +158,14 @@ class HuggingfaceMetadataBackend(MetadataBackend):
 
         def process_item(idx):
             item = self.data_backend.dataset[idx]
-<<<<<<< HEAD
-            virtual_path = f"{idx}.jpg"
-=======
             virtual_path = f"{idx}.{self.file_extension}"
->>>>>>> bghira/main
             if self.quality_filter and self.quality_column in item:
                 quality = item[self.quality_column]
                 if not self._passes_quality_filter(quality):
                     return None
             caption = self._extract_caption_from_item(item)
             if caption:
-<<<<<<< HEAD
-=======
                 print(f"Pairing {virtual_path=} to {caption=}")
->>>>>>> bghira/main
                 return (virtual_path, caption)
             return None
 

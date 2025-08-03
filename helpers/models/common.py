@@ -1798,7 +1798,6 @@ class VideoModelFoundation(ImageModelFoundation):
         # B, F, C, H, W = tensor.shape
         # return tensor.view(B * F, C, H, W)
         return tensor
-<<<<<<< HEAD
 
 
 class VideoImageModelFoundation(ImageModelFoundation):
@@ -1856,5 +1855,3 @@ class VideoImageModelFoundation(ImageModelFoundation):
         # B, F, C, H, W = tensor.shape
         # return tensor.view(B * F, C, H, W)
         return tensor
-=======
->>>>>>> bghira/main

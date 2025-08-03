@@ -1,9 +1,6 @@
 import torch, os, logging
 import random
-<<<<<<< HEAD
-=======
 from torch.nn import functional as F
->>>>>>> bghira/main
 from helpers.training import diffusers_overrides
 from helpers.models.common import (
     ImageModelFoundation,

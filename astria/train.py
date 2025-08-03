@@ -226,6 +226,16 @@ def train_no_catch(tune: JsonObj):
     else:
         train_batch = max(1, (min(min(4, len(tune.orig_images)), 4))) // num_gpus
 
+    # tune.tread_config = json.dumps({
+    #     'routes': [
+    #         {
+    #             'start_layer_idx': 8,
+    #             'end_layer_idx': -8,
+    #             'selection_ratio': 0.0,
+    #         },
+    #     ],
+    # })
+
     caption_strategy = tune.caption_strategy or "instanceprompt"
 
     torch.cuda.empty_cache()
@@ -255,6 +265,7 @@ def train_no_catch(tune: JsonObj):
             # '--base_model_default_dtype=fp32',
             '--model_type=lora',
             *(['--flux_guidance_mode', tune.flux_guidance_mode] if tune.flux_guidance_mode else []),
+            *(['--tread_config', tune.tread_config] if tune.tread_config else []),
             '--pretrained_model_name_or_path', model_path,
             *([
                 '--pretrained_transformer_model_name_or_path', download_dev2pro(),

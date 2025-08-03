@@ -543,11 +543,7 @@ class HuggingfaceDatasetsBackend(BaseDataBackend):
         # For HF datasets, we use a flat structure (no subdirectories)
         files = []
         for idx in range(len(self.dataset)):
-<<<<<<< HEAD
-            virtual_path = self._index_to_path.get(idx, f"{idx}.jpg")
-=======
             virtual_path = self._index_to_path.get(idx, f"{idx}.{self.file_extension}")
->>>>>>> bghira/main
             if file_extensions:
                 ext = os.path.splitext(virtual_path)[1].lower().strip(".")
                 if ext not in file_extensions:
