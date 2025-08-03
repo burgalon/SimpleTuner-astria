@@ -86,7 +86,7 @@
     "is_api": false,
     "base_tune_id": null,
     "token": "ohwx",
-    "args": "learning_rate=5e-4 lora_rank=16 lora_alpha=16 train_batch=4 lr_scheduler=polynomial segmentation=1 only_face=true wan_lora_target=attention",
+    "args": "resolution=384 learning_rate=5e-4 lora_rank=16 lora_alpha=16 train_batch=4 lr_scheduler=polynomial segmentation=1 only_face=true wan_lora_target=attention",
     "cost": null,
     "expires_at": "2025-08-03T09:53:50.044Z",
     "emailed_notice": false,

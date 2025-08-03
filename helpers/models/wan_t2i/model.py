@@ -14,6 +14,9 @@ from diffusers import AutoencoderKLWan
 from helpers.models.wan_t2i.transformer import WanTransformer3DModel
 from helpers.models.wan_t2i.pipeline import WanPipeline
 
+from helpers.training.tread import TREADRouter
+from torch.nn import functional as F
+
 logger = logging.getLogger(__name__)
 is_primary_process = True
 if os.environ.get("RANK") is not None:
@@ -137,6 +140,33 @@ class Wan(VideoImageModelFoundation):
             # ),
         }
 
+    def tread_init(self):
+        """
+        Initialize the TREAD model training method for Wan.
+        """
+
+        if (
+            getattr(self.config, "tread_config", None) is None
+            or getattr(self.config, "tread_config", None) is {}
+            or getattr(self.config, "tread_config", {}).get("routes", None) is None
+        ):
+            logger.error(
+                "TREAD training requires you to configure the routes in the TREAD config"
+            )
+            import sys
+
+            sys.exit(1)
+
+        self.unwrap_model(model=self.model).set_router(
+            TREADRouter(
+                seed=getattr(self.config, "seed", None) or 42,
+                device=self.accelerator.device,
+            ),
+            self.config.tread_config["routes"],
+        )
+
+        logger.info("TREAD training is enabled for Wan")
+
     def _encode_prompts(self, prompts: list, is_negative_prompt: bool = False):
         """
         Encode a prompt.
@@ -160,14 +190,19 @@ class Wan(VideoImageModelFoundation):
         return prompt_embeds, masks
 
     def model_predict(self, prepared_batch):
-        model_pred = self.model(
-            prepared_batch["noisy_latents"].to(self.config.weight_dtype),
-            encoder_hidden_states=prepared_batch["encoder_hidden_states"].to(
+        """
+        Modify the existing model_predict to support TREAD with masked training.
+        """
+        wan_transformer_kwargs = {
+            "hidden_states": prepared_batch["noisy_latents"].to(
                 self.config.weight_dtype
             ),
-            timestep=prepared_batch["timesteps"],
-            return_dict=False,
-        )[0]
+            "encoder_hidden_states": prepared_batch["encoder_hidden_states"].to(
+                self.config.weight_dtype
+            ),
+            "timestep": prepared_batch["timesteps"],
+            "return_dict": False,
+        }
 
         # For masking with TREAD, avoid dropping any tokens that are in the mask
         if (
@@ -178,32 +213,49 @@ class Wan(VideoImageModelFoundation):
             and prepared_batch.get("conditioning_type") in ("mask", "segmentation")
         ):
             with torch.no_grad():
-                # For video: B, C, T, H, W
-                b, c, t, h, w = prepared_batch["latents"].shape
-                # Wan uses patch_size (1, 2, 2), so token dimensions are:
-                t_tokens = t // 1  # temporal patches
-                h_tokens = h // 2  # height patches
-                w_tokens = w // 2  # width patches
+                mask = prepared_batch["conditioning_pixel_values"]          # (B,C,H,W) or (B,C,T,H,W)
+                mask = (mask.mean(1, keepdim=True) + 1) / 2                 # (B,1,[T,]H,W)
 
-                mask_vid = prepared_batch[
-                    "conditioning_pixel_values"
-                ]  # (B,C,T,H,W) for video
-                # fuse channels → single channel, map to [0,1]
-                mask_vid = (mask_vid.mean(1, keepdim=True) + 1) / 2
-                # downsample to match token dimensions
-                mask_tok = F.interpolate(
-                    mask_vid,
-                    size=(t_tokens, h_tokens, w_tokens),
-                    mode="trilinear",
-                    align_corners=False,
-                )  # (B,1,t_tok,h_tok,w_tok)
-                # Flatten in the same order as patch_embedding
-                # After conv3d: (B, D, T', H', W')
-                # After flatten(2): (B, D, T'*H'*W') with order T->H->W
-                # After transpose(1,2): (B, T'*H'*W', D)
-                # So we flatten the mask with the same T->H->W order
-                force_keep = mask_tok.squeeze(1).flatten(1) > 0.5  # (B, S_vid)
-                wan_transformer_kwargs["force_keep_mask"] = force_keep
+                latents = prepared_batch["latents"]
+                is_video = latents.dim() == 5                                # True → video run
+
+                if is_video:                                                 # ---------- video ----------
+                    B, C, T, H, W = latents.shape
+                    patch_t, patch_h, patch_w = (1, 2, 2)                    # or read from cfg
+                    t_tokens, h_tokens, w_tokens = (
+                        T // patch_t,
+                        H // patch_h,
+                        W // patch_w,
+                    )
+
+                    # ── NEW: ensure `mask` is 5-D ───────────────────────────────
+                    if mask.dim() == 4:                                       # (B,1,H,W) → (B,1,T,H,W)
+                        mask = mask.unsqueeze(2).expand(-1, -1, T, -1, -1)
+
+                    mask_tok = F.interpolate(
+                        mask,
+                        size=(t_tokens, h_tokens, w_tokens),                  # 3 numbers ⇒ needs 5-D
+                        mode="trilinear",
+                        align_corners=False,
+                    )
+                    force_keep = mask_tok.squeeze(1).flatten(1) > 0.5         # (B, T*H*W)
+
+                else:                                                         # ---------- image ----------
+                    B, C, H, W = latents.shape
+                    patch_h, patch_w = (2, 2)
+                    h_tokens, w_tokens = H // patch_h, W // patch_w
+
+                    mask_tok = F.interpolate(
+                        mask,                                                 # 4-D input
+                        size=(h_tokens, w_tokens),                            # 2 numbers ⇒ ok for 4-D
+                        mode="bilinear",
+                        align_corners=False,
+                    )
+                    force_keep = mask_tok.squeeze(1).flatten(1) > 0.5         # (B, H*W)
+
+            wan_transformer_kwargs["force_keep_mask"] = force_keep.to(torch.bool)
+
+        model_pred = self.model(**wan_transformer_kwargs)[0]
 
         return {
             "model_prediction": model_pred,

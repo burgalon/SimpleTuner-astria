@@ -2504,14 +2504,14 @@ def parse_cmdline_args(input_args=None, exit_on_error: bool = False):
         raise ValueError(
             f"When using --resolution_type=area, --maximum_image_size must be less than 5 megapixels. You may have accidentally entered {args.maximum_image_size} pixels, instead of megapixels."
         )
-    elif (
-        args.maximum_image_size is not None
-        and args.resolution_type == "pixel"
-        and args.maximum_image_size < 512
-    ):
-        raise ValueError(
-            f"When using --resolution_type=pixel, --maximum_image_size must be at least 512 pixels. You may have accidentally entered {args.maximum_image_size} megapixels, instead of pixels."
-        )
+    # elif (
+    #     args.maximum_image_size is not None
+    #     and args.resolution_type == "pixel"
+    #     and args.maximum_image_size < 512
+    # ):
+    #     raise ValueError(
+    #         f"When using --resolution_type=pixel, --maximum_image_size must be at least 512 pixels. You may have accidentally entered {args.maximum_image_size} megapixels, instead of pixels."
+    #     )
     if (
         args.target_downsample_size is not None
         and args.resolution_type == "area"
@@ -2521,14 +2521,14 @@ def parse_cmdline_args(input_args=None, exit_on_error: bool = False):
         raise ValueError(
             f"When using --resolution_type=area, --target_downsample_size must be less than 5 megapixels. You may have accidentally entered {args.target_downsample_size} pixels, instead of megapixels."
         )
-    elif (
-        args.target_downsample_size is not None
-        and args.resolution_type == "pixel"
-        and args.target_downsample_size < 512
-    ):
-        raise ValueError(
-            f"When using --resolution_type=pixel, --target_downsample_size must be at least 512 pixels. You may have accidentally entered {args.target_downsample_size} megapixels, instead of pixels."
-        )
+    # elif (
+    #     args.target_downsample_size is not None
+    #     and args.resolution_type == "pixel"
+    #     and args.target_downsample_size < 512
+    # ):
+    #     raise ValueError(
+    #         f"When using --resolution_type=pixel, --target_downsample_size must be at least 512 pixels. You may have accidentally entered {args.target_downsample_size} megapixels, instead of pixels."
+    #     )
 
     model_is_bf16 = (
         args.base_model_precision == "no_change"

@@ -231,7 +231,7 @@ def train_no_catch(tune: JsonObj):
             {
                 'start_layer_idx': 8,
                 'end_layer_idx': -8,
-                'selection_ratio': 0.0,
+                'selection_ratio': 1.0,
             },
         ],
     })
@@ -272,7 +272,7 @@ def train_no_catch(tune: JsonObj):
                 '--pretrained_transformer_subfolder', 'none',
             ] if tune.dev2pro else []),
             # '--enable_xformers_memory_efficient_attention', # ?
-            *(['--gradient_checkpointing'] if GPU_MEMORY_GB <= 50 or tune.gradient_checkpointing else []), # avoid OOM but slows training
+            *(['--gradient_checkpointing'] if GPU_MEMORY_GB <= 50 or resolution > 512 or tune.gradient_checkpointing else []), # avoid OOM but slows training
             '--peft_model_precision', tune.peft_model_precision or 'bf16', # or bf16; when using adamw_bf16 this should be bf16
             '--set_grads_to_none', # ?
             '--gradient_accumulation_steps', str(tune.gradient_accumulation_steps or 1),
