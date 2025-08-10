@@ -327,5 +327,73 @@
       "backend_version": null
     },
     "prompts": []
+  },
+  {
+    "id": 2696107,
+    "name": "man",
+    "created_at": "2025-06-04T09:43:33.158Z",
+    "updated_at": "2025-08-07T09:13:41.571Z",
+    "user_id": 2,
+    "trained_at": "2025-06-04T09:53:50.044Z",
+    "started_training_at": "2025-08-07T09:13:41.571Z",
+    "steps": 300,
+    "title": "alon Jun/2026",
+    "branch": "flux1",
+    "callback": null,
+    "process_ip": "akash-22742087-4,5,6,7",
+    "trials": 186,
+    "num_prompts": 0,
+    "is_api": false,
+    "base_tune_id": 1504944,
+    "token": "ohwx",
+    "args": "preset=flux-lora-portrait learning_rate=5e-4 lora_rank=16 lora_alpha=16 train_batch=4 preprocessing=2 lr_scheduler=polynomial flux_lora_target=portrait segmentation=1 only_face=true",
+    "cost": null,
+    "expires_at": "2025-09-02T09:53:50.044Z",
+    "emailed_notice": false,
+    "public_at": null,
+    "face_crop": true,
+    "checkpoint_deleted": false,
+    "checkpoint_deleted_at": null,
+    "failed_at": null,
+    "model_type": "lora",
+    "sha256": null,
+    "model_url": null,
+    "description_url": null,
+    "cost_mc": 150000,
+    "training_face_correct": false,
+    "eta": "2025-06-04T09:53:33.943Z",
+    "base_pack_id": null,
+    "characteristics": null,
+    "prompts_callback": null,
+    "auto_extend": false,
+    "orig_images": [
+      "https://mp.astria.ai/wd67ld1jyafk3t580cc4s47itzo6",
+      "https://mp.astria.ai/t95eam4wepwm4xl2ejt9q3w9plvs",
+      "https://mp.astria.ai/66jfb0q1z7zhyb16yw0ornjqny7y",
+      "https://mp.astria.ai/oz7g51yxnau490lakgau2o1b70nq"
+    ],
+    "file_names": [
+      {
+        "filename": "lueurph70qqzuqs7zl399mbrqsx1.jpg",
+        "url": "https://mp.astria.ai/wd67ld1jyafk3t580cc4s47itzo6"
+      },
+      {
+        "filename": "tqqaynhcu3ne5onxg1jsrqpvtzv4.jpg",
+        "url": "https://mp.astria.ai/t95eam4wepwm4xl2ejt9q3w9plvs"
+      },
+      {
+        "filename": "66gr44co9wa17nis5l5dnt3mg7gl.jpg",
+        "url": "https://mp.astria.ai/66jfb0q1z7zhyb16yw0ornjqny7y"
+      },
+      {
+        "filename": "mlgrx6bfadoo20c17oj8u50h70ol.jpg",
+        "url": "https://mp.astria.ai/oz7g51yxnau490lakgau2o1b70nq"
+      }
+    ],
+    "resolution": null,
+    "user": {
+      "create_ckpt": false,
+      "backend_version": null
+    }
   }
 ]
