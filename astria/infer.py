@@ -83,6 +83,7 @@ GPU_MEMORY_GB = torch.cuda.get_device_properties(0).total_memory / 1024**3
 print(f"GPU_MEMORY_GB={GPU_MEMORY_GB:.0f}")
 UNIT_NUMBERS = {0: 'zero', 1: 'one', 2: 'two', 3: 'three', 4: 'four',
            5: 'five', 6: 'six', 7: 'seven', 8: 'eight', 9: 'nine'}
+QWEN_NEGATIVE_PROMPT = "pixart film. plastic looking people with overly shiny skin, cg rendered. ugly, cropped, blurry, low-quality, mediocre average"
 
 
 def parse_args(prompt: JsonObj):
@@ -826,7 +827,6 @@ class InferPipeline(InpaintFaceMixin, VtonMixin, SamMixin):
             prompt.steps = 50 if 'Qwen' in self.pipe.__class__.__name__ else 28
             print(f"Defaults {prompt.steps=}")
 
-
     def infer(self, tune: JsonObj):
         set_current_infer_tune(tune)
         model_path = download_model_from_server(f"{tune.id}-{tune.branch}")
@@ -1076,6 +1076,17 @@ class InferPipeline(InpaintFaceMixin, VtonMixin, SamMixin):
             )
             kwargs['prompt_embeds'] = prompt_embeds
             kwargs['prompt_embeds_mask'] = prompt_embeds_mask
+
+            (
+                neg_prompt_embeds,
+                neg_prompt_embeds_mask,
+            ) = pipe.encode_prompt(
+                prompt=QWEN_NEGATIVE_PROMPT,
+                max_sequence_length=prompt.max_sequence_length or 512,
+                device=device,
+            )
+            kwargs['negative_prompt_embeds'] = neg_prompt_embeds
+            kwargs['negative_prompt_embeds_mask'] = neg_prompt_embeds_mask
         else:
             (
                 prompt_embeds,
@@ -1096,15 +1107,17 @@ class InferPipeline(InpaintFaceMixin, VtonMixin, SamMixin):
                 print(f"T#{prompt.tune_id} P#{prompt.id} Skipping image {i_image} because strength=0. Probably just VTON or outpaint only?")
                 images.append(kwargs['image'])
                 continue
+
+            if 'Qwen' not in pipe.__class__.__name__:
+                kwargs['guidance_scale'] = float(prompt.cfg_scale if prompt.cfg_scale is not None else 3.5)
+                kwargs['joint_attention_kwargs'] = joint_attention_kwargs=joint_attention_kwargs
+            else:
+                kwargs['true_cfg_scale'] = float(prompt.cfg_scale or 4.0)
             image = pipe(
-                guidance_scale=float(prompt.cfg_scale if prompt.cfg_scale is not None else 3.5),
                 height=prompt.h or 1024,
                 width=prompt.w or 1024,
                 num_inference_steps=prompt.steps,
                 generator=torch.Generator(device="cuda").manual_seed((prompt.seed or 42) + i_image),
-                joint_attention_kwargs=joint_attention_kwargs,
-                # TODO instead of failing above with QWEN?
-                # **({} if 'Qwen' in pipe.__class__.__name__ else dict(joint_attention_kwargs=joint_attention_kwargs)),
                 **kwargs,
             ).images[0]
             if is_terminated():

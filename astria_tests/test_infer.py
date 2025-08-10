@@ -207,7 +207,7 @@ def name():
 
 test_name_invocation_count = {}
 
-def run_images(prompt, override_name=None):
+def run_images(prompt, base_tune=TUNE_FLUX, override_name=None):
     prompt.id = name() if override_name is None else override_name
     if test_name_invocation_count.get(prompt.id, None) is None:
         test_name_invocation_count[prompt.id] = 0
@@ -215,7 +215,7 @@ def run_images(prompt, override_name=None):
         test_name_invocation_count[prompt.id] += 1
     count = test_name_invocation_count[prompt.id]
 
-    tune = JsonObj(**TUNE_FLUX.__dict__, prompts=[prompt])
+    tune = JsonObj(**base_tune.__dict__, prompts=[prompt])
     images = pipe.infer(tune)
 
     if not prompt.video:

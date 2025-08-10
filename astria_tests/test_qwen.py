@@ -32,11 +32,14 @@ QWEN_LORA = JsonObj(**{
 
 
 def test_qwen_txt2img_no_lora():
+    # import debugpy
+    # debugpy.listen(('0.0.0.0', 11566))
+    # debugpy.wait_for_client()
     prompt = JsonObj(
         **copy.copy(QWEN_PROMPT.__dict__),
     )
     prompt.text=f"woman holding flowers"
-    run_images(prompt)
+    run_images(prompt, base_tune=TUNE_QWEN)
     assert isinstance(pipe.last_pipe, QwenImagePipeline)
 
 def test_qwen_txt2img_lora():
@@ -45,6 +48,6 @@ def test_qwen_txt2img_lora():
     )
     prompt.text=f"<lora:{QWEN_LORA.id}:1> woman holding flowers"
     prompt.tunes=[QWEN_LORA]
-    run_images(prompt)
+    run_images(prompt, base_tune=TUNE_QWEN)
     assert isinstance(pipe.last_pipe, QwenImagePipeline)
 
