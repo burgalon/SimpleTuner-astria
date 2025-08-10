@@ -6,9 +6,9 @@ TOKENS = 75
 
 def hook_forwards(self, root_module: torch.nn.Module):
     for name, module in root_module.named_modules():
-        if "attn" in name and "transformer_blocks" in name  and "single_transformer_blocks" not in name and module.__class__.__name__ == "Attention":
+        if "attn" in name and "transformer_blocks" in name  and "single_transformer_blocks" not in name and module.__class__.__name__ == "FluxAttention":
             module.forward = FluxTransformerBlock_hook_forward(self, module)           
-        elif "attn" in name and "single_transformer_blocks" in name and module.__class__.__name__ == "Attention":
+        elif "attn" in name and "single_transformer_blocks" in name and module.__class__.__name__ == "FluxAttention":
             module.forward = FluxSingleTransformerBlock_hook_forward(self, module) 
 
 

@@ -69,7 +69,7 @@ dependencies = [
     "pillow-jxl-plugin",
     "atomicwrites>=1.4.1",
     "prodigy-plus-schedule-free",
-    "minio>=7.2.16"
+    "minio>=7.2.16",
 ]
 
 [dependency-groups]
@@ -94,6 +94,7 @@ optimum-quanto = { git = "https://github.com/huggingface/optimum-quanto" }
 lycoris-lora = { git = "https://github.com/kohakublueleaf/lycoris", rev = "dev" }
 diffusers = { git = "https://github.com/huggingface/diffusers.git", rev = "03c3f69aa57a6cc2c995d41ea484195d719a240a" }
 easy-dwpose = { git = "https://github.com/carpedm20/easy_dwpose.git", rev = "3eccc2bbdb1db1f01c9b867be92fce23d54c5558" }
+sageattention = { path = "wheels/sageattention-2.2.0-cp312-cp312-linux_x86_64.whl" }
 
 [build-system]
 requires = ["hatchling"]

@@ -3486,11 +3486,10 @@ wheels = [
 
 [[package]]
 name = "sageattention"
-version = "1.0.6"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/a5/c9/0445157fd09c8e5722503588db2a25afe9ab362d927b344dbbe7ee3ce84b/sageattention-1.0.6.tar.gz", hash = "sha256:b0398a5877222ee1abaeccd27d1029309c8b57994794a11c1278e0bfd176512c", size = 12611, upload-time = "2024-11-20T13:30:41.346Z" }
+version = "2.2.0"
+source = { path = "wheels/sageattention-2.2.0-cp312-cp312-linux_x86_64.whl" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/53/06/f7b47adb766bcb38b3f88763374a3e8dffea05ee9b556bc24dbcbd60fd29/sageattention-1.0.6-py3-none-any.whl", hash = "sha256:fafc66569bed62a16839e820c2612141b5a20accf55b876d941bab9c0ac5d888", size = 20105, upload-time = "2024-11-20T13:30:39.544Z" },
+    { filename = "sageattention-2.2.0-cp312-cp312-linux_x86_64.whl", hash = "sha256:38a75af276fad639aa01f8d781af7ae38e5f68a061fb67ad69fbdf487f8d30a9" },
 ]
 
 [[package]]
@@ -3796,7 +3795,7 @@ requires-dist = [
     { name = "rollbar", specifier = ">=1.0.0,<2" },
     { name = "runpod", specifier = ">=1.7.0,<2" },
     { name = "safetensors", specifier = ">=0.4.5,<0.5" },
-    { name = "sageattention" },
+    { name = "sageattention", path = "wheels/sageattention-2.2.0-cp312-cp312-linux_x86_64.whl" },
     { name = "scipy", specifier = ">=1.11.1,<2" },
     { name = "segment-anything", specifier = ">=1.0" },
     { name = "sentencepiece", specifier = ">=0.2.0,<0.3" },

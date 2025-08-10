@@ -33,6 +33,7 @@ MODEL_ID = "black-forest-labs/FLUX.1-dev"
 OUTPUT_ROOT = "/data/models"
 PROMPT = "a serene forest at sunrise, ultra realistic"
 
+
 def setup_sage_attention(pipe):
     attn_procs = {}
     double_blocks_idx = list(range(19))
@@ -76,7 +77,7 @@ def load_pipeline(use_sage: bool, use_sage_fused: bool = False):
     pipe = FluxPipeline.from_pretrained(
         MODEL_ID,
         torch_dtype=torch.bfloat16,
-        local_files_only=True
+        cache_dir=OUTPUT_ROOT,
     ).to("cuda")
     if use_sage and not use_sage_fused:
         setup_sage_attention(pipe)

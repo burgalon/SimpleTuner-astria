@@ -30,10 +30,6 @@ def test_regional_normal():
 
 """
 def test_regional_multi_run_multi_lora():
-    # import debugpy
-    # debugpy.listen(('0.0.0.0', 11566))
-    # debugpy.wait_for_client()
-
     prompt = JsonObj(
         **copy.copy(BASE_PROMPT.__dict__),
         use_regional=True,
