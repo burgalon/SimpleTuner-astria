@@ -4,7 +4,7 @@
 
 **SimpleTuner** is geared towards simplicity, with a focus on making the code easily understood. This codebase serves as a shared academic exercise, and contributions are welcome.
 
-If you'd like to join our community, we can be found [on Discord](https://discord.com/invite/eq3cAMZtCC) via Terminus Research Group.
+If you'd like to join our community, we can be found [on Discord](https://discord.gg/CVzhX7ZA) via Terminus Research Group.
 If you have any questions, please feel free to reach out to us there.
 
 ## Table of Contents
@@ -181,6 +181,15 @@ A 2B / 14B parameter model that can do video as well as text-to-image.
 - ControlNet training is not yet supported.
 
 A [Cosmos2 Predict Quickstart](/documentation/quickstart/COSMOS2IMAGE.md) is available with full example configuration and dataset.
+
+### Qwen-Image
+
+A **massive** 20B MMDiT that can do text-to-image.
+
+- Lycoris, LoRA, and full-rank training are all supported, with full-rank training requiring H200 or better with DeepSpeed
+- ControlNet training is not yet supported.
+
+A [Qwen Image Quickstart](/documentation/quickstart/QWEN_IMAGE.md) is available with example configuration and dataset, as well as general training/configuration tips.
 
 ### Legacy Stable Diffusion models
 

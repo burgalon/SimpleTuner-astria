@@ -42,6 +42,7 @@ model_classes = {
         "auraflow",
         "lumina2",
         "cosmos2image",
+        "qwen_image",
     ],
     "lora": [
         "flux",
@@ -57,6 +58,7 @@ model_classes = {
         "auraflow",
         "hidream",
         "lumina2",
+        "qwen_image",
     ],
     "controlnet": [
         "sdxl",
