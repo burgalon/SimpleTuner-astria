@@ -254,7 +254,7 @@ def train_no_catch(tune: JsonObj):
                 '--pretrained_transformer_model_name_or_path', download_dev2pro(),
                 '--pretrained_transformer_subfolder', 'none',
             ] if tune.dev2pro else []),
-            '--enable_xformers_memory_efficient_attention', # ?
+            # '--enable_xformers_memory_efficient_attention', # Deprecated
             *(['--gradient_checkpointing'] if GPU_MEMORY_GB <= 50 or tune.gradient_checkpointing else []), # avoid OOM but slows training
             '--peft_model_precision', tune.peft_model_precision or 'bf16', # or bf16; when using adamw_bf16 this should be bf16
             '--set_grads_to_none', # ?
@@ -329,7 +329,7 @@ def train_no_catch(tune: JsonObj):
             '--validation_guidance_rescale=0.0',
             '--disable_benchmark',
             *(['--flux_schedule_auto_shift'] if tune.flux_schedule_auto_shift else []),
-            '--flux_schedule_shift', str(tune.flux_schedule_shift if tune.flux_schedule_shift is not None else 0),
+            # '--flux_schedule_shift', str(tune.flux_schedule_shift if tune.flux_schedule_shift is not None else 0), # Deprecated
             '--skip_file_discovery=aspect,metadata',
             *(['--prepend_instance_prompt'] if caption_strategy == "textfile" else []),
         ])
