@@ -37,32 +37,36 @@ def pad_mask(m, size):
     return ImageOps.pad(m, size, method=Image.NEAREST)
 
 
-def build_augmenter_face(resolution: int) -> A.Compose:
+# Build one global augmenter (square output = `resolution × resolution`)
+def build_augmenter(resolution: int) -> A.Compose:
     """
-    Face-anchored: small zoom/rotate/translate, then CENTER crop.
-    Never randomly drifts away from the face.
+    CHANGED:
+      - Remove RandomResizedCrop (it always resizes → blur when scale<1).
+      - Keep small zooms via Affine(scale≈1).
+      - No final Resize; we end with RandomCrop to get exact size.
+      - Use LANCZOS4 for any upsampling that Affine performs.
     """
     return A.Compose(
         [
             A.Affine(
-                scale=(0.92, 1.08),                  # mild zoom in/out
-                rotate=(-8, 8),
-                shear=(-3, 3),
-                translate_percent={"x": (-0.02, 0.02), "y": (-0.02, 0.02)},  # tiny drift
+                scale=(0.90, 1.06),            # mild zoom in/out (keeps detail)
                 keep_ratio=True,
-                fit_output=False,
+                fit_output=False,              # avoid canvas resize
                 interpolation=cv2.INTER_LANCZOS4,
                 mask_interpolation=cv2.INTER_NEAREST,
                 p=0.9,
             ),
-            # Make sure we can crop to target size; if too small, pad (don’t upscale)
+
+            # Ensure we can always crop to target size without upscaling
             A.PadIfNeeded(
                 min_height=resolution, min_width=resolution,
                 border_mode=cv2.BORDER_REFLECT_101,
-                value=None, mask_value=0, always_apply=True
+                value=None, mask_value=0,
+                always_apply=True
             ),
-            # Keep the face at the center of the crop
-            A.CenterCrop(height=resolution, width=resolution, always_apply=True),
+
+            # Produce exact training size with no resampling
+            A.RandomCrop(height=resolution, width=resolution, always_apply=True),
 
             # Photometrics
             A.CLAHE(clip_limit=2, p=0.5),
@@ -73,49 +77,12 @@ def build_augmenter_face(resolution: int) -> A.Compose:
                 hue=0.0,
                 p=0.8,
             ),
+
             # Keep mask binary
             A.Lambda(
                 mask=lambda m, **k: (
-                    ((m > 0.5) if m.dtype != np.uint8 else (m > 127)).astype("uint8") * 255
-                ),
-                p=1.0,
-            ),
-        ],
-        additional_targets={"mask": "mask"},
-    )
-
-def build_augmenter_general(resolution: int) -> A.Compose:
-    """
-    General images: allow spatial variety; RandomCrop is fine here.
-    """
-    return A.Compose(
-        [
-            A.Affine(
-                scale=(0.90, 1.06),
-                keep_ratio=True,
-                fit_output=False,
-                interpolation=cv2.INTER_LANCZOS4,
-                mask_interpolation=cv2.INTER_NEAREST,
-                p=0.9,
-            ),
-            A.PadIfNeeded(
-                min_height=resolution, min_width=resolution,
-                border_mode=cv2.BORDER_REFLECT_101,
-                value=None, mask_value=0, always_apply=True
-            ),
-            A.RandomCrop(height=resolution, width=resolution, always_apply=True),
-
-            A.CLAHE(clip_limit=2, p=0.5),
-            A.ColorJitter(
-                brightness=(0.8, 1.2),
-                contrast=(0.8, 1.5),
-                saturation=0.05,
-                hue=0.0,
-                p=0.8,
-            ),
-            A.Lambda(
-                mask=lambda m, **k: (
-                    ((m > 0.5) if m.dtype != np.uint8 else (m > 127)).astype("uint8") * 255
+                    ((m > 0.5) if m.dtype != np.uint8 else (m > 127))
+                    .astype("uint8") * 255
                 ),
                 p=1.0,
             ),
@@ -379,11 +346,11 @@ def download_training(tune: JsonObj, one_dir=False):
         if tune.black_mask:
             image = Image.composite(image, Image.new('RGB', image.size, (0, 0, 0)), mask)
 
-        aug_face    = build_augmenter_face(resolution)
-        aug_general = build_augmenter_general(resolution)
-
-        save_face = partial(save_img_augs, augmenter=aug_face,    mask_dir=mask_dir)
-        save_gen  = partial(save_img_augs, augmenter=aug_general, mask_dir=mask_dir)
+        augmenter = build_augmenter(resolution)
+        save_pair = partial(
+            save_img_augs,
+            augmenter=augmenter,
+            mask_dir=mask_dir)
 
         # 1. Center crop to resolution or Face crop
         bbox = None
@@ -429,7 +396,7 @@ def download_training(tune: JsonObj, one_dir=False):
                 # CHANGED: do NOT pre-resize mask before augmenter
                 mask_crop = center_crop_mask.crop(bbox)
 
-                save_face(
+                save_pair(
                     img_crop,
                     f"{face_dir}/{fn}-center-crop.png",
                     mask=mask_crop
@@ -437,7 +404,7 @@ def download_training(tune: JsonObj, one_dir=False):
 
             elif tune.name not in HUMAN_CLASS_NAMES:  # ---- non-human class ----
                 # CHANGED: pass native image & mask
-                save_gen(
+                save_pair(
                     image,
                     f"{face_dir}/{fn}-center-crop.png",
                     mask=mask
@@ -450,7 +417,7 @@ def download_training(tune: JsonObj, one_dir=False):
 
         else:  # ---- no face-crop mode ----
             # CHANGED: pass native image & mask
-            save_gen(
+            save_pair(
                 image,
                 f"{face_dir}/{fn}-center-crop.png",
                 mask=mask
@@ -477,14 +444,14 @@ def download_training(tune: JsonObj, one_dir=False):
 
                 mask_pad = pad_mask(mask_for_pad, (resolution, resolution))
 
-                save_gen(
+                save_pair(
                     img_pad,
                     f"{training_dir}/{fn}-padded.png",
                     mask=mask_pad
                 )
             else:
                 # Prefer pad (letterbox) for the padded copy
-                save_gen(
+                save_pair(
                     pad_img(image, (resolution, resolution)),
                     f"{training_dir}/{fn}-padded.png"
                 )

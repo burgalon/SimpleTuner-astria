@@ -231,6 +231,12 @@ def get_argument_parser():
         ),
     )
     parser.add_argument(
+        "--flux_use_discretized_timesteps",
+        type=int,
+        default=None,
+        help="Train only on discretized timesteps for a given sampling range.",
+    )
+    parser.add_argument(
         "--flow_clip_high_and_low_noise",
         default=False,
         action="store_true",

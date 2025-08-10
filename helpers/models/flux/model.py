@@ -14,7 +14,7 @@ from transformers import (
     T5TokenizerFast,
     T5EncoderModel,
 )
-from diffusers import AutoencoderKL
+from diffusers import AutoencoderKL, FlowMatchEulerDiscreteScheduler
 from diffusers.models.attention_processor import Attention
 from helpers.models.flux.transformer import FluxTransformer2DModel
 from helpers.models.flux.pipeline import FluxPipeline, FluxKontextPipeline
@@ -23,6 +23,9 @@ from helpers.models.flux.pipeline_controlnet import (
     FluxControlPipeline,
 )
 
+from helpers.training.custom_schedule import (
+    apply_flow_schedule_shift,
+)
 from helpers.training.multi_process import _get_rank
 from helpers.models.flux import (
     prepare_latent_image_ids,
@@ -38,6 +41,49 @@ if should_log():
     logger.setLevel(os.environ.get("SIMPLETUNER_LOG_LEVEL", "INFO"))
 else:
     logger.setLevel("ERROR")
+
+
+def flux_discrete_timesteps(
+    scheduler: FlowMatchEulerDiscreteScheduler,
+    height: int,
+    width: int,
+    n: int,
+    *,
+    vae_scale_factor: int = 8,      # Flux AE is 8x; packing adds the extra /2 handling below
+    device: torch.device | str | None = None,
+):
+    """
+    Returns:
+      t_discrete: float32 tensor of length n on [~0, 1000], descending, exactly what the pipeline uses.
+      t_cont:     same timesteps normalized to [0,1] (what the model actually receives).
+    """
+    # --- reproduce the pipeline’s packing / rounding to latent grid ---
+    # See FluxPipeline.prepare_latents + _pack_latents: image_seq_len = (H//(vae*2)) * (W//(vae*2))
+    h_lat = 2 * (int(height) // (vae_scale_factor * 2))
+    w_lat = 2 * (int(width)  // (vae_scale_factor * 2))
+    image_seq_len = (h_lat // 2) * (w_lat // 2)
+
+    # --- same dynamic shift "mu" the pipeline computes (calculate_shift) ---
+    base_seq = getattr(scheduler.config, "base_image_seq_len", 256)
+    max_seq  = getattr(scheduler.config, "max_image_seq_len", 4096)
+    base_sh  = getattr(scheduler.config, "base_shift", 0.5)
+    max_sh   = getattr(scheduler.config, "max_shift", 1.15)
+    m = (max_sh - base_sh) / (max_seq - base_seq)
+    b = base_sh - m * base_seq
+    mu = image_seq_len * m + b
+
+    # --- match pipeline’s “sigmas” handling ---
+    # If the scheduler wants to use its built-in "flow sigmas", don't pass a custom list.
+    use_flow_sigmas = bool(getattr(scheduler.config, "use_flow_sigmas", True))
+    sigmas = None if use_flow_sigmas else np.linspace(1.0, 1.0 / n, n)
+
+    # --- ask the scheduler to build the schedule exactly like the pipeline ---
+    scheduler.set_timesteps(num_inference_steps=n, device=device, sigmas=sigmas, mu=mu)
+
+    # Discrete timesteps (≈ [1000 .. small]), and the continuous times in [0,1]
+    t_discrete = scheduler.timesteps.clone()                          # float32, length n, descending
+    t_cont = t_discrete / scheduler.config.num_train_timesteps        # what the model actually uses
+    return t_discrete, t_cont
 
 
 class Flux(ImageModelFoundation):
@@ -87,6 +133,15 @@ class Flux(ImageModelFoundation):
             "model": T5EncoderModel,
         },
     }
+
+    discretized_timestep_rn_generator = None
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        if self.config.flux_use_discretized_timesteps:
+            device = torch.device("cpu")
+            self.discretized_timestep_rn_generator = torch.Generator(device=device)
+            self.discretized_timestep_rn_generator.manual_seed(self.config.seed or 42)  # reproducible
 
     def control_init(self):
         """
@@ -413,6 +468,191 @@ class Flux(ImageModelFoundation):
         return super().prepare_batch_conditions(
             batch=batch, state=state
         )  # fixes ControlNet latents in super class.
+
+    def prepare_batch(self, batch: dict, state: dict) -> dict:
+        """
+        Moves the batch to the proper device/dtype,
+        samples noise, timesteps and, if applicable, flow-matching sigmas.
+        This code is mostly common across models, but if you'd like to override certain pieces, use prepare_batch_conditions.
+
+        Args:
+            batch (dict): The batch to prepare.
+            state (dict): The training state.
+        Returns:
+            dict: The prepared batch.
+        """
+        if not batch:
+            return batch
+
+        target_device_kwargs = {
+            "device": self.accelerator.device,
+            "dtype": self.config.weight_dtype,
+        }
+
+        logger.debug(f"Preparing batch: {batch.keys()}")
+        # Ensure the encoder hidden states are on device
+        if batch["prompt_embeds"] is not None and hasattr(batch["prompt_embeds"], "to"):
+            batch["encoder_hidden_states"] = batch["prompt_embeds"].to(
+                **target_device_kwargs
+            )
+
+        # Process additional conditioning if provided
+        pooled_embeds = batch.get("add_text_embeds")
+        time_ids = batch.get("batch_time_ids")
+        batch["added_cond_kwargs"] = {}
+        if pooled_embeds is not None and hasattr(pooled_embeds, "to"):
+            batch["added_cond_kwargs"]["text_embeds"] = pooled_embeds.to(
+                **target_device_kwargs
+            )
+        if time_ids is not None and hasattr(time_ids, "to"):
+            batch["added_cond_kwargs"]["time_ids"] = time_ids.to(**target_device_kwargs)
+
+        # Process latents (assumed to be in 'latent_batch')
+        latents = batch.get("latent_batch")
+        if not hasattr(latents, "to"):
+            raise ValueError("Received invalid value for latents.")
+        batch["latents"] = latents.to(**target_device_kwargs)
+
+        encoder_attention_mask = batch.get("encoder_attention_mask")
+        if encoder_attention_mask is not None and hasattr(encoder_attention_mask, "to"):
+            batch["encoder_attention_mask"] = encoder_attention_mask.to(
+                **target_device_kwargs
+            )
+
+        # Sample noise
+        noise = torch.randn_like(batch["latents"])
+        bsz = batch["latents"].shape[0]
+        # If not flow matching, possibly apply an offset to noise
+        if not self.config.flow_matching and self.config.offset_noise:
+            if (
+                self.config.noise_offset_probability == 1.0
+                or random.random() < self.config.noise_offset_probability
+            ):
+                noise = noise + self.config.noise_offset * torch.randn(
+                    latents.shape[0],
+                    latents.shape[1],
+                    1,
+                    1,
+                    device=latents.device,
+                )
+        batch["noise"] = noise
+
+        # Possibly add input perturbation to input noise only
+        if self.config.input_perturbation != 0 and (
+            not getattr(self.config, "input_perturbation_steps", None)
+            or state["global_step"] < self.config.input_perturbation_steps
+        ):
+            input_perturbation = self.config.input_perturbation
+            if getattr(self.config, "input_perturbation_steps", None):
+                input_perturbation *= 1.0 - (
+                    state["global_step"] / self.config.input_perturbation_steps
+                )
+            batch["input_noise"] = noise + input_perturbation * torch.randn_like(
+                batch["latents"]
+            )
+        else:
+            batch["input_noise"] = noise
+
+        # Flow matching branch: set sigmas and timesteps.
+        if self.PREDICTION_TYPE is PredictionTypes.FLOW_MATCHING:
+            if self.config.flux_use_discretized_timesteps:
+                pipe = self.pipelines[
+                    PipelineTypes.TEXT2IMG
+                ]
+                scheduler = FlowMatchEulerDiscreteScheduler.from_config(pipe.scheduler.config)
+                _, t_cont = flux_discrete_timesteps(
+                    scheduler,
+                    height=1024,
+                    width=1024,
+                    n=self.config.flux_use_discretized_timesteps,
+                )
+                t_cont = t_cont.flatten()
+                n = t_cont.numel()
+                if bsz <= n:
+                    idx = torch.randperm(
+                        n,
+                        device=t_cont.device,
+                        generator=self.discretized_timestep_rn_generator,
+                    )[:bsz]
+                else:
+                    # fallback: sample with replacement
+                    idx = torch.randint(
+                        n,
+                        (bsz,),
+                        device=t_cont.device,
+                        generator=self.discretized_timestep_rn_generator,
+                    )
+
+                t_cont = t_cont.index_select(0, idx).to(device=self.accelerator.device)
+                batch["sigmas"] = t_cont
+            elif not self.config.flux_fast_schedule and not any(
+                [
+                    self.config.flow_use_beta_schedule,
+                    self.config.flow_use_uniform_schedule,
+                ]
+            ):
+                batch["sigmas"] = torch.sigmoid(
+                    self.config.flow_sigmoid_scale
+                    * torch.randn((bsz,), device=self.accelerator.device)
+                )
+                if self.config.flow_clip_high_and_low_noise:
+                    batch["sigmas"] = batch["sigmas"].clamp_(0.1, 0.8)
+                batch["sigmas"] = apply_flow_schedule_shift(
+                    self.config, self.noise_schedule, batch["sigmas"], batch["noise"]
+                )
+            elif self.config.flow_use_uniform_schedule:
+                batch["sigmas"] = torch.rand((bsz,), device=self.accelerator.device)
+                batch["sigmas"] = apply_flow_schedule_shift(
+                    self.config, self.noise_schedule, batch["sigmas"], batch["noise"]
+                )
+            elif self.config.flow_use_beta_schedule:
+                alpha = self.config.flow_beta_schedule_alpha
+                beta = self.config.flow_beta_schedule_beta
+                beta_dist = Beta(alpha, beta)
+                batch["sigmas"] = beta_dist.sample((bsz,)).to(
+                    device=self.accelerator.device
+                )
+                batch["sigmas"] = apply_flow_schedule_shift(
+                    self.config, self.noise_schedule, batch["sigmas"], batch["noise"]
+                )
+            else:
+                available_sigmas = [1.0] * 7 + [0.75, 0.5, 0.25]
+                batch["sigmas"] = torch.tensor(
+                    random.choices(available_sigmas, k=bsz),
+                    device=self.accelerator.device,
+                )
+            batch["timesteps"] = batch["sigmas"] * 1000.0
+            # Ensure sigmas is reshaped appropriately (default is 4D, may be overriden in video subclass)
+            self.expand_sigmas(batch)
+            batch["noisy_latents"] = (1 - batch["sigmas"]) * batch["latents"] + batch[
+                "sigmas"
+            ] * batch["input_noise"]
+        else:
+            weights = generate_timestep_weights(
+                self.config, self.noise_schedule.config.num_train_timesteps
+            ).to(self.accelerator.device)
+            if bsz > 1 and not self.config.disable_segmented_timestep_sampling:
+                batch["timesteps"] = segmented_timestep_selection(
+                    actual_num_timesteps=self.noise_schedule.config.num_train_timesteps,
+                    bsz=bsz,
+                    weights=weights,
+                    config=self.config,
+                    use_refiner_range=False,  # You can override in subclass if needed.
+                ).to(self.accelerator.device)
+            else:
+                batch["timesteps"] = torch.multinomial(
+                    weights, bsz, replacement=True
+                ).long()
+            batch["noisy_latents"] = self.noise_schedule.add_noise(
+                batch["latents"].float(),
+                batch["input_noise"].float(),
+                batch["timesteps"],
+            ).to(device=self.accelerator.device, dtype=self.config.weight_dtype)
+
+        # any model-specific augmentation can occur inside prepare_batch_conditions.
+        batch = self.prepare_batch_conditions(batch=batch, state=state)
+
+        return batch
 
     def model_predict(self, prepared_batch):
         # handle guidance

@@ -305,6 +305,7 @@ def train_no_catch(tune: JsonObj):
             # '--override_dataset_config',
             '--caption_dropout_probability', str(tune.caption_dropout_probability if tune.caption_dropout_probability is not None else 0.1),
             *(['--use_ema'] if tune.use_ema else []),
+            *([f'--flux_use_discretized_timesteps={tune.flux_use_discretized_timesteps}'] if tune.flux_use_discretized_timesteps else []),
             # '--ema_decay=0.99',
             # '--torch_num_threads=8',
             # '--image_processing_batch_size=32',

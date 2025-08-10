@@ -11,9 +11,9 @@ http_client = PoolManager(
     # retries=Retry(total=5, redirect=2, connect=3),
 )
 
-client = Minio(os.environ['R2_ENDPOINT_URL_S3'].split('/')[-1],
-               access_key=os.environ.get('R2_ACCESS_KEY_ID'),
-               secret_key=os.environ['R2_SECRET_ACCESS_KEY'],
+client = Minio(os.environ.get('R2_ENDPOINT_URL_S3', 'http://dummy').split('/')[-1],
+               access_key=os.environ.get('R2_ACCESS_KEY_ID', 'dummy'),
+               secret_key=os.environ.get('R2_SECRET_ACCESS_KEY', 'dummy'),
                http_client=http_client,
                )
 
