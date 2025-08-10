@@ -68,7 +68,8 @@ dependencies = [
     "imageio-ffmpeg>=0.6.0",
     "pillow-jxl-plugin",
     "atomicwrites>=1.4.1",
-    "prodigy-plus-schedule-free"
+    "prodigy-plus-schedule-free",
+    "minio>=7.2.16"
 ]
 
 [dependency-groups]
