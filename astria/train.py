@@ -188,6 +188,7 @@ def train_no_catch(tune: JsonObj):
         tune.face_crop = False
 
     if tune.report_to == 'wandb' and not tune.validation_steps:
+        tune.steps += 1
         tune.validation_steps = 100
     elif not tune.validation_steps:
         tune.validation_steps = 50000
