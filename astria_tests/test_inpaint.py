@@ -58,13 +58,13 @@ def test_inpainting_controlnet_foreground():
     run_images(prompt)
     assert isinstance(pipe.last_pipe, FluxControlNetInpaintPipeline)
 
-def test_inpainting_controlnet_emma():
+def test_inpainting_controlnet_emma1():
     prompt = JsonObj(
         **copy.copy(BASE_PROMPT.__dict__),
-        input_image="/root/SimpleTuner-astria/astria_tests/fixtures/fix_your_rows.png",
+        input_image="astria_tests/fixtures/input-image.jpg",
         denoising_strength=0.85,
         controlnet='pose',
-        mask_image="/root/SimpleTuner-astria/astria_tests/fixtures/fix_your_rows_mask.png",
+        mask_image="astria_tests/fixtures/mask_input.jpg",
     )
     prompt.controlnet_txt2img = True
     prompt.text=f"<lora:{FLUX_LORA.id}:1> {FLUX_LORA.train_token} woman"
@@ -76,7 +76,7 @@ def test_inpainting_controlnet_emma():
 def test_inpainting_controlnet_emma2():
     prompt = JsonObj(
         **copy.copy(BASE_PROMPT.__dict__),
-        input_image="/root/SimpleTuner-astria/astria_tests/fixtures/fix_your_rows.png",
+        input_image="astria_tests/fixtures/input-image.jpg",
         denoising_strength=0.85,
         controlnet='pose',
     )

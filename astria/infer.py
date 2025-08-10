@@ -16,7 +16,7 @@ import cv2
 import numpy as np
 import torch
 from PIL import Image, ImageOps, ImageFilter
-from diffusers import FluxFillPipeline, FluxTransformer2DModel
+from diffusers import DiffusionPipeline, FluxFillPipeline, FluxTransformer2DModel
 from diffusers import FluxPipeline, FluxImg2ImgPipeline, FluxControlNetPipeline, FluxControlNetModel, \
     FluxInpaintPipeline, FluxControlNetImg2ImgPipeline #, FluxControlNetInpaintPipeline
 from torchvision import transforms
@@ -35,9 +35,10 @@ from ragdiffusion import (
 
 from add_clut import add_clut
 from add_grain import add_grain
+from transfer_minio import download_minio
 from astria_utils import run, MODELS_DIR, download_model_from_server, JsonObj, device, \
     StaleDeploymentException, FLUX_INPAINT_MODEL_ID, CACHE_DIR, \
-    HUMAN_CLASS_NAMES, check_refresh, download_from_sync, upload_to_sync
+    HUMAN_CLASS_NAMES, check_refresh
 
 if os.environ.get('MOCK_SERVER') or os.environ.get('DEBUG') == 'test':
     from astria_mock_server import report_infer_job_failure, request_infer_job_from_server, request_tune_job_from_server, send_to_server
@@ -61,7 +62,6 @@ from vton_mixin import (
     UPPER_BODY_CATEGORIES,
     VTON_CATEGORIES,
 )
-from wan_video_mixin import WanVideoMixin
 from watermark_helper import add_watermark
 from sam_helper import SamMixin
 
@@ -102,9 +102,6 @@ def parse_args(prompt: JsonObj):
     parser.add_argument("--face_inpaint_exclude_neck", action='store_true', default=False)
     parser.add_argument("--hires_denoising_strength", type=float, default=None)
     parser.add_argument("--fill", action='store_true', default=False)
-    parser.add_argument("--video_prompt", type=str, default=None)
-    parser.add_argument("--video", action='store_true', default=prompt.video)
-    parser.add_argument("--video_model", type=str, default=prompt.video_model if prompt.video_model is not None else '720p')
     parser.add_argument("--fps", type=int, default=prompt.fps if prompt.fps is not None else 16)
     parser.add_argument("--frames", type=int, default=prompt.frames if prompt.frames is not None else 81)
     parser.add_argument("--outpaint", choices=['top-left', 'top-right', 'bottom-left', 'bottom-right', 'center', 'top-center', 'bottom-center', 'left-center', 'right-center'], default=None)
@@ -136,7 +133,10 @@ def parse_args(prompt: JsonObj):
     parser.add_argument("--fix_bindi", help="Inpaint dot on the forehead", action='store_true', default=False)
     parser.add_argument("--vton_cfg_scale", help="VTON cfg_scale", type=float, default=None)
     parser.add_argument("--vton_hires", help="VTON Hi resolution", action='store_true', default=False)
+    parser.add_argument("--vton_model", help="VTON Hi resolution", type=str, default=None)
+    parser.add_argument("--vton_quality", help="VTON Quality - fast, quality", type=str, default=None)
     parser.add_argument("--remove_background", help="Remove background", action='store_true', default=False)
+    parser.add_argument("--composite", help="Composite image after removing background", type=str, default=None)
     parser.add_argument(
         "--use_regional",
         "--multi",
@@ -201,7 +201,7 @@ def parse_args(prompt: JsonObj):
 def get_pipe_key_for_lora(pipe):
     return 'fill' if isinstance(pipe, FluxFillPipeline) else 'pipe'
 
-class InferPipeline(InpaintFaceMixin, VtonMixin, WanVideoMixin, SamMixin):
+class InferPipeline(InpaintFaceMixin, VtonMixin, SamMixin):
     reference_pattern = r'<(lora|faceid):([^>:]+):([\d\.]+)>'
     reference_pattern_re = re.compile(reference_pattern)
 
@@ -211,6 +211,13 @@ class InferPipeline(InpaintFaceMixin, VtonMixin, WanVideoMixin, SamMixin):
         self.reset()
 
     def setup_sage_attention(self, pipe):
+        if 'a100' in os.environ.get("AKASH_CLUSTER_PUBLIC_HOSTNAME", "") or os.environ.get('DISABLE_SAGE_ATTENTION'):
+            print("SageAttention is disabled")
+            return
+        # skip if QwenImagePipeline
+        if 'Qwen' in pipe.__class__.__name__:
+            return
+
         attn_procs = {}
         double_blocks_idx = list(range(19))
         single_blocks_idx = list(range(38))
@@ -229,7 +236,7 @@ class InferPipeline(InpaintFaceMixin, VtonMixin, WanVideoMixin, SamMixin):
 
         pipe.transformer.set_attn_processor(attn_procs)
 
-    def reset(self, gc_collect=False, remove_wan=True):
+    def reset(self, gc_collect=False):
         self.last_pipe = None
         self.model_path = None
         self.pipe = None
@@ -238,11 +245,9 @@ class InferPipeline(InpaintFaceMixin, VtonMixin, WanVideoMixin, SamMixin):
         self.current_lora_weights_map = {}
         self.resolution = None
 
-        if remove_wan:
-            self.reset_wan_i2v(gc_collect=False)
-
         self.reset_controlnet()
         self.reset_sam()
+        self.reset_inpaint_faces()
 
         if gc_collect:
             gc.collect()
@@ -267,7 +272,6 @@ class InferPipeline(InpaintFaceMixin, VtonMixin, WanVideoMixin, SamMixin):
             torch.cuda.empty_cache()
 
     def warmup(self):
-        self.reset_wan_i2v(gc_collect=False)
         start_time = time.time()
         self.init_pipe(MODELS_DIR + "/1504944-flux1")
         total_time = time.time() - start_time
@@ -314,11 +318,12 @@ class InferPipeline(InpaintFaceMixin, VtonMixin, WanVideoMixin, SamMixin):
                 else:
                     lora_fn = f"{MODELS_DIR}/{tune.id}.safetensors"
                 with FileLock(f"{lora_fn}.lock", timeout=60):
-                    if not os.path.exists(lora_fn):
-                        download_from_sync(f"{tune.id}.safetensors")
-                    if not os.path.exists(lora_fn):
+                    if not os.path.exists(lora_fn) and os.environ.get('R2_ACCESS_KEY_ID'):
+                        download_minio(f"models/{tune.id}.safetensors", lora_fn)
+                    if not os.path.exists(lora_fn) and os.environ.get('AWS_ACCESS_KEY_ID'):
+                        start_time = time.time()
                         run(['aws', 's3', 'cp', f"s3://sdbooth2-production/models/{tune.id}.safetensors", lora_fn])
-                        upload_to_sync(f"{tune.id}.safetensors")
+                        print(f"S3 Downloaded LoRA {tune.id} in {time.time() - start_time:.2f}s")
                     else:
                         # touch for access time so that it doesn't get cleaned up
                         os.utime(lora_fn)
@@ -381,11 +386,11 @@ class InferPipeline(InpaintFaceMixin, VtonMixin, WanVideoMixin, SamMixin):
         return {"scale": scales[0]}
 
     def init_pipe(self, model_path):
-        """Initialize both FluxPipeline and FluxImg2ImgPipeline."""
         if not self.pipe or self.model_path != model_path:
-            # Initialize the FluxPipeline for text-to-image
+            print(f"Initializing pipeline from {model_path}")
+            self.reset()
             try:
-                self.pipe = FluxPipeline.from_pretrained(
+                self.pipe = DiffusionPipeline.from_pretrained(
                     model_path,
                     torch_dtype=torch.bfloat16,
                     local_files_only=True,
@@ -394,11 +399,7 @@ class InferPipeline(InpaintFaceMixin, VtonMixin, WanVideoMixin, SamMixin):
             except Exception as e:
                 print(f"Failed to load model {model_path}: {e}")
                 raise e
-                # delete model_path
-                os.remove(model_path)
-                raise e
             self.model_path = model_path
-            # TODO: Remove once this is merged to diffusers
             self.resolution = (1024, 1024)
 
     def init_pulid(self):
@@ -422,29 +423,26 @@ class InferPipeline(InpaintFaceMixin, VtonMixin, WanVideoMixin, SamMixin):
 
     def get_pulid_embedding(self, tune: JsonObj):
         embedding_file = f"{MODELS_DIR}/{tune.id}_pulid_embedding.pt"
-        lock_file = f"{embedding_file}.lock"
+        if os.path.exists(embedding_file) and not os.environ.get("FORCE_PULID"):
+            if os.path.getsize(embedding_file) == 0:
+                raise RuntimeError(f"T#{tune.id} No embeddings can be calculated for this tune.")
+            # Load the embedding and update access time
+            print(f"T#{tune.id} Loading PulID embedding")
+            pulid_embed = torch.load(embedding_file)
+            os.utime(embedding_file)
+            return pulid_embed
 
-        with FileLock(lock_file, timeout=60):
-            if os.path.exists(embedding_file) and not os.environ.get("FORCE_PULID"):
-                if os.path.getsize(embedding_file) == 0:
-                    raise RuntimeError(f"T#{tune.id} No embeddings can be calculated for this tune.")
-                # Load the embedding and update access time
-                print(f"T#{tune.id} Loading PulID embedding")
-                pulid_embed = torch.load(embedding_file)
-                os.utime(embedding_file)
-                return pulid_embed
-
-            try:
-                # Calculate the embedding and save it
-                start_time = time.time()
-                pulid_embed, _ = self.pulid_model.get_id_embedding_for_images_list(load_images(tune.face_swap_images[:4]))
-                print(f"T#{tune.id} Calculated PulID embedding in {time.time() - start_time:.2f}s")
-                torch.save(pulid_embed, embedding_file)
-                os.utime(embedding_file)
-            except RuntimeError:
-                # Create a zero-length file to indicate failure
-                open(embedding_file, 'w').close()
-                raise
+        try:
+            # Calculate the embedding and save it
+            start_time = time.time()
+            pulid_embed, _ = self.pulid_model.get_id_embedding_for_images_list(load_images(tune.face_swap_images[:4]))
+            print(f"T#{tune.id} Calculated PulID embedding in {time.time() - start_time:.2f}s")
+            torch.save(pulid_embed, embedding_file)
+            os.utime(embedding_file)
+        except RuntimeError:
+            # Create a zero-length file to indicate failure
+            open(embedding_file, 'w').close()
+            raise
 
         return pulid_embed
 
@@ -517,7 +515,14 @@ class InferPipeline(InpaintFaceMixin, VtonMixin, WanVideoMixin, SamMixin):
                     tokenizer=self.pipe.tokenizer,
                     tokenizer_2=self.pipe.tokenizer_2,
                 ).to(device)
+                if os.environ.get('PRUNA'):
+                    self.inpaint = smash_helper.smash_pipe(self.inpaint)
+
                 self.setup_sage_attention(self.inpaint)
+            if os.environ.get('PRUNA'):
+                self.pipe.cache_helper.disable()
+                self.inpaint.cache_helper.enable()
+
             return self.inpaint
 
     def init_controlnet_inpaint_txt2img(self, tune, control_type):
@@ -770,7 +775,7 @@ class InferPipeline(InpaintFaceMixin, VtonMixin, WanVideoMixin, SamMixin):
                 guidance_scale=30,
                 height=h,
                 width=w,
-                num_inference_steps=prompt.steps or 28,
+                num_inference_steps=prompt.steps,
                 generator=torch.Generator(device="cuda").manual_seed((prompt.seed or 42) + i_image),
                 image=new_image,
                 mask_image=mask_image,
@@ -816,35 +821,39 @@ class InferPipeline(InpaintFaceMixin, VtonMixin, WanVideoMixin, SamMixin):
 
         return images
 
+    def set_prompt_defaults(self, prompt: JsonObj, tune: JsonObj):
+        if not prompt.steps:
+            prompt.steps = 50 if 'Qwen' in self.pipe.__class__.__name__ else 28
+            print(f"Defaults {prompt.steps=}")
+
+
     def infer(self, tune: JsonObj):
         set_current_infer_tune(tune)
+        model_path = download_model_from_server(f"{tune.id}-{tune.branch}")
+        self.init_pipe(model_path)
 
-        result = None
+        images = None
         for i_prompt, prompt in enumerate(tune.prompts):
             parse_args(prompt)
-
-            if not prompt.video or not prompt.input_image or prompt.denoising_strength is None or prompt.denoising_strength > 0:
-                # Reset WAN to clear memory for other pipelines
-                self.reset_wan_i2v(gc_collect=True)
-                model_path = download_model_from_server(f"{tune.id}-{tune.branch}")
-                self.init_pipe(model_path)
-
-                start_time = time.time()
-                result = self.infer_prompt(prompt, tune, should_send_to_server=not prompt.video)
-                if prompt.video:
-                    prompt.input_image = result[0]
-
-            if prompt.video:
-                # Need to reset controlnet so that wan call to get_controlnet_hint works
-                prompt.controlnet = prompt.controlnet_hint = None
-                self.reset(gc_collect=True, remove_wan=False)
-                start_time = time.time()
-                result = self.infer_wan_i2v(prompt, tune, result)
-
-            print(f"T={tune.id} {i_prompt}/{len(tune.prompts)} P={prompt.id} U={prompt.user_id} V={prompt.video} https://www.astria.ai/admin/prompts/{prompt.id} {(time.time() - start_time):.2f} seconds")
-
+            self.set_prompt_defaults(prompt, tune)
+            start_time = time.time()
+            images = self.infer_prompt(prompt, tune)
+            print(f"T={tune.id} {i_prompt}/{len(tune.prompts)} P={prompt.id} U={prompt.user_id} https://www.astria.ai/admin/prompts/{prompt.id} {(time.time() - start_time):.2f} seconds")
         set_current_infer_tune(None)
-        return result
+        return images
+
+    def composite(self, images, prompt: JsonObj):
+        print(f"T#{prompt.tune_id} P#{prompt.id} Compositing image with {prompt.composite}")
+        # turn this off so that images are not saved as PNG
+        prompt.remove_background = None
+        composite = load_image(prompt.composite, None)
+        out_images = []
+        for i_image, image in enumerate(images):
+            if image.size != composite.size:
+                composite = ImageOps.fit(composite, image.size, method=Image.LANCZOS)
+            image = Image.alpha_composite(composite.convert('RGBA'), image.convert("RGBA")).convert("RGB")
+            out_images.append(image)
+        return out_images
 
     def remove_background(self, images):
         birefnet = BiRefNet_node()
@@ -1015,7 +1024,7 @@ class InferPipeline(InpaintFaceMixin, VtonMixin, WanVideoMixin, SamMixin):
                         kwargs['image'] = input_image
             else:
                 kwargs['image'] = input_image
-                if mask_image or prompt.ace_plus:
+                if mask_image:
                     pipe = self.init_inpaint(prompt)
                 if mask_image:
                     # Enable Fill automatically if no LoRAs
@@ -1056,18 +1065,30 @@ class InferPipeline(InpaintFaceMixin, VtonMixin, WanVideoMixin, SamMixin):
             del kwargs['prompt_main']
 
         # Encode text embeds
-        (
-            prompt_embeds,
-            pooled_prompt_embeds,
-            _,
-        ) = pipe.encode_prompt(
-            prompt.text,
-            prompt.text,
-            max_sequence_length=prompt.max_sequence_length or 512,
-            device=device,
-        )
-        kwargs['prompt_embeds'] = prompt_embeds
-        kwargs['pooled_prompt_embeds'] = pooled_prompt_embeds
+        if 'Qwen' in pipe.__class__.__name__:
+            (
+                prompt_embeds,
+                prompt_embeds_mask,
+            ) = pipe.encode_prompt(
+                prompt=prompt.text,
+                max_sequence_length=prompt.max_sequence_length or 512,
+                device=device,
+            )
+            kwargs['prompt_embeds'] = prompt_embeds
+            kwargs['prompt_embeds_mask'] = prompt_embeds_mask
+        else:
+            (
+                prompt_embeds,
+                pooled_prompt_embeds,
+                _, # text_ids
+            ) = pipe.encode_prompt(
+                prompt=prompt.text,
+                prompt_2=prompt.text,
+                max_sequence_length=prompt.max_sequence_length or 512,
+                device=device,
+            )
+            kwargs['prompt_embeds'] = prompt_embeds
+            kwargs['pooled_prompt_embeds'] = pooled_prompt_embeds
 
         print(f"T#{prompt.tune_id} P#{prompt.id} pipe={pipe.__class__.__name__} {prompt.text=} loras={self.current_lora_weights_map[get_pipe_key_for_lora(pipe)]}")
         for i_image in range(num_images):
@@ -1079,9 +1100,11 @@ class InferPipeline(InpaintFaceMixin, VtonMixin, WanVideoMixin, SamMixin):
                 guidance_scale=float(prompt.cfg_scale if prompt.cfg_scale is not None else 3.5),
                 height=prompt.h or 1024,
                 width=prompt.w or 1024,
-                num_inference_steps=prompt.steps or 28,
+                num_inference_steps=prompt.steps,
                 generator=torch.Generator(device="cuda").manual_seed((prompt.seed or 42) + i_image),
                 joint_attention_kwargs=joint_attention_kwargs,
+                # TODO instead of failing above with QWEN?
+                # **({} if 'Qwen' in pipe.__class__.__name__ else dict(joint_attention_kwargs=joint_attention_kwargs)),
                 **kwargs,
             ).images[0]
             if is_terminated():
@@ -1134,6 +1157,9 @@ class InferPipeline(InpaintFaceMixin, VtonMixin, WanVideoMixin, SamMixin):
 
         if prompt.remove_background:
             images = self.remove_background(images)
+
+            if prompt.composite:
+                images = self.composite(images, prompt)
 
         if os.environ.get('DEBUG'):
             if os.environ.get('DEBUG') != 'test':
@@ -1325,8 +1351,8 @@ def main():
             processed_jobs = 0 if os.environ.get('DISABLE_INFERENCE') else pipeline.poll_infer()
 
             # Give a few chances for inference before starting training
-            if not os.environ.get('DISABLE_TRAINING'):
-                while True:
+            if not os.environ.get('DISABLE_TRAINING') and not os.path.exists(f'{MODELS_DIR}/DISABLE_TRAINING'):
+                while not is_terminated():
                     tune = request_tune_job_from_server()
                     if not tune.id:
                         if GPU_MEMORY_GB > 50 and not os.environ.get('DISABLE_INFERENCE'):
@@ -1343,6 +1369,7 @@ def main():
                     train(tune)
                     set_current_train_tune(None)
                     processed_jobs = 1
+                    check_refresh()
 
             # Check both train + infer
             if processed_jobs == 0:
@@ -1382,6 +1409,7 @@ def main():
             print(f"No tune found for {id}")
             continue
         pipeline.infer(tune)
+        # pipeline.load_references(tune.prompts[0], None)
 
 if __name__ == "__main__":
     main()

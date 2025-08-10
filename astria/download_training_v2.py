@@ -145,6 +145,9 @@ def is_slr(image: Image.Image) -> bool:
     except SyntaxError:
         # Avoid TIFF SyntaxError
         return False
+    except UnicodeDecodeError:
+        # Avoid UnicodeDecodeError
+        return False
 
 def download_training(tune: JsonObj, one_dir=False):
     global BASE_TRAIN_RESOLUTION
@@ -189,7 +192,10 @@ def download_training(tune: JsonObj, one_dir=False):
         batch_size = 50
         for i in range(0, len(tune.orig_images), batch_size):
             batch = tune.orig_images[i:i+batch_size]
-            run(['curl', '-L', '--remote-name-all', '--parallel', '--retry', '25', '--retry-delay', '5', '--retry-all-errors', '--fail',  *batch], cwd=training_dir)
+            run([
+                'curl', '-L', '--remote-name-all', '--parallel', '--retry', '25', '--retry-delay', '5', '--retry-all-errors', '--fail',
+                '--max-time', '10', '--connect-timeout', '10', *batch
+            ], cwd=training_dir)
         # IMPORTANT CRITICAL! otherwise --fail will just result in 3 files out of 20 for example.
         if len(os.listdir(training_dir)) == len(tune.orig_images):
             break

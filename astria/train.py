@@ -11,6 +11,7 @@ import torch
 
 from astria_utils import run, run_with_output, MODELS_DIR, EPHEMERAL_MODELS_DIR, \
     download_model_from_server, JsonObj, cleanup_models, CUDA_VISIBLE_DEVICES
+from transfer_minio import upload_minio
 
 if os.environ.get('MOCK_SERVER') or os.environ.get('DEBUG') == 'test':
     from astria_mock_server import request_tune_job_from_server, server_tune_done, report_tune_job_failure
@@ -41,8 +42,7 @@ def create_prompt_library(tune: JsonObj, output_dir: str):
             "city": f"A detailed, high-quality photo of an {tune.token} {tune.name} wearing a quarter-zip sweater, making eye-contact with the camera and striking a natural pose. The photo is shot with an 85mm lens at f/1.8 with a Canon 5D camera and ZEISS lens, taken in a vibrant urban city setting. Use a shallow depth of field and bright, natural lighting to focus attention on the subject",
             # "flowers": f"{tune.name} holding flowers, red sweater, studio photography, plain white background",
             # "ohwx_rembrandt": f"a portrait of {tune.token} {tune.name} in the style of Rembrandt",
-            "rembrandt": f"a portrait of {tune.name} in the style of Rembrandt",
-            "horse": f"A detailed, high-quality photo of an {tune.token} {tune.name} riding a horse in the desert, buildings behind him are on fire, it's night time",
+            # "rembrandt": f"a portrait of {tune.name} in the style of Rembrandt",
         }
     elif tune.name == 'girl':
         data = {
@@ -160,20 +160,13 @@ def download_dev2pro():
 def train_no_catch(tune: JsonObj):
     cleanup_models()
     parse_args(tune)
-
     # Download base model flux from huggingface hub
-    print('TUNE MODELS', tune.base_tune_id, tune.branch)
-    if tune.base_tune_id is not None:
-        model_path = download_model_from_server(f"{tune.base_tune_id}-{tune.branch}")
-    else:
-        print('DOWNLOADING tune.branch')
-        model_path = download_model_from_server(tune.branch)
+    model_path = download_model_from_server(f"{tune.base_tune_id}-{tune.branch}")
 
     if tune.branch == "wan-t2v-14b" or tune.branch == "wan-t2v-14b-2.2":
         tune.model_family = "wan_t2i"
         tune.preprocessing = "wan_t2i"
         tune.gradient_checkpointing = True
-
     timestamp = time.strftime("%Y%m%d-%H%M%S")
 
     cleanup_directory(EPHEMERAL_MODELS_DIR)
@@ -226,16 +219,6 @@ def train_no_catch(tune: JsonObj):
     else:
         train_batch = max(1, (min(min(4, len(tune.orig_images)), 4))) // num_gpus
 
-    tune.tread_config = json.dumps({
-        'routes': [
-            {
-                'start_layer_idx': 8,
-                'end_layer_idx': -8,
-                'selection_ratio': 1.0,
-            },
-        ],
-    })
-
     caption_strategy = tune.caption_strategy or "instanceprompt"
 
     torch.cuda.empty_cache()
@@ -271,8 +254,8 @@ def train_no_catch(tune: JsonObj):
                 '--pretrained_transformer_model_name_or_path', download_dev2pro(),
                 '--pretrained_transformer_subfolder', 'none',
             ] if tune.dev2pro else []),
-            # '--enable_xformers_memory_efficient_attention', # ?
-            *(['--gradient_checkpointing'] if GPU_MEMORY_GB <= 50 or resolution > 512 or tune.gradient_checkpointing else []), # avoid OOM but slows training
+            '--enable_xformers_memory_efficient_attention', # ?
+            *(['--gradient_checkpointing'] if GPU_MEMORY_GB <= 50 or tune.gradient_checkpointing else []), # avoid OOM but slows training
             '--peft_model_precision', tune.peft_model_precision or 'bf16', # or bf16; when using adamw_bf16 this should be bf16
             '--set_grads_to_none', # ?
             '--gradient_accumulation_steps', str(tune.gradient_accumulation_steps or 1),
@@ -282,7 +265,6 @@ def train_no_catch(tune: JsonObj):
             '--aspect_bucket_rounding=2',
             '--model_flavour=dev',
             '--num_train_epochs=0',
-            # '--fuse_qkv_projections',
             f'--max_train_steps={steps}',
             # '--fuse_qkv_projections',
             # '--metadata_update_interval=65', # ?
@@ -303,10 +285,9 @@ def train_no_catch(tune: JsonObj):
             # '--training_scheduler_timestep_spacing=trailing', # defaults
             '--report_to', tune.report_to or 'none',
             # '--allow_tf32', # deprecated
-            # '--mixed_precision=fp8',
+            # '--mixed_precision=bf16',
             # *([f'--base_model_precision={os.environ.get("BASE_MODEL_PRECISION")}'] if os.environ.get("BASE_MODEL_PRECISION") else []),
             *([f'--base_model_precision={tune.base_model_precision}'] if tune.base_model_precision else []),
-            *([f'--flow_clip_high_and_low_noise'] if tune.flow_clip_high_and_low_noise else []),
             # helps see that we're not destroying the priors
             # '--validation_disable_unconditional',
             # '--i_know_what_i_am_doing',
@@ -316,7 +297,7 @@ def train_no_catch(tune: JsonObj):
             f'--lora_rank={tune.lora_rank or 64}',
             f'--lora_alpha={tune.lora_alpha or 64}',
             *(['--user_prompt_library', create_prompt_library(tune, output_dir)] if tune.report_to else []),
-            f'--model_family={tune.model_family or "flux"}',
+            '--model_family=flux',
             f'--train_batch={train_batch}',
             # '--max_workers=1',
             # '--read_batch_size=1',
@@ -347,6 +328,8 @@ def train_no_catch(tune: JsonObj):
             '--validation_guidance=3.5',
             '--validation_guidance_rescale=0.0',
             '--disable_benchmark',
+            *(['--flux_schedule_auto_shift'] if tune.flux_schedule_auto_shift else []),
+            '--flux_schedule_shift', str(tune.flux_schedule_shift if tune.flux_schedule_shift is not None else 0),
             '--skip_file_discovery=aspect,metadata',
             *(['--prepend_instance_prompt'] if caption_strategy == "textfile" else []),
         ])
@@ -372,7 +355,6 @@ def train_no_catch(tune: JsonObj):
             '--snr_gamma=5',
             '--data_backend_config', data_backend_config,
             '--num_train_epochs=0',
-            # '--fuse_qkv_projections',
             f'--max_train_steps={steps}',
             '--metadata_update_interval=65',
             # https://wandb.ai/astria/lora-training/runs/b94a195701ed0a7d7b53e6c9771c4388?nw=nwuserburgalonastria
@@ -381,7 +363,6 @@ def train_no_catch(tune: JsonObj):
             *(['--use_prodigy_optimizer'] if tune.optimizer=='prodigy' else []),
             # ["mmdit", "context", "all"]
             *([f'--flux_lora_target={tune.flux_lora_target}'] if tune.flux_lora_target else []),
-            *([f'--wan_lora_target={tune.wan_lora_target}'] if tune.wan_lora_target else []),
             f'--learning_rate={tune.learning_rate or 1e-4}',
             '--lr_scheduler=constant_with_warmup',
             '--seed=42',
@@ -438,23 +419,7 @@ def train_no_catch(tune: JsonObj):
         f"{MODELS_DIR}/{tune.id}.safetensors",
     )
     if not os.environ.get('MOCK_SERVER') and os.environ.get('R2_ACCESS_KEY_ID'):
-        endpoint, key, secret = os.environ.get('AWS_ENDPOINT_URL_S3'), os.environ.get('AWS_ACCESS_KEY_ID'), os.environ.get('AWS_SECRET_ACCESS_KEY')
-        os.environ['AWS_ENDPOINT_URL_S3'] = os.environ['R2_ENDPOINT_URL_S3']
-        os.environ['AWS_ACCESS_KEY_ID'] = os.environ['R2_ACCESS_KEY_ID']
-        os.environ['AWS_SECRET_ACCESS_KEY'] = os.environ['R2_SECRET_ACCESS_KEY']
-        run([
-            "aws", "s3", "cp",
-            f'{output_dir}/pytorch_lora_weights.safetensors',
-            f"s3://sdbooth2-production/models/{tune.id}.safetensors",
-            '--checksum-algorithm=CRC32',
-        ])
-        if endpoint: os.environ['AWS_ENDPOINT_URL_S3'] = endpoint
-        else: del os.environ['AWS_ENDPOINT_URL_S3']
-        if key: os.environ['AWS_ACCESS_KEY_ID'] = key
-        else: del os.environ['AWS_ACCESS_KEY_ID']
-        if secret: os.environ['AWS_SECRET_ACCESS_KEY'] = secret
-        else: del os.environ['AWS_SECRET_ACCESS_KEY']
-
+        upload_minio(f"{output_dir}/pytorch_lora_weights.safetensors", f"models/{tune.id}.safetensors")
     if not os.environ.get('MOCK_SERVER') and os.environ.get('AWS_ACCESS_KEY_ID'):
         run([
             "aws", "s3", "cp",

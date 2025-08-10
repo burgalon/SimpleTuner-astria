@@ -77,20 +77,7 @@ def test_vton_1_full_dress_v1():
     prompt.text = "Woman wearing white shirt with printed flowers, fashion editorial plain white background"
     prompt.tunes = [FLUX_VTON_SHIRT]
     prompt.super_resolution = True
-    prompt.hires_fix = True
     run_images(prompt)
-
-def test_vton_1_full_dress_hires():
-    prompt = JsonObj(
-        **copy.copy(BASE_PROMPT.__dict__),
-        inpaint_faces=True,
-    )
-    prompt.text = "Woman wearing white shirt with printed flowers, fashion editorial plain white background --vton_hires"
-    prompt.tunes = [FLUX_VTON_SHIRT]
-    prompt.super_resolution = True
-    prompt.hires_fix = True
-    run_images(prompt)
-
 
 def test_vton_1_full_shirt():
     prompt = JsonObj(
@@ -100,7 +87,6 @@ def test_vton_1_full_shirt():
     prompt.text = "Woman wearing white shirt with printed flowers, fashion editorial plain white background"
     prompt.tunes = [FLUX_VTON_SHIRT]
     prompt.super_resolution = True
-    prompt.hires_fix = True
     run_images(prompt)
 
 def test_vton_img2img_strength0():

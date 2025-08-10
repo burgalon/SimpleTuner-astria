@@ -223,12 +223,13 @@ def run_images(prompt, override_name=None):
             # check if has alpha
             if image.mode == 'RGBA':
                 image.save(MODELS_DIR + f"/{prompt.id}-{i}.png")
+                img_fn = f"{prompt.id}-{count}-{i}.png"
             else:
                 image.save(MODELS_DIR + f"/{prompt.id}-{i}.jpg")
-            img_fn = f"{prompt.id}-{count}-{i}.jpg"
-            pth = MODELS_DIR + f"/{img_fn}"
-            image.save(pth)
+                img_fn = f"{prompt.id}-{count}-{i}.jpg"
             if (Path(__file__).parent / 'results' / img_fn).exists():
+                pth = MODELS_DIR + f"/{img_fn}"
+                image.save(pth)
                 hash_ref =  imagehash.phash(Image.open(
                     (Path(__file__).parent / 'results' / img_fn).absolute()))
                 hash_out =  imagehash.phash(Image.open(pth))

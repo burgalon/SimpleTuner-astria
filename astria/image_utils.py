@@ -6,8 +6,8 @@ import pillow_avif
 from pillow_heif import register_heif_opener
 register_heif_opener()
 
-import imageio.v2 as iio
 import os
+import time
 import cv2
 import numpy as np
 import requests
@@ -16,6 +16,7 @@ import PIL.Image
 from typing import Union
 import os
 s3_session = requests.Session()
+s3_session.timeout = (10, 10)
 retries = requests.packages.urllib3.util.retry.Retry(total=20, backoff_factor=1, status_forcelist=[500, 502, 503, 504, 403, 404, 401], raise_on_status=True)
 s3_session.mount('', requests.adapters.HTTPAdapter(max_retries=retries))
 
@@ -90,12 +91,13 @@ def io2img(url, convert = 'RGB') -> Image.Image:
 def url2img(url, convert = 'RGB') -> Image.Image:
     if url.startswith("http"):
         print(f"Downloading {url}")
-        for i in range(10):
+        for i in range(15):
             try:
-                response = s3_session.get(url, stream=True)
+                response = s3_session.get(url, stream=True, timeout=(5,3))
                 response.raise_for_status()
                 return io2img(response.raw, convert)
             except Exception as e:
+                time.sleep(0.1 * (i + 1))  # exponential backoff
                 print(f"Failed to download {url} on attempt {i+1}: {e}")
         raise Exception(f"Failed to download {url}")
     else:
@@ -160,19 +162,7 @@ def load_image(image: Union[str, PIL.Image.Image], convert = 'RGB') -> PIL.Image
 def save_img(image: Image, fn: str, format="PNG") -> str:
     return image.save(fn, format=format, optimize=False, compression=0)
 
-
-def save_img_as_video(image: Image, fn: str) -> str:
-    frame = np.array(image)  # (H, W, 3), uint8
-
-    writer = iio.get_writer(
-        fn,
-        fps=1,                # 1 frame → 1s duration
-        codec='libx264',      # H.264
-        ffmpeg_params=[
-            '-crf', '0',
-            '-pix_fmt', 'yuv444p'
-        ],
-    )
-    writer.append_data(frame)
-    writer.close()
-    return fn
+if __name__ == "__main__":
+    # Test the functions
+    img = url2img("https://mp.astria.ai/mie32w532no789744zhae2n0xvmm")
+    print(f"Image size: {img.size}, mode: {img.mode}")

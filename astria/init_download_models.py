@@ -1,7 +1,6 @@
 import time
 import os
 
-from birefnet.utils import check_download_model
 from hinter_helper import annotator_ckpts_path
 import torch
 from diffusers import FluxControlNetModel
@@ -14,17 +13,6 @@ from astria_utils import MODELS_DIR, CACHE_DIR, run, download_model_from_server,
 from controlnet_constants import CONTROLNETS_DICT
 from add_clut import CLUT_DICT
 from pulid_pipeline.pulid_ext import PuLID
-
-
-WAN_I2V_LOCAL_LOCATION_480P = (
-    "Wan-AI/Wan2.1-I2V-14B-480P",
-    f"{CACHE_DIR}/Wan-AI/Wan2.1-I2V-14B-480P",
-)
-WAN_I2V_LOCAL_LOCATION_720P = (
-    "Wan-AI/Wan2.1-I2V-14B-720P",
-    f"{CACHE_DIR}/Wan-AI/Wan2.1-I2V-14B-720P",
-)
-
 
 def get_cached_repos_dict():
     return dict((repo.repo_id, repo) for repo in scan_cache_dir().repos)
@@ -64,8 +52,13 @@ def _download_models():
                       revision="refs/pr/4",
                       )
 
-    # HF_TOKEN=hf_********tNke huggingface-cli upload tuner /data/cache / --exclude *.log
+    # HF_TOKEN=hf_********tNke huggingface-cli upload tuner /data/cache / --exclude "torchinductor/**" .cache *.log Wan-AI
     snapshot_download(repo_id="burgalon/tuner", local_dir=CACHE_DIR, local_dir_use_symlinks=False)
+
+    # extract tar /data/cache/torchinductor.tar
+    run(['tar', '-xf', f'{CACHE_DIR}/torchinductor.tar', '-C', CACHE_DIR])
+    # for reference - tar command - tar -cf /data/cache/torchinductor.tar -C /data/cache torchinductor
+    # now upload to huggingface - huggingface-cli upload burgalon/tuner /data/cache/torchinductor.tar
 
     # BiRefNet
     if not os.path.exists(f"{CACHE_DIR}/BiRefNet/swin_large_patch4_window12_384_22kto1k.pth"):
@@ -102,12 +95,10 @@ def _download_models():
 
 def _download_models_secondary():
     print("Downloading models in secondary process")
+    download_model_from_server(f"3063697-flux1") # Krea
 
     snapshot_download(repo_id="HCMUE-Research/SAM-vit-h", local_dir=CACHE_DIR, local_dir_use_symlinks=False, allow_patterns=["*.pth"])
     os.makedirs("/data/cache/HaldCLUT", exist_ok=True)
-    for filename in [*CLUT_DICT.values()]:
-        if not os.path.exists(f"/data/cache/{filename}"):
-            run(['aws', 's3', 'cp', f's3://astria-model-repo/cache/{filename}', f'/data/cache/{filename}'])
 
     cached_repos_dict = get_cached_repos_dict()
 
@@ -121,16 +112,8 @@ def _download_models_secondary():
                     # local_files_only=True,
                 )
     download_hinters(cached_repos_dict)
+    download_model_from_server(f"3086296-qwen-image-1") # QWEN
 
-    # Prefetch the WAN models.
-    snapshot_download(
-        WAN_I2V_LOCAL_LOCATION_720P[0],
-        local_dir=WAN_I2V_LOCAL_LOCATION_720P[1],
-    )
-    snapshot_download(
-        WAN_I2V_LOCAL_LOCATION_480P[0],
-        local_dir=WAN_I2V_LOCAL_LOCATION_480P[1],
-    )
 
 def _download_models_secondary_with_retry():
     for i in range(10):

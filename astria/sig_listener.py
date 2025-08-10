@@ -47,5 +47,14 @@ def set_current_train_tune(tune):
     current_train_tune = tune
 
 signal.signal(signal.SIGTERM, handle_sigterm)
+signal.signal(signal.SIGHUP, handle_sigterm)
+
 if not os.environ.get('DEBUG', None):
     signal.signal(signal.SIGINT, handle_sigterm)
+
+if __name__ == "__main__":
+    # Test the signal handling
+    import time
+    print("Running... Press Ctrl+C or send SIGTERM to terminate.")
+    time.sleep(1200)
+

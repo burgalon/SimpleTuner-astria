@@ -349,12 +349,19 @@ INPAINT_RESOLUTION = 1024
 MASK_PADDING = 0.02
 class InpaintFaceMixin:
     def __init__(self):
-        self.reset_yolo()
-        self.face_masker = FaceMaskGenerator(device=device, model_root=CACHE_DIR)
-        self.birefnet = BiRefNet_node()
+        self.reset_inpaint_faces()
 
-    def reset_yolo(self):
+    def reset_inpaint_faces(self):
         self.yolo = None
+        self.face_masker = None
+        self.birefnet = None
+        
+    def init_models(self):
+        if not self.yolo:
+            self.face_masker = FaceMaskGenerator(device=device, model_root=CACHE_DIR)
+            self.birefnet = BiRefNet_node()
+            self.yolo = YOLO(YOLO_FACE_MODEL)
+        
 
     def remove_background_for_inpaint_crop(self, images):
         for i_image, image in enumerate(images):
@@ -449,7 +456,7 @@ class InpaintFaceMixin:
             cropped_image_resized.save(f"{MODELS_DIR}/{prompt.id}-cropped-image.jpg")
 
         # Invert mask for differential diffusion if necessary
-        pipe = self.inpaint
+        pipe = self.inpaint or self.fill
         if isinstance(pipe, FluxDifferentialImg2ImgPipeline):
             print("Inverting mask for differential diffusion")
             cropped_mask_resized = ImageOps.invert(cropped_mask_resized)
@@ -567,8 +574,7 @@ class InpaintFaceMixin:
         return image
 
     def inpaint_faces(self, images: List[Image.Image], prompt: JsonObj, kwargs: Dict):
-        if not self.yolo:
-            self.yolo = YOLO(YOLO_FACE_MODEL)
+        self.init_models()
 
         lora = next(iter(t for t in prompt.tunes if t.name in HUMAN_CLASS_NAMES), None)
         if not lora:

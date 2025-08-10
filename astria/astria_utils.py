@@ -216,18 +216,24 @@ def run_with_output(args, **kwargs):
     # Return the last 100 lines of the output
     return tail_lines
 
+MODEL_URLS = {
+    '1504944': 'black-forest-labs/FLUX.1-dev',
+    '3063697': 'black-forest-labs/FLUX.1-Krea-dev',
+    '3086296': 'Qwen/Qwen-Image',
+}
 def download_model_from_server(model_name: str, convert_xl_to_diffusers = True):
     cleanup_models()
     # Playground V2 has a different configuration - https://huggingface.co/playgroundai/playground-v2-1024px-aesthetic
-    if model_name == '1504944-flux1':
-        model_path = f"{MODELS_DIR}/{model_name}"
+    model_path = f"{MODELS_DIR}/{model_name}"
+    if model_name.split('-')[0] in MODEL_URLS:
         if not os.path.exists(model_path) or os.environ.get("FORCE_DOWNLOAD") or not os.path.exists(f"{model_path}/model_index.json"):
             from huggingface_hub import snapshot_download
-            snapshot_download('black-forest-labs/FLUX.1-dev', ignore_patterns=['flux1-dev.safetensors', 'ae.safetensors', 'dev_grid.jpg', 'README.md', 'LICENSE.md', '.gitattributes'], local_dir=model_path)
+            url = MODEL_URLS[model_name.split('-')[0]]
+            print(f"Downloading {url} to {model_path}")
+            snapshot_download(url, ignore_patterns=['flux1-dev.safetensors', 'flux1-krea-dev.safetensors', 'ae.safetensors', 'dev_grid.jpg', 'README.md', 'LICENSE.md', '.gitattributes'], local_dir=model_path)
             Path(f"{model_path}/do_not_delete").touch()
         return model_path
     if model_name == f'{FLUX_INPAINT_MODEL_ID}-flux1':
-        model_path = f"{MODELS_DIR}/{model_name}"
         if not os.path.exists(model_path) or os.environ.get("FORCE_DOWNLOAD") or not os.path.exists(f"{model_path}/transformer") or not os.path.exists(f"{model_path}/transformer/diffusion_pytorch_model.safetensors.index.json"):
             from huggingface_hub import snapshot_download
             snapshot_download('black-forest-labs/FLUX.1-Fill-dev',
@@ -236,36 +242,6 @@ def download_model_from_server(model_name: str, convert_xl_to_diffusers = True):
                               local_dir=model_path, revision="refs/pr/4",
                               )
             Path(f"{model_path}/do_not_delete").touch()
-        return model_path
-    if model_name == "wan-t2v-14b":
-        model_path = f"{MODELS_DIR}/{model_name}"
-        if not os.path.exists(model_path):
-            from huggingface_hub import snapshot_download
-            snapshot_download('Wan-AI/Wan2.1-T2V-14B-Diffusers',
-                local_dir=model_path
-            )
-            Path(f"{model_path}/do_not_delete").touch()
-        Path(f"{model_path}/do_not_delete").touch()
-        return model_path
-    if model_name == "wan-t2v-5b-2.2":
-        model_path = f"{MODELS_DIR}/{model_name}"
-        if not os.path.exists(model_path):
-            from huggingface_hub import snapshot_download
-            snapshot_download('Wan-AI/Wan2.2-TI2V-5B-Diffusers',
-                local_dir=model_path
-            )
-            Path(f"{model_path}/do_not_delete").touch()
-        Path(f"{model_path}/do_not_delete").touch()
-        return model_path
-    if model_name == "wan-t2v-14b-2.2":
-        model_path = f"{MODELS_DIR}/{model_name}"
-        if not os.path.exists(model_path):
-            from huggingface_hub import snapshot_download
-            snapshot_download('Wan-AI/Wan2.2-T2V-A14B-Diffusers',
-                local_dir=model_path
-            )
-            Path(f"{model_path}/do_not_delete").touch()
-        Path(f"{model_path}/do_not_delete").touch()
         return model_path
     raise NotImplementedError(f"model_name={model_name}")
 
@@ -280,12 +256,14 @@ def check_refresh():
         if mod_time > process_start_time:
             raise StaleDeploymentException('check_refresh found newer refresh_ts.txt')
 
-SYNC_POD_IP = os.environ.get("SYNC_POD_IP", '10.0.17.208')
+SYNC_POD_IP = os.environ.get("SYNC_POD_IP")
+SYNC_POD_PORT = os.environ.get("SYNC_POD_PORT", '22') # 22
+
 def upload_to_sync(model_name):
     if not SYNC_POD_IP:
         return
     try:
-        run(['rsync', '-hazv', '--ignore-existing', '--info=progress2','-e', "ssh -o StrictHostKeyChecking=no", f'/data/models/{model_name}', f'root@{SYNC_POD_IP}:/data/models/'])
+        run(['rsync', '-hazv', '--timeout=2', '--ignore-existing', '--info=progress2', '-e', f"ssh -p {SYNC_POD_PORT} -o StrictHostKeyChecking=no", f'/data/models/{model_name}', f'root@{SYNC_POD_IP}:/data/models/'])
     except Exception as e:
         print(f"Error uploading {model_name} to sync: {e}")
         return
@@ -294,18 +272,16 @@ def download_from_sync(model_name):
     if not SYNC_POD_IP:
         return
     try:
-        run(['rsync', '-hazv', '--ignore-existing', '--info=progress2','-e', "ssh -o StrictHostKeyChecking=no", f'root@{SYNC_POD_IP}:/data/models/{model_name}', f'/data/models/'])
+        run(['rsync', '-hazv', '--timeout=2', '--ignore-existing', '--info=progress2','-e', f"ssh -p {SYNC_POD_PORT} -o StrictHostKeyChecking=no", f'root@{SYNC_POD_IP}:/data/models/{model_name}', f'/data/models/'])
     except Exception as e:
         print(f"Error downloading {model_name} from sync: {e}")
         return
 
 if __name__ == "__main__":
     print("Starting")
-    upload_to_sync('1824332.safetensors')
-    # download_from_sync('2583931.safetensors')
-    # while True:
-    #     cleanup_models()
-    #     sleep_time = 60 * 60 * 4
-    #     print(f"Sleeping for {sleep_time} seconds")
-    #     time.sleep(sleep_time)
+    while True:
+        cleanup_models()
+        sleep_time = 60 * 60 * 4
+        print(f"Sleeping for {sleep_time} seconds")
+        time.sleep(sleep_time)
     print("Done")
