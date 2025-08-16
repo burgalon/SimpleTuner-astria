@@ -1,5 +1,5 @@
 import copy
-from test_infer import pipe, run_images, MODELS_DIR, name, FLUX_FACEID, JsonObj
+from test_infer import pipe, run_images, MODELS_DIR, JsonObj
 from image_utils import load_image
 from diffusers import QwenImagePipeline
 

@@ -196,6 +196,8 @@ def tail(f, n, offset=0):
     return lines
 
 def run_with_output(args, **kwargs):
+    if os.environ.get('MOCK_SERVER'):
+        return run(args)
     args = [shlex.quote(arg) for arg in args]
     print(" ".join(args))
 

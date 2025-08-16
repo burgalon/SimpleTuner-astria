@@ -167,6 +167,23 @@ def train_no_catch(tune: JsonObj):
         tune.model_family = "wan_t2i"
         tune.preprocessing = "wan_t2i"
         tune.gradient_checkpointing = True
+    if tune.branch == "qwen-image-1":
+        tune.model_family = "qwen_image"
+        tune.gradient_checkpointing = tune.gradient_checkpointing if tune.gradient_checkpointing is not None else True
+        tune.optimizer = tune.optimizer or 'optimi-lion'
+        tune.disable_inductor = True
+        tune.base_model_precision = tune.base_model_precision or 'no_change'
+        tune.learning_rate = tune.learning_rate or 1e-4
+        tune.max_grad_norm =0.1 # 0.01 # https://huggingface.co/terminusresearch/simpletuner-example-qwen_image-peft-lora?not-for-all-audiences=true
+        # tune.flux_schedule_auto_shift = True
+        # tune.validation_steps = 5
+        # 1.2s/it WANDB optimizer=bnb-adam8bit disable_inductor=true base_model_precision=default/bf16?
+        # 1.4s/it WANDB optimizer=bnb-adam8bit disable_inductor=true base_model_precision=nf8-bnb
+        # 1.7s/it WANDB optimizer=optimi-lion disable_inductor=true base_model_precision=nf8-bnb rank=8
+    else:
+        tune.model_family = 'flux'
+        tune.fuse_qkv_projections = tune.fuse_qkv_projections or True
+
     timestamp = time.strftime("%Y%m%d-%H%M%S")
 
     cleanup_directory(EPHEMERAL_MODELS_DIR)
@@ -180,7 +197,7 @@ def train_no_catch(tune: JsonObj):
     # A40, train_batch_4 resolution=1024 lora_rank=64 lora_alpha=64 optimizer=adamw learning_rate=1e-4 max_grad_norm=None flux_lora_target=Before it was committed lr_warmpup_steps=1
     # 16.6s/it 3k steps 13:40 hours memory
 
-    if tune.user_id == 2:
+    if tune.user_id == 2 and not tune.report_to:
         tune.report_to = "wandb"
 
     parse_env_args(tune)
@@ -188,7 +205,7 @@ def train_no_catch(tune: JsonObj):
         tune.face_crop = False
 
     if tune.report_to == 'wandb' and not tune.validation_steps:
-        tune.steps += 1
+        tune.steps = int(tune.steps) + 1
         tune.validation_steps = 100
     elif not tune.validation_steps:
         tune.validation_steps = 50000
@@ -229,10 +246,12 @@ def train_no_catch(tune: JsonObj):
     os.environ['DEBUG_LOG_FILENAME'] = f"{output_dir}/debug.log"
     os.environ['WANDB_DIR'] = output_dir
     os.environ['TORCHINDUCTOR_CACHE_DIR'] = "/data/cache/torchinductor_cache"
-    if tune.preprocessing != '1':
+
+    # DO NOT change this. preprocessing can equal None
+    if tune.preprocessing=='2' or tune.preprocessing=='3':
+        os.environ['TRAINING_DYNAMO_BACKEND'] = 'no' if tune.disable_inductor else 'inductor'
         tail_lines = run_with_output([
-            'accelerate',
-            'launch',
+            'uv', 'run', '-m', 'accelerate.commands.launch',
             '--gpu_ids', CUDA_VISIBLE_DEVICES,
             # '--mixed_precision=no',
             # *([f'--multi_gpu'] if num_gpus > 1 else []),
@@ -255,9 +274,7 @@ def train_no_catch(tune: JsonObj):
                 '--pretrained_transformer_model_name_or_path', download_dev2pro(),
                 '--pretrained_transformer_subfolder', 'none',
             ] if tune.dev2pro else []),
-            # '--enable_xformers_memory_efficient_attention', # Deprecated
             *(['--gradient_checkpointing'] if GPU_MEMORY_GB <= 50 or tune.gradient_checkpointing else []), # avoid OOM but slows training
-            '--peft_model_precision', tune.peft_model_precision or 'bf16', # or bf16; when using adamw_bf16 this should be bf16
             '--set_grads_to_none', # ?
             '--gradient_accumulation_steps', str(tune.gradient_accumulation_steps or 1),
             '--resume_from_checkpoint=latest',
@@ -267,7 +284,7 @@ def train_no_catch(tune: JsonObj):
             '--model_flavour=dev',
             '--num_train_epochs=0',
             f'--max_train_steps={steps}',
-            # '--fuse_qkv_projections',
+            *(['--fuse_qkv_projections'] if tune.fuse_qkv_projections else []),
             # '--metadata_update_interval=65', # ?
             # https://wandb.ai/astria/lora-training/runs/b94a195701ed0a7d7b53e6c9771c4388?nw=nwuserburgalonastria
             *([f'--max_grad_norm={tune.max_grad_norm}'] if tune.max_grad_norm else []),
@@ -287,10 +304,9 @@ def train_no_catch(tune: JsonObj):
             '--report_to', tune.report_to or 'none',
             # '--allow_tf32', # deprecated
             # '--mixed_precision=bf16',
-            # *([f'--base_model_precision={os.environ.get("BASE_MODEL_PRECISION")}'] if os.environ.get("BASE_MODEL_PRECISION") else []),
             *([f'--base_model_precision={tune.base_model_precision}'] if tune.base_model_precision else []),
             # helps see that we're not destroying the priors
-            # '--validation_disable_unconditional',
+            '--validation_disable_unconditional',
             # '--i_know_what_i_am_doing',
             '--keep_vae_loaded',
             # ["mmdit", "context", "all"]
@@ -298,7 +314,7 @@ def train_no_catch(tune: JsonObj):
             f'--lora_rank={tune.lora_rank or 64}',
             f'--lora_alpha={tune.lora_alpha or 64}',
             *(['--user_prompt_library', create_prompt_library(tune, output_dir)] if tune.report_to else []),
-            '--model_family=flux',
+            '--model_family', tune.model_family,
             f'--train_batch={train_batch}',
             # '--max_workers=1',
             # '--read_batch_size=1',
@@ -311,7 +327,7 @@ def train_no_catch(tune: JsonObj):
             # '--image_processing_batch_size=32',
             # '--vae_batch_size=1',
             # '--validation_prompt="ohwx woman holding flowers, red sweater, studio photography, plain white background"',
-            # *(['--flow_schedule_auto_shift'] if tune.flux_schedule_auto_shift else []),
+            *(['--flow_schedule_auto_shift'] if tune.flow_schedule_auto_shift else []),
             '--flow_schedule_shift', str(tune.flow_schedule_shift if tune.flow_schedule_shift is not None else 0),
             '--num_validation_images=1',
             '--validation_num_inference_steps=28',
@@ -328,10 +344,10 @@ def train_no_catch(tune: JsonObj):
             '--tracker_project_name=flux-lora',
             '--validation_guidance=3.5',
             '--validation_guidance_rescale=0.0',
+            '--validation_guidance=4', '--validation_guidance_real=3.5',
             '--disable_benchmark',
-            *(['--flux_schedule_auto_shift'] if tune.flux_schedule_auto_shift else []),
             # '--flux_schedule_shift', str(tune.flux_schedule_shift if tune.flux_schedule_shift is not None else 0), # Deprecated
-            '--skip_file_discovery=aspect,metadata',
+            # '--skip_file_discovery=aspect,metadata',
             *(['--prepend_instance_prompt'] if caption_strategy == "textfile" else []),
         ])
     else:
@@ -394,7 +410,7 @@ def train_no_catch(tune: JsonObj):
             '--vae_batch_size=1',
             # '--validation_prompt="ohwx woman holding flowers, red sweater, studio photography, plain white background"',
             '--num_validation_images=1',
-            '--validation_num_inference_steps=28',
+            '--validation_num_inference_steps', tune.validation_num_inference_steps or '28',
             '--validation_seed=42',
             '--minimum_image_size=64',
             f'--resolution={resolution}',
@@ -408,6 +424,7 @@ def train_no_catch(tune: JsonObj):
             '--validation_guidance=3.5',
             '--validation_guidance_rescale=0.0',
             *(['--prepend_instance_prompt'] if caption_strategy == "textfile" else []),
+            *(['--validation_disable_unconditional'] if tune.branch == 'qwen-image-1' else [])
         ])
 
     if not os.path.exists(f"{output_dir}/pytorch_lora_weights.safetensors"):
@@ -445,6 +462,7 @@ def train(tune: JsonObj):
         report_tune_job_failure(tune, traceback.format_exc())
 
 if __name__ == "__main__":
+    # CUDA_VISIBLE_DEVICES=0 TR_REPORT_TO=none MOCK_SERVER=1 DEBUG=1 NUM_IMAGES=1 uv run astria/train.py 9
     def poll():
         i = 0
         max_sleeps = int(os.environ.get('MAX_SLEEPS', 90))
@@ -469,6 +487,6 @@ if __name__ == "__main__":
 
         tune = request_tune_job_from_server(id)
         # overriding report_to=wandb - for debugging purposes
-        tune.report_to = 'wandb'
+        tune.report_to = os.environ.get('TR_REPORT_TO', 'wandb')
         print(f"Starting training for tune {tune.id}")
         train(tune)

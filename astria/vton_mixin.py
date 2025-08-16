@@ -16,9 +16,8 @@ import rollbar
 from PIL import Image
 from astria_utils import JsonObj, MODELS_DIR
 
-BAKE_API_KEY = ''
 if os.environ.get('MOCK_SERVER') or os.environ.get('DEBUG') == 'test':
-    from astria_mock_server import FASHN_API_KEY
+    from astria_mock_server import FASHN_API_KEY, BAKE_API_KEY
 else:
     from astria_server import FASHN_API_KEY, BAKE_API_KEY
 from image_utils import pil2base64, load_image
@@ -39,22 +38,11 @@ HEADERS_BAKE = {"Authorization": f"Key {BAKE_API_KEY}", "Content-Type": "applica
 FASHN_BASE_URL_V1 = 'https://api.fashn.ai/v1'
 FASHN_BASE_URL_NIGHTLY = 'https://api.fashn.ai/nightly'
 
-if not os.environ.get('R2_ENDPOINT_URL_S3'):
-    os.environ.setdefault('R2_ENDPOINT_URL_S3', "")
-if not os.environ.get('R2_ACCESS_KEY_ID'):
-    os.environ.setdefault('R2_ACCESS_KEY_ID', "")
-if not os.environ.get('R2_SECRET_ACCESS_KEY'):
-    os.environ.setdefault('R2_SECRET_ACCESS_KEY', "")
-if (
-    os.environ.get('R2_ENDPOINT_URL_S3')
-    and os.environ.get('R2_ACCESS_KEY_ID')
-    and os.environ.get('R2_SECRET_ACCESS_KEY')
-):
-    s3_boto = boto3.client('s3',
-                        endpoint_url=os.environ['R2_ENDPOINT_URL_S3'],
-                        aws_access_key_id=os.environ['R2_ACCESS_KEY_ID'],
-                        aws_secret_access_key=os.environ['R2_SECRET_ACCESS_KEY'],
-                        )
+s3_boto = boto3.client('s3',
+                    endpoint_url=os.environ.get('R2_ENDPOINT_URL_S3'),
+                    aws_access_key_id=os.environ.get('R2_ACCESS_KEY_ID'),
+                    aws_secret_access_key=os.environ.get('R2_SECRET_ACCESS_KEY'),
+                    )
 S3_BUCKET = 'sdbooth2-production'
 PUBLIC_BUCKET_URL = 'https://mp.astria.ai/'
 
@@ -168,8 +156,7 @@ class VtonMixin:
         random_suffix = uuid.uuid4().hex[:8]
         key = f"tmp/vton-{prompt_id}-{image_type}-{random_suffix}.png"
         print(f"Uploading {image_type} image to S3 with key: {key}")
-        if s3_client is not None:
-            s3_client.upload_fileobj(img_byte_arr, bucket, key)
+        s3_client.upload_fileobj(img_byte_arr, bucket, key)
         url = public_url_prefix + key
 
         # Verify that the image is accessible via the public URL
@@ -184,8 +171,7 @@ class VtonMixin:
                 time.sleep(0.5)
 
         print(f"P={prompt_id} Could not verify {image_type} image upload at {url}")
-        if s3_client is not None:
-            s3_client.delete_object(Bucket=bucket, Key=key) # Cleanup failed upload
+        s3_client.delete_object(Bucket=bucket, Key=key) # Cleanup failed upload
         return None, None
 
     def vton_image_bake(self, image: Image.Image, prompt: JsonObj):
@@ -236,9 +222,8 @@ class VtonMixin:
 
             print(f"VTON response: {response.status_code} {response.text}")
             # delete the temporary image from S3
-            if s3_boto is not None:
-                s3_boto.delete_object(Bucket=S3_BUCKET, Key=human_key)
-                s3_boto.delete_object(Bucket=S3_BUCKET, Key=garment_key)
+            s3_boto.delete_object(Bucket=S3_BUCKET, Key=human_key)
+            s3_boto.delete_object(Bucket=S3_BUCKET, Key=garment_key)
 
 
             response_data = response.json()

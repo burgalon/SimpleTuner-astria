@@ -47,8 +47,9 @@ console_handler.setFormatter(
 )
 
 # blank out the existing debug.log, if exists
-if os.path.exists("debug.log"):
-    with open("debug.log", "w"):
+debug_log_filename = os.environ.get('DEBUG_LOG_FILENAME', "debug.log")
+if os.path.exists(debug_log_filename):
+    with open(debug_log_filename, "w"):
         pass
 
 
@@ -66,7 +67,7 @@ class RankFileFormatter(logging.Formatter):
         return f"[RANK {rank}] {message}"
 
 
-file_handler = logging.FileHandler("debug.log")
+file_handler = logging.FileHandler(debug_log_filename)
 file_handler.setLevel(logging.DEBUG)  # Capture debug and above
 file_handler.setFormatter(
     RankFileFormatter("%(asctime)s [%(levelname)s] (%(name)s) %(message)s")

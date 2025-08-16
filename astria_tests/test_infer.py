@@ -96,11 +96,11 @@ FLUX_LORA_SHOE = JsonObj(**{
 })
 
 FLUX_LORA_DRESS = JsonObj(**{
-    "id": 2053283,
+    "id": 2689680,
     "name": "dress",
     "title": "Floral dress",
     "branch": "flux1",
-    "token": str(2053283),
+    "token": str(2689680),
     "train_token": "floral white",
     "model_type": "lora",
     "face_swap_images": [
@@ -207,7 +207,7 @@ def name():
 
 test_name_invocation_count = {}
 
-def run_images(prompt, base_tune=TUNE_FLUX, override_name=None):
+def run_images(prompt, override_name=None, base_tune=TUNE_FLUX):
     prompt.id = name() if override_name is None else override_name
     if test_name_invocation_count.get(prompt.id, None) is None:
         test_name_invocation_count[prompt.id] = 0
@@ -233,7 +233,7 @@ def run_images(prompt, base_tune=TUNE_FLUX, override_name=None):
                 hash_ref =  imagehash.phash(Image.open(
                     (Path(__file__).parent / 'results' / img_fn).absolute()))
                 hash_out =  imagehash.phash(Image.open(pth))
-                assert hash_ref == hash_out
+                assert hash_ref == hash_out, "Image hash does not match"
     return images
 
 # Test that loras do not leak across test by having a test of before/after lora

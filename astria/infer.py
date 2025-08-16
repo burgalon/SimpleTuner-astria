@@ -389,19 +389,25 @@ class InferPipeline(InpaintFaceMixin, VtonMixin, SamMixin):
     def init_pipe(self, model_path):
         if not self.pipe or self.model_path != model_path:
             print(f"Initializing pipeline from {model_path}")
-            self.reset()
+            self.reset(gc_collect=True)
             try:
+                start_time = time.time()
                 self.pipe = DiffusionPipeline.from_pretrained(
                     model_path,
                     torch_dtype=torch.bfloat16,
                     local_files_only=True,
                 ).to(device)
+                end_time = time.time()
+                print(f"Initialized pipeline in {end_time - start_time:.2f}s")
                 self.setup_sage_attention(self.pipe)
             except Exception as e:
                 print(f"Failed to load model {model_path}: {e}")
                 raise e
             self.model_path = model_path
-            self.resolution = (1024, 1024)
+            if 'Qwen' in self.pipe.__class__.__name__:
+                self.resolution = (1328, 1328)
+            else:
+                self.resolution = (1024, 1024)
 
     def init_pulid(self):
         if not self.pulid_pipe:
@@ -825,7 +831,11 @@ class InferPipeline(InpaintFaceMixin, VtonMixin, SamMixin):
     def set_prompt_defaults(self, prompt: JsonObj, tune: JsonObj):
         if not prompt.steps:
             prompt.steps = 50 if 'Qwen' in self.pipe.__class__.__name__ else 28
-            print(f"Defaults {prompt.steps=}")
+        if not prompt.w:
+            prompt.w = self.resolution[0]
+        if not prompt.h:
+            prompt.h = self.resolution[1]
+
 
     def infer(self, tune: JsonObj):
         set_current_infer_tune(tune)
@@ -1081,7 +1091,7 @@ class InferPipeline(InpaintFaceMixin, VtonMixin, SamMixin):
                 neg_prompt_embeds,
                 neg_prompt_embeds_mask,
             ) = pipe.encode_prompt(
-                prompt=QWEN_NEGATIVE_PROMPT,
+                prompt=prompt.negative_prompt or QWEN_NEGATIVE_PROMPT,
                 max_sequence_length=prompt.max_sequence_length or 512,
                 device=device,
             )
@@ -1114,8 +1124,8 @@ class InferPipeline(InpaintFaceMixin, VtonMixin, SamMixin):
             else:
                 kwargs['true_cfg_scale'] = float(prompt.cfg_scale or 4.0)
             image = pipe(
-                height=prompt.h or 1024,
-                width=prompt.w or 1024,
+                height=prompt.h,
+                width=prompt.w,
                 num_inference_steps=prompt.steps,
                 generator=torch.Generator(device="cuda").manual_seed((prompt.seed or 42) + i_image),
                 **kwargs,

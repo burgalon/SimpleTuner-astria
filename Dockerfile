@@ -6,6 +6,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
     PIP_BREAK_SYSTEM_PACKAGES=1 \
     TINI_VERSION=v0.19.0 \
     UV_COMPILE_BYTECODE=1 \
+    UV_NO_SYNC=1 \
     GIT_LFS_SKIP_SMUDGE=1
 
 # system packages + CLI tools
@@ -22,10 +23,14 @@ RUN apt-get update -y && \
     # ── handy disk-usage tool ───────────────────────────────────────────
     git clone --depth 1 https://codeberg.org/201984/dut.git /tmp/dut && \
     make -C /tmp/dut install && rm -rf /tmp/dut && \
-    # ── clean ───────────────────────────────────────────────────────────
-    rm -rf /var/lib/apt/lists/*
-
-RUN git lfs install --system
+    git lfs install --system && \
+    # cleanup caches to reduce image size
+    rm -rf /root/.cache/pip && \
+    rm -rf /root/.cache/pypoetry && \
+    rm -rf /var/cache && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/* && \
+    mkdir -p /var/cache/apt/archives/partial
 
 # uv binary
 COPY --from=ghcr.io/astral-sh/uv:0.7.3 /uv /uvx /bin/
@@ -35,15 +40,9 @@ WORKDIR /app
 # ---------- dependency layer ----------
 COPY pyproject.toml uv.lock ./
 RUN --mount=type=cache,target=/root/.cache/uv \
+    --mount=type=bind,source=wheels,target=wheels \
     uv venv && \
-    uv sync --frozen --no-dev --no-install-project
-
-# ---------- project code + extras ----------
-COPY wheels/sageattention-*.whl ./wheels/
-COPY . .
-RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --frozen --no-dev && \
-    uv pip install wheels/*.whl
+    uv sync --frozen --no-dev --no-install-project --find-links=wheels
 
 # tini
 ADD https://github.com/krallin/tini/releases/download/${TINI_VERSION}/tini /tini
@@ -51,3 +50,5 @@ RUN chmod +x /tini
 ENTRYPOINT ["/tini", "--"]
 
 ENV LD_LIBRARY_PATH='/usr/local/lib/python3.12/dist-packages/nvidia/nvjitlink/lib'
+
+COPY . .

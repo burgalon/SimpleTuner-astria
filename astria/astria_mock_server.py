@@ -4,6 +4,7 @@ from PIL import Image
 from astria_utils import JsonObj
 
 FASHN_API_KEY = 'TEST'
+BAKE_API_KEY = 'TEST'
 DB_JSON = 'astria_tests/fixtures/db.json'
 
 def report_tune_job_failure(tune: JsonObj, fail_message: str):
@@ -26,6 +27,9 @@ def request_infer_job_from_server(tune_id: str = None, is_video: bool = False, i
     # read db from json file
     with open(DB_JSON, 'r') as f:
         db = json.load(f, object_hook=lambda d: JsonObj(**d))
+    if tune_id:
+        tune_id = int(tune_id)
+        return next(t for t in db if t.id == tune_id)
     if id is None:
         raise ValueError("Mock server should work with id")
     id = int(id)

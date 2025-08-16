@@ -17,7 +17,7 @@ start_worker() {
 
   # Start a new tmux session
   tmux new-session -d -s "$SESSION_NAME" \
-    "DISABLE_INFERENCE=$DISABLE_INFERENCE DISABLE_TRAINING=$DISABLE_TRAINING CUDA_VISIBLE_DEVICES=$GPU_ID python3 astria/infer.py 2>&1 | tee \"$LOG_FILE\"; sleep 5"
+    "DISABLE_INFERENCE=$DISABLE_INFERENCE DISABLE_TRAINING=$DISABLE_TRAINING CUDA_VISIBLE_DEVICES=$GPU_ID uv run --no-sync astria/infer.py 2>&1 | tee \"$LOG_FILE\"; sleep 5"
 
   echo "Started worker for GPU $GPU_ID in tmux session: $SESSION_NAME $(date)"
 }

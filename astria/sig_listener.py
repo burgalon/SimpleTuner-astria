@@ -46,10 +46,9 @@ def set_current_train_tune(tune):
     global current_train_tune
     current_train_tune = tune
 
-signal.signal(signal.SIGTERM, handle_sigterm)
-signal.signal(signal.SIGHUP, handle_sigterm)
-
-if not os.environ.get('DEBUG', None):
+if not os.environ.get('DEBUG') and not os.environ.get('MOCK_SERVER'):
+    signal.signal(signal.SIGTERM, handle_sigterm)
+    signal.signal(signal.SIGHUP, handle_sigterm)
     signal.signal(signal.SIGINT, handle_sigterm)
 
 if __name__ == "__main__":
