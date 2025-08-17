@@ -36,7 +36,11 @@ def request_infer_job_from_server(tune_id: str = None, is_video: bool = False, i
     for tune in db:
         if not hasattr(tune, 'prompts'):
             continue
+        if tune.prompts is None:
+            continue
         prompt = next((p for p in tune.prompts if p.id == id), None)
+        if prompt is None:
+            continue
         tune.prompts = [prompt]
         return tune
     raise ValueError(f"Invalid id {id}")
