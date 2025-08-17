@@ -26,6 +26,7 @@ any_precision_optims = [
 model_classes = {
     "full": [
         "flux",
+        "flux_old",
         "sdxl",
         "pixart_sigma",
         "kolors",
@@ -46,6 +47,7 @@ model_classes = {
     ],
     "lora": [
         "flux",
+        "flux_old",
         "sdxl",
         "kolors",
         "sd3",

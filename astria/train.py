@@ -175,7 +175,7 @@ def train_no_catch(tune: JsonObj):
         # 1.7s/it WANDB optimizer=optimi-lion disable_inductor=true base_model_precision=nf8-bnb rank=8
         # 1.7s/it WANDB optimizer=optimi-lion disable_inductor=true base_model_precision=nf8-bnb rank=8
     else:
-        tune.model_family = 'flux'
+        tune.model_family = 'flux_old'
         tune.fuse_qkv_projections = tune.fuse_qkv_projections or True
 
     timestamp = time.strftime("%Y%m%d-%H%M%S")
