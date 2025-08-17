@@ -465,6 +465,74 @@
       "backend_version": null
     }
   },
+  {
+    "id": 99,
+    "name": "man",
+    "created_at": "2025-06-04T09:43:33.158Z",
+    "updated_at": "2025-08-07T09:13:41.571Z",
+    "user_id": 2,
+    "trained_at": "2025-06-04T09:53:50.044Z",
+    "started_training_at": "2025-08-07T09:13:41.571Z",
+    "steps": 300,
+    "title": "alon Jun/2026",
+    "branch": "qwen-image-1",
+    "callback": null,
+    "process_ip": "akash-22742087-4,5,6,7",
+    "trials": 186,
+    "num_prompts": 0,
+    "is_api": false,
+    "base_tune_id": 3086296,
+    "token": "ohwx",
+    "args": "learning_rate=5e-4 lora_rank=16 lora_alpha=16 train_batch=4 preprocessing=2 lr_scheduler=polynomial segmentation=1 only_face=true resolution=512",
+    "cost": null,
+    "expires_at": "2025-09-02T09:53:50.044Z",
+    "emailed_notice": false,
+    "public_at": null,
+    "face_crop": true,
+    "checkpoint_deleted": false,
+    "checkpoint_deleted_at": null,
+    "failed_at": null,
+    "model_type": "lora",
+    "sha256": null,
+    "model_url": null,
+    "description_url": null,
+    "cost_mc": 150000,
+    "training_face_correct": false,
+    "eta": "2025-06-04T09:53:33.943Z",
+    "base_pack_id": null,
+    "characteristics": null,
+    "prompts_callback": null,
+    "auto_extend": false,
+    "orig_images": [
+      "https://mp.astria.ai/wd67ld1jyafk3t580cc4s47itzo6",
+      "https://mp.astria.ai/t95eam4wepwm4xl2ejt9q3w9plvs",
+      "https://mp.astria.ai/66jfb0q1z7zhyb16yw0ornjqny7y",
+      "https://mp.astria.ai/oz7g51yxnau490lakgau2o1b70nq"
+    ],
+    "file_names": [
+      {
+        "filename": "lueurph70qqzuqs7zl399mbrqsx1.jpg",
+        "url": "https://mp.astria.ai/wd67ld1jyafk3t580cc4s47itzo6"
+      },
+      {
+        "filename": "tqqaynhcu3ne5onxg1jsrqpvtzv4.jpg",
+        "url": "https://mp.astria.ai/t95eam4wepwm4xl2ejt9q3w9plvs"
+      },
+      {
+        "filename": "66gr44co9wa17nis5l5dnt3mg7gl.jpg",
+        "url": "https://mp.astria.ai/66jfb0q1z7zhyb16yw0ornjqny7y"
+      },
+      {
+        "filename": "mlgrx6bfadoo20c17oj8u50h70ol.jpg",
+        "url": "https://mp.astria.ai/oz7g51yxnau490lakgau2o1b70nq"
+      }
+    ],
+    "resolution": null,
+    "user": {
+      "create_ckpt": false,
+      "backend_version": null
+    }
+  },
   {"id":3109345,"name":"woman","created_at":"2025-08-15T14:18:47.572Z","updated_at":"2025-08-17T10:29:00.192Z","user_id":2,"trained_at":"2025-08-15T14:28:53.698Z","started_training_at":"2025-08-17T10:29:00.192Z","steps":300,"title":"689e591ef52c4cb2affdabb9_sanguinerose90@gmail.com","branch":"flux1","callback":null,"process_ip":"akash-22880101-0","trials":7,"num_prompts":0,"is_api":true,"base_tune_id":1504944,"token":"ohwx","args":"preset=flux-lora-fast learning_rate=5e-4 lora_rank=16 lora_alpha=16 train_batch=4","cost":null,"expires_at":"2025-09-14T14:28:53.698Z","emailed_notice":false,"public_at":null,"face_crop":true,"checkpoint_deleted":false,"checkpoint_deleted_at":null,"failed_at":null,"model_type":"lora","sha256":null,"model_url":null,"description_url":null,"cost_mc":0,"training_face_correct":false,"eta":"2025-08-15T14:33:04.333Z","base_pack_id":null,"characteristics":null,"prompts_callback":null,"auto_extend":false,"orig_images":["https://mp.astria.ai/a236amg7y0q9rei3v20l2kkbo0ee","https://mp.astria.ai/5n306btho1u7mv0cgamx2bz7cjcr","https://mp.astria.ai/4j3ahvqatwh9k93ws5urcdxxgide","https://mp.astria.ai/mqy0j4fb8sj1eaxsinbtkfw3els3","https://mp.astria.ai/2c4qk8k2e4dcjh8yve536gp8u5id","https://mp.astria.ai/v4eb5ypp3v4sstu5jxy9164d70tu","https://mp.astria.ai/wqj5qu1yufz4jm17vvoxfyo1vb4z","https://mp.astria.ai/981k3lb5ikyowg7fj61xlv488sv7","https://mp.astria.ai/i33sfd7w27luzv9v3gw06s07umfx","https://mp.astria.ai/jn9harvfrul6fw4d2vdu3x85my5o"],"file_names":[{"filename":"1","url":"https://mp.astria.ai/a236amg7y0q9rei3v20l2kkbo0ee"},{"filename":"2","url":"https://mp.astria.ai/5n306btho1u7mv0cgamx2bz7cjcr"},{"filename":"3","url":"https://mp.astria.ai/4j3ahvqatwh9k93ws5urcdxxgide"},{"filename":"4","url":"https://mp.astria.ai/mqy0j4fb8sj1eaxsinbtkfw3els3"},{"filename":"5","url":"https://mp.astria.ai/2c4qk8k2e4dcjh8yve536gp8u5id"},{"filename":"6","url":"https://mp.astria.ai/v4eb5ypp3v4sstu5jxy9164d70tu"},{"filename":"7","url":"https://mp.astria.ai/wqj5qu1yufz4jm17vvoxfyo1vb4z"},{"filename":"8","url":"https://mp.astria.ai/981k3lb5ikyowg7fj61xlv488sv7"},{"filename":"9","url":"https://mp.astria.ai/i33sfd7w27luzv9v3gw06s07umfx"},{"filename":"10","url":"https://mp.astria.ai/jn9harvfrul6fw4d2vdu3x85my5o"}],"resolution":null,"user":{"create_ckpt":false,"backend_version":null},"prompts":[]},
   {
     "id": 3086296,

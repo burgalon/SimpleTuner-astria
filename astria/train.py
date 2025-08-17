@@ -39,7 +39,7 @@ def create_prompt_library(tune: JsonObj, output_dir: str):
     if tune.name == 'man':
         data = {
             "park": f"A detailed, high-quality photo of an {tune.token} {tune.name} wearing a v-neck sweater, making eye-contact with the camera and striking a natural pose. The photo is shot with an 85mm lens at f/1.8 with a Canon 5D camera and ZEISS lens, taken in a beautiful outdoor park setting. Use a shallow depth of field and bright, natural lighting to focus attention on the subject",
-            # "city": f"A detailed, high-quality photo of an {tune.token} {tune.name} wearing a quarter-zip sweater, making eye-contact with the camera and striking a natural pose. The photo is shot with an 85mm lens at f/1.8 with a Canon 5D camera and ZEISS lens, taken in a vibrant urban city setting. Use a shallow depth of field and bright, natural lighting to focus attention on the subject",
+            "city": f"A detailed, high-quality photo of an {tune.token} {tune.name} wearing a quarter-zip sweater, making eye-contact with the camera and striking a natural pose. The photo is shot with an 85mm lens at f/1.8 with a Canon 5D camera and ZEISS lens, taken in a vibrant urban city setting. Use a shallow depth of field and bright, natural lighting to focus attention on the subject",
             # "city": f"A detailed, high-quality photo of an {tune.token} {tune.name} wearing a quarter-zip sweater, making eye-contact with the camera and striking a natural pose. The photo is shot with an 85mm lens at f/1.8 with a Canon 5D camera and ZEISS lens, taken in a vibrant urban city setting. Use a shallow depth of field and bright, natural lighting to focus attention on the subject",
             # "flowers": f"{tune.name} holding flowers, red sweater, studio photography, plain white background",
             # "ohwx_rembrandt": f"a portrait of {tune.token} {tune.name} in the style of Rembrandt",
@@ -161,6 +161,7 @@ def train_no_catch(tune: JsonObj):
         tune.gradient_checkpointing = True
     if tune.branch == "qwen-image-1":
         tune.model_family = "qwen_image"
+<<<<<<< Updated upstream
         tune.gradient_checkpointing = tune.gradient_checkpointing if tune.gradient_checkpointing is not None else True
         tune.optimizer = "adamw" # tune.optimizer or 'optimi-lion'
         tune.disable_inductor = True
@@ -169,6 +170,17 @@ def train_no_catch(tune: JsonObj):
         tune.learning_rate = tune.learning_rate or 1e-4
         tune.max_grad_norm =0.1 # 0.01 # https://huggingface.co/terminusresearch/simpletuner-example-qwen_image-peft-lora?not-for-all-audiences=true
         tune.validation_steps = 1
+=======
+        # tune.gradient_checkpointing = tune.gradient_checkpointing if tune.gradient_checkpointing is not None else True
+        tune.gradient_checkpointing = False
+        tune.optimizer = "adamw" # tune.optimizer or 'optimi-lion'
+        # tune.disable_inductor = True
+        tune.base_model_precision = tune.base_model_precision or 'no_change'
+        
+        tune.learning_rate = tune.learning_rate or 1e-4
+        tune.max_grad_norm = 1.0 # 0.01 # https://huggingface.co/terminusresearch/simpletuner-example-qwen_image-peft-lora?not-for-all-audiences=true
+        # tune.validation_steps = 1
+>>>>>>> Stashed changes
         tune.validation_num_inference_steps = 50
         # tune.flux_schedule_auto_shift = True
         # tune.validation_steps = 5
