@@ -1214,6 +1214,9 @@ class Validation:
             
         if isinstance(self.model, VideoImageModelFoundation):
             return self.model.pipeline.scheduler
+        
+        if self.config.model_family == "qwen_image":
+            return
 
         scheduler_args = {
             "prediction_type": self.config.prediction_type,

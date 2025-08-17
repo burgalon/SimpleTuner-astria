@@ -1,6 +1,4 @@
 import torch
-import torch.nn.functional as F
-import random
 import logging
 import os
 from helpers.training.multi_process import _get_rank
@@ -14,9 +12,9 @@ from transformers import Qwen2Tokenizer, Qwen2_5_VLForConditionalGeneration
 from diffusers import (
     AutoencoderKLQwenImage,
     QwenImageTransformer2DModel,
-    QwenImagePipeline,
 )
-from diffusers.models.attention_processor import Attention
+
+from helpers.models.qwen_image.pipeline import QwenImagePipeline
 
 logger = logging.getLogger(__name__)
 from helpers.training.multi_process import should_log
@@ -144,47 +142,53 @@ class QwenImage(ImageModelFoundation):
             "attention_masks": prompt_embeds_mask,
         }
 
-    def convert_text_embed_for_pipeline(self, text_embedding: torch.Tensor) -> dict:
+    def update_pipeline_call_kwargs(self, pipeline_kwargs):
         """
-        Convert text embeddings for pipeline use.
+        When we're running the pipeline, we'll update the kwargs specifically for this model here.
         """
+        pipeline_kwargs["true_cfg_scale"] = float(
+            self.config.validation_guidance
+            or self.config.validation_guidance_real
+            or 4.0
+        )
+        pipeline_kwargs.pop("guidance_scale", None)
+
+        return pipeline_kwargs
+
+    def convert_text_embed_for_pipeline(self, text_embedding: dict) -> dict:
         attention_mask = text_embedding.get("attention_masks", None)
+        if attention_mask is None:
+            raise ValueError('missing attention mask')
         if attention_mask is not None and attention_mask.dim() == 1:
             attention_mask = attention_mask.unsqueeze(0)
 
         return {
             "prompt_embeds": (
                 text_embedding["prompt_embeds"].unsqueeze(0)
-                if text_embedding["prompt_embeds"].dim() == 2
-                else text_embedding["prompt_embeds"]
+                if text_embedding["prompt_embeds"].dim() == 2 else
+                text_embedding["prompt_embeds"]
             ),
             "prompt_embeds_mask": (
-                attention_mask.to(dtype=torch.int64)
-                if attention_mask is not None
-                else None
+                attention_mask.to(dtype=torch.int64) if attention_mask is not None else None
             ),
         }
 
-    def convert_negative_text_embed_for_pipeline(
-        self, text_embedding: torch.Tensor, prompt: str
-    ) -> dict:
-        """
-        Convert negative text embeddings for pipeline use.
-        """
+    # QwenImage.convert_negative_text_embed_for_pipeline
+    def convert_negative_text_embed_for_pipeline(self, text_embedding: dict, prompt: str) -> dict:
         attention_mask = text_embedding.get("attention_masks", None)
+        if attention_mask is None:
+            raise ValueError('missing attention mask')
         if attention_mask is not None and attention_mask.dim() == 1:
             attention_mask = attention_mask.unsqueeze(0)
 
         return {
             "negative_prompt_embeds": (
                 text_embedding["prompt_embeds"].unsqueeze(0)
-                if text_embedding["prompt_embeds"].dim() == 2
-                else text_embedding["prompt_embeds"]
+                if text_embedding["prompt_embeds"].dim() == 2 else
+                text_embedding["prompt_embeds"]
             ),
             "negative_prompt_embeds_mask": (
-                attention_mask.to(dtype=torch.int64)
-                if attention_mask is not None
-                else None
+                attention_mask.to(dtype=torch.int64) if attention_mask is not None else None
             ),
         }
 

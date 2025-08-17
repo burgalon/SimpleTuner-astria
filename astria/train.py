@@ -162,12 +162,14 @@ def train_no_catch(tune: JsonObj):
     if tune.branch == "qwen-image-1":
         tune.model_family = "qwen_image"
         tune.gradient_checkpointing = tune.gradient_checkpointing if tune.gradient_checkpointing is not None else True
-        tune.optimizer = tune.optimizer or 'optimi-lion'
+        tune.optimizer = "adamw" # tune.optimizer or 'optimi-lion'
         tune.disable_inductor = True
         tune.base_model_precision = tune.base_model_precision or 'no_change'
+        
         tune.learning_rate = tune.learning_rate or 1e-4
         tune.max_grad_norm =0.1 # 0.01 # https://huggingface.co/terminusresearch/simpletuner-example-qwen_image-peft-lora?not-for-all-audiences=true
         tune.validation_steps = 1
+        tune.validation_num_inference_steps = 50
         # tune.flux_schedule_auto_shift = True
         # tune.validation_steps = 5
         # 1.2s/it WANDB optimizer=bnb-adam8bit disable_inductor=true base_model_precision=default/bf16?
@@ -273,6 +275,7 @@ def train_no_catch(tune: JsonObj):
             '--aspect_bucket_rounding=2',
             '--model_flavour=dev',
             '--num_train_epochs=0',
+            '--validation_on_startup',
             f'--max_train_steps={steps}',
 
             # ***DO NOT*** enable this - this will cause the lora_target to miss target layers and not target the fused qkv layers
@@ -323,7 +326,7 @@ def train_no_catch(tune: JsonObj):
             *(['--flow_schedule_auto_shift'] if tune.flow_schedule_auto_shift else []),
             '--flow_schedule_shift', str(tune.flow_schedule_shift if tune.flow_schedule_shift is not None else 0),
             '--num_validation_images=1',
-            '--validation_num_inference_steps=28',
+            f'--validation_num_inference_steps={tune.validation_num_inference_steps or 28}',
             '--validation_seed=42',
             '--minimum_image_size=0',
             f'--resolution={resolution}',

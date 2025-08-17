@@ -1,5 +1,5 @@
 version = 1
-revision = 2
+revision = 3
 requires-python = "==3.12.*"
 resolution-markers = [
     "sys_platform == 'darwin'",
@@ -818,7 +818,7 @@ wheels = [
 [[package]]
 name = "diffusers"
 version = "0.35.0.dev0"
-source = { git = "https://github.com/burgalon/diffusers.git?rev=a401adb63a859f962215cdd3f2f2563f6b6a584d#a401adb63a859f962215cdd3f2f2563f6b6a584d" }
+source = { git = "https://github.com/burgalon/diffusers.git?rev=e682af202787c44da4c7e583b95ec7f42dc45029#e682af202787c44da4c7e583b95ec7f42dc45029" }
 dependencies = [
     { name = "filelock" },
     { name = "huggingface-hub" },
@@ -3707,7 +3707,7 @@ requires-dist = [
     { name = "controlnet-aux", specifier = ">=0.0.7,<0.0.8" },
     { name = "datasets", specifier = ">=3.0.1" },
     { name = "deepspeed", specifier = ">=0.17.2" },
-    { name = "diffusers", git = "https://github.com/burgalon/diffusers.git?rev=a401adb63a859f962215cdd3f2f2563f6b6a584d" },
+    { name = "diffusers", git = "https://github.com/burgalon/diffusers.git?rev=e682af202787c44da4c7e583b95ec7f42dc45029" },
     { name = "easy-dwpose", git = "https://github.com/carpedm20/easy_dwpose.git?rev=3eccc2bbdb1db1f01c9b867be92fce23d54c5558" },
     { name = "einops", specifier = ">=0.8.0,<0.9" },
     { name = "groundingdino-py", specifier = ">=0.4.0" },
