@@ -39,7 +39,8 @@ def create_prompt_library(tune: JsonObj, output_dir: str):
     if tune.name == 'man':
         data = {
             "park": f"A detailed, high-quality photo of an {tune.token} {tune.name} wearing a v-neck sweater, making eye-contact with the camera and striking a natural pose. The photo is shot with an 85mm lens at f/1.8 with a Canon 5D camera and ZEISS lens, taken in a beautiful outdoor park setting. Use a shallow depth of field and bright, natural lighting to focus attention on the subject",
-            "city": f"A detailed, high-quality photo of an {tune.token} {tune.name} wearing a quarter-zip sweater, making eye-contact with the camera and striking a natural pose. The photo is shot with an 85mm lens at f/1.8 with a Canon 5D camera and ZEISS lens, taken in a vibrant urban city setting. Use a shallow depth of field and bright, natural lighting to focus attention on the subject",
+            # "city": f"A detailed, high-quality photo of an {tune.token} {tune.name} wearing a quarter-zip sweater, making eye-contact with the camera and striking a natural pose. The photo is shot with an 85mm lens at f/1.8 with a Canon 5D camera and ZEISS lens, taken in a vibrant urban city setting. Use a shallow depth of field and bright, natural lighting to focus attention on the subject",
+            # "city": f"A detailed, high-quality photo of an {tune.token} {tune.name} wearing a quarter-zip sweater, making eye-contact with the camera and striking a natural pose. The photo is shot with an 85mm lens at f/1.8 with a Canon 5D camera and ZEISS lens, taken in a vibrant urban city setting. Use a shallow depth of field and bright, natural lighting to focus attention on the subject",
             # "flowers": f"{tune.name} holding flowers, red sweater, studio photography, plain white background",
             # "ohwx_rembrandt": f"a portrait of {tune.token} {tune.name} in the style of Rembrandt",
             # "rembrandt": f"a portrait of {tune.name} in the style of Rembrandt",
@@ -148,15 +149,6 @@ def parse_env_args(tune: JsonObj):
             tune.args += f" {k[3:].lower()}={v}"
     return tune
 
-def download_dev2pro():
-    model_path = f"{MODELS_DIR}/dev2pro"
-    if not os.path.exists('dev2pro'):
-        from huggingface_hub import snapshot_download
-        snapshot_download('ashen0209/Flux-Dev2Pro', local_dir=model_path)
-        Path(f"{model_path}/do_not_delete").touch()
-    return model_path
-
-
 def train_no_catch(tune: JsonObj):
     cleanup_models()
     parse_args(tune)
@@ -175,10 +167,12 @@ def train_no_catch(tune: JsonObj):
         tune.base_model_precision = tune.base_model_precision or 'no_change'
         tune.learning_rate = tune.learning_rate or 1e-4
         tune.max_grad_norm =0.1 # 0.01 # https://huggingface.co/terminusresearch/simpletuner-example-qwen_image-peft-lora?not-for-all-audiences=true
+        tune.validation_steps = 1
         # tune.flux_schedule_auto_shift = True
         # tune.validation_steps = 5
         # 1.2s/it WANDB optimizer=bnb-adam8bit disable_inductor=true base_model_precision=default/bf16?
         # 1.4s/it WANDB optimizer=bnb-adam8bit disable_inductor=true base_model_precision=nf8-bnb
+        # 1.7s/it WANDB optimizer=optimi-lion disable_inductor=true base_model_precision=nf8-bnb rank=8
         # 1.7s/it WANDB optimizer=optimi-lion disable_inductor=true base_model_precision=nf8-bnb rank=8
     else:
         tune.model_family = 'flux'
@@ -270,10 +264,6 @@ def train_no_catch(tune: JsonObj):
             *(['--flux_guidance_mode', tune.flux_guidance_mode] if tune.flux_guidance_mode else []),
             *(['--tread_config', tune.tread_config] if tune.tread_config else []),
             '--pretrained_model_name_or_path', model_path,
-            *([
-                '--pretrained_transformer_model_name_or_path', download_dev2pro(),
-                '--pretrained_transformer_subfolder', 'none',
-            ] if tune.dev2pro else []),
             *(['--gradient_checkpointing'] if GPU_MEMORY_GB <= 50 or tune.gradient_checkpointing else []), # avoid OOM but slows training
             '--set_grads_to_none', # ?
             '--gradient_accumulation_steps', str(tune.gradient_accumulation_steps or 1),
@@ -284,13 +274,16 @@ def train_no_catch(tune: JsonObj):
             '--model_flavour=dev',
             '--num_train_epochs=0',
             f'--max_train_steps={steps}',
-            *(['--fuse_qkv_projections'] if tune.fuse_qkv_projections else []),
+
+            # ***DO NOT*** enable this - this will cause the lora_target to miss target layers and not target the fused qkv layers
+            # causing either smaller loras, or in other cases of target - lora loading will fail silently with Unexpected keys
+            # *(['--fuse_qkv_projections'] if tune.fuse_qkv_projections else []),
+
             # '--metadata_update_interval=65', # ?
             # https://wandb.ai/astria/lora-training/runs/b94a195701ed0a7d7b53e6c9771c4388?nw=nwuserburgalonastria
             *([f'--max_grad_norm={tune.max_grad_norm}'] if tune.max_grad_norm else []),
             f'--optimizer={tune.optimizer or "adamw"}', # previously, adamw_bf16
             f'--lora_type', tune.lora_type or 'standard',
-            # '--validation_on_startup',
             '--init_lokr_norm', str(tune.init_lokr_norm or 1e-3),
             # "--lycoris_config=config/lycoris_config.json",
             f'--learning_rate={tune.learning_rate or 1e-4}',
@@ -462,7 +455,7 @@ def train(tune: JsonObj):
         report_tune_job_failure(tune, traceback.format_exc())
 
 if __name__ == "__main__":
-    # CUDA_VISIBLE_DEVICES=0 TR_REPORT_TO=none MOCK_SERVER=1 DEBUG=1 NUM_IMAGES=1 uv run astria/train.py 9
+    # CUDA_VISIBLE_DEVICES=0 MOCK_SERVER=1 uv run astria/train.py 9
     def poll():
         i = 0
         max_sleeps = int(os.environ.get('MAX_SLEEPS', 90))
