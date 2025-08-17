@@ -68,7 +68,9 @@ class QwenImage(ImageModelFoundation):
         """
         Loads the noise schedule for Qwen Image (flow matching).
         """
-        from diffusers import FlowMatchEulerDiscreteScheduler
+        from helpers.models.qwen_image.euler_power_scheduler import (
+            FlowMatchEulerDiscreteSchedulerPower
+        )
 
         scheduler_config = {
             "base_image_seq_len": 256,
@@ -85,9 +87,10 @@ class QwenImage(ImageModelFoundation):
             "use_dynamic_shifting": True,
             "use_exponential_sigmas": False,
             "use_karras_sigmas": False,
+            "power_exponent": 0.9,
         }
 
-        self.noise_schedule = FlowMatchEulerDiscreteScheduler(**scheduler_config)
+        self.noise_schedule = FlowMatchEulerDiscreteSchedulerPower(**scheduler_config)
         self.config.prediction_type = "flow_matching"
 
         return self.config, self.noise_schedule
@@ -146,12 +149,22 @@ class QwenImage(ImageModelFoundation):
         """
         When we're running the pipeline, we'll update the kwargs specifically for this model here.
         """
-        pipeline_kwargs["true_cfg_scale"] = float(
-            self.config.validation_guidance
-            or self.config.validation_guidance_real
-            or 4.0
-        )
+        pipeline_kwargs["true_cfg_scale"] = 1.0
         pipeline_kwargs.pop("guidance_scale", None)
+        def progress_callback(pipe, i, t, kwargs):
+            if i < 5 or i >= 35:
+                pipe.do_true_cfg = False
+                pipe.true_cfg_scale = 1.0
+            else:
+                pipe.do_true_cfg = True
+                pipe.true_cfg_scale = float(
+                    self.config.validation_guidance
+                    or self.config.validation_guidance_real
+                    or 4.0
+                )
+
+            return kwargs
+        pipeline_kwargs['callback_on_step_end'] = progress_callback
 
         return pipeline_kwargs
 

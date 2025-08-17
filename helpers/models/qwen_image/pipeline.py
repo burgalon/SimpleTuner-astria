@@ -559,7 +559,8 @@ class QwenImagePipeline(DiffusionPipeline, QwenImageLoraLoaderMixin):
         has_neg_prompt = negative_prompt is not None or (
             negative_prompt_embeds is not None and negative_prompt_embeds_mask is not None
         )
-        do_true_cfg = true_cfg_scale > 1 and has_neg_prompt
+        # Always make the negative prompt
+        do_true_cfg = True # true_cfg_scale > 1 and has_neg_prompt
         prompt_embeds, prompt_embeds_mask = self.encode_prompt(
             prompt=prompt,
             prompt_embeds=prompt_embeds,
@@ -634,6 +635,9 @@ class QwenImagePipeline(DiffusionPipeline, QwenImageLoraLoaderMixin):
             negative_prompt_embeds_mask.sum(dim=1).tolist() if negative_prompt_embeds_mask is not None else None
         )
 
+        self.true_cfg_scale = true_cfg_scale
+        self.do_true_cfg = do_true_cfg
+
         # 6. Denoising loop
         self.scheduler.set_begin_index(0)
         with self.progress_bar(total=num_inference_steps) as progress_bar:
@@ -657,7 +661,7 @@ class QwenImagePipeline(DiffusionPipeline, QwenImageLoraLoaderMixin):
                         return_dict=False,
                     )[0]
 
-                if do_true_cfg:
+                if self.do_true_cfg:
                     with self.transformer.cache_context("uncond"):
                         neg_noise_pred = self.transformer(
                             hidden_states=latents,
@@ -670,7 +674,7 @@ class QwenImagePipeline(DiffusionPipeline, QwenImageLoraLoaderMixin):
                             attention_kwargs=self.attention_kwargs,
                             return_dict=False,
                         )[0]
-                    comb_pred = neg_noise_pred + true_cfg_scale * (noise_pred - neg_noise_pred)
+                    comb_pred = neg_noise_pred + self.true_cfg_scale * (noise_pred - neg_noise_pred)
 
                     cond_norm = torch.norm(noise_pred, dim=-1, keepdim=True)
                     noise_norm = torch.norm(comb_pred, dim=-1, keepdim=True)

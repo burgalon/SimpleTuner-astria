@@ -27,6 +27,8 @@ from download_training_wan_t2i import create_data_config_wan
 
 GPU_MEMORY_GB = torch.cuda.get_device_properties(0).total_memory / 1024**3
 
+QWEN_NEGATIVE_PROMPT = "cgi, 3d render, illustration, vector art, cartoon, anime, unrealistic proportions, oversaturated, plastic skin, text artifacts"
+
 
 def poll_train() -> int:
     tune = request_tune_job_from_server()
@@ -161,26 +163,15 @@ def train_no_catch(tune: JsonObj):
         tune.gradient_checkpointing = True
     if tune.branch == "qwen-image-1":
         tune.model_family = "qwen_image"
-<<<<<<< Updated upstream
         tune.gradient_checkpointing = tune.gradient_checkpointing if tune.gradient_checkpointing is not None else True
         tune.optimizer = "adamw" # tune.optimizer or 'optimi-lion'
         tune.disable_inductor = True
         tune.base_model_precision = tune.base_model_precision or 'no_change'
         
         tune.learning_rate = tune.learning_rate or 1e-4
-        tune.max_grad_norm =0.1 # 0.01 # https://huggingface.co/terminusresearch/simpletuner-example-qwen_image-peft-lora?not-for-all-audiences=true
-        tune.validation_steps = 1
-=======
-        # tune.gradient_checkpointing = tune.gradient_checkpointing if tune.gradient_checkpointing is not None else True
-        tune.gradient_checkpointing = False
-        tune.optimizer = "adamw" # tune.optimizer or 'optimi-lion'
-        # tune.disable_inductor = True
-        tune.base_model_precision = tune.base_model_precision or 'no_change'
-        
-        tune.learning_rate = tune.learning_rate or 1e-4
+        tune.negative_prompt = QWEN_NEGATIVE_PROMPT
         tune.max_grad_norm = 1.0 # 0.01 # https://huggingface.co/terminusresearch/simpletuner-example-qwen_image-peft-lora?not-for-all-audiences=true
         # tune.validation_steps = 1
->>>>>>> Stashed changes
         tune.validation_num_inference_steps = 50
         # tune.flux_schedule_auto_shift = True
         # tune.validation_steps = 5
@@ -276,6 +267,7 @@ def train_no_catch(tune: JsonObj):
             # '--base_model_default_dtype=fp32',
             '--model_type=lora',
             *(['--flux_guidance_mode', tune.flux_guidance_mode] if tune.flux_guidance_mode else []),
+            *(['--validation_negative_prompt', f"\"{tune.negative_prompt}\""] if tune.negative_prompt else []),
             *(['--tread_config', tune.tread_config] if tune.tread_config else []),
             '--pretrained_model_name_or_path', model_path,
             *(['--gradient_checkpointing'] if GPU_MEMORY_GB <= 50 or tune.gradient_checkpointing else []), # avoid OOM but slows training
@@ -485,6 +477,7 @@ if __name__ == "__main__":
         print(f"Exiting poll after i={i}")
 
     for id in sys.argv[1:]:
+        print(id)
         if id == 'poll':
             poll()
             continue
