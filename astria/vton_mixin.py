@@ -38,11 +38,13 @@ HEADERS_BAKE = {"Authorization": f"Key {BAKE_API_KEY}", "Content-Type": "applica
 FASHN_BASE_URL_V1 = 'https://api.fashn.ai/v1'
 FASHN_BASE_URL_NIGHTLY = 'https://api.fashn.ai/nightly'
 
-s3_boto = boto3.client('s3',
-                    endpoint_url=os.environ.get('R2_ENDPOINT_URL_S3'),
-                    aws_access_key_id=os.environ.get('R2_ACCESS_KEY_ID'),
-                    aws_secret_access_key=os.environ.get('R2_SECRET_ACCESS_KEY'),
-                    )
+s3_boto = None
+if not os.environ.get('MOCK_SERVER', False):
+    s3_boto = boto3.client('s3',
+        endpoint_url=os.environ.get('R2_ENDPOINT_URL_S3'),
+        aws_access_key_id=os.environ.get('R2_ACCESS_KEY_ID'),
+        aws_secret_access_key=os.environ.get('R2_SECRET_ACCESS_KEY'),
+    )
 S3_BUCKET = 'sdbooth2-production'
 PUBLIC_BUCKET_URL = 'https://mp.astria.ai/'
 
@@ -222,8 +224,9 @@ class VtonMixin:
 
             print(f"VTON response: {response.status_code} {response.text}")
             # delete the temporary image from S3
-            s3_boto.delete_object(Bucket=S3_BUCKET, Key=human_key)
-            s3_boto.delete_object(Bucket=S3_BUCKET, Key=garment_key)
+            if s3_boto is not None:
+                s3_boto.delete_object(Bucket=S3_BUCKET, Key=human_key)
+                s3_boto.delete_object(Bucket=S3_BUCKET, Key=garment_key)
 
 
             response_data = response.json()

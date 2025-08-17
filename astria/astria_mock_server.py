@@ -34,7 +34,9 @@ def request_infer_job_from_server(tune_id: str = None, is_video: bool = False, i
         raise ValueError("Mock server should work with id")
     id = int(id)
     for tune in db:
-        prompt = next(p for p in db.prompts if p.id == id)
+        if not hasattr(tune, 'prompts'):
+            continue
+        prompt = next((p for p in tune.prompts if p.id == id), None)
         tune.prompts = [prompt]
         return tune
     raise ValueError(f"Invalid id {id}")
