@@ -868,6 +868,19 @@ class RAG_FluxPipeline(
     def transformer_set_lora_scalings(self, scaling_dict):
         self.transformer.scale_lora_layers_according_to_region(scaling_dict)
 
+    def reset(self):
+        """Reset per-image runtime state so the pipeline can be reused safely."""
+        # clear per-call state
+        self._joint_attention_kwargs = None
+        self._interrupt = False
+        # restore non-hooked forwards so prepare_HB_replace uses the init path
+        init_forwards(self, self.transformer)
+        # optional: zero any regional LoRA scalings
+        try:
+            self.transformer_zero_lora_scalings()
+        except Exception:
+            pass
+
     @torch.no_grad()
     @replace_example_docstring(EXAMPLE_DOC_STRING)
     def __call__(

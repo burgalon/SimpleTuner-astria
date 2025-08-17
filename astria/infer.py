@@ -1120,7 +1120,7 @@ class InferPipeline(InpaintFaceMixin, VtonMixin, SamMixin):
 
             if 'Qwen' not in pipe.__class__.__name__:
                 kwargs['guidance_scale'] = float(prompt.cfg_scale if prompt.cfg_scale is not None else 3.5)
-                kwargs['joint_attention_kwargs'] = joint_attention_kwargs=joint_attention_kwargs
+                kwargs['joint_attention_kwargs'] = joint_attention_kwargs
             else:
                 kwargs['true_cfg_scale'] = float(prompt.cfg_scale or 4.0)
             image = pipe(
@@ -1130,6 +1130,8 @@ class InferPipeline(InpaintFaceMixin, VtonMixin, SamMixin):
                 generator=torch.Generator(device="cuda").manual_seed((prompt.seed or 42) + i_image),
                 **kwargs,
             ).images[0]
+            if use_regional:
+                pipe.reset()
             if is_terminated():
                 raise TerminateException("terminated")
             images.append(image)
