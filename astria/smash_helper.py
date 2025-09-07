@@ -99,3 +99,28 @@ if __name__ == "__main__":
     #         times.append(end_time - start_time)
     #         print(f"Time taken for first call: {end_time - start_time} seconds")
     # print(f"Average time taken for first call: {sum(times) / len(times)} seconds")
+
+def pruna_reset_transformer_cache(transformer, steps=28):
+    # proprietary helper fns/data: ['_reset', 'disable', 'enable', 'enabled', 'schedule']
+    fwd = getattr(transformer, "forward", None)
+    if fwd is None or not hasattr(fwd, "__self__"):
+        return
+    helper = fwd.__self__                                 # <...DiffusersHelper>
+    schedule = getattr(helper, "schedule", None)
+
+    if steps is None and schedule is not None:
+        for attr in ("num_steps", "n_steps", "steps", "length"):
+            if hasattr(schedule, attr):
+                try:
+                    v = int(getattr(schedule, attr))
+                    if v > 0:
+                        steps = v
+                        break
+                except Exception:
+                    pass
+
+    if hasattr(helper, '_reset'):
+        # This lives in
+        # File "src/pruna_pro/algorithms/caching/schedule/auto_schedule.py",
+        # line 229, in src.pruna_pro.algorithms.caching.schedule.auto_schedule.AutoSchedule._scale_schedule
+        helper._reset(steps)

@@ -22,6 +22,7 @@ def get_kwargs():
     }
 
 def test_inpaint_faces_1():
+    from astria.smash_helper import pruna_reset_transformer_cache
     prompt = JsonObj(
         **copy.copy(BASE_PROMPT.__dict__),
         inpaint_faces=True,
@@ -32,12 +33,14 @@ def test_inpaint_faces_1():
     images = [load_image(IMG_POSE)]
     pipe.init_pipe(MODELS_DIR + f"/{TUNE_FLUX.id}-{TUNE_FLUX.branch}")
     pipe.load_references(prompt, pipe.pipe)
+    pruna_reset_transformer_cache(pipe.pipe.transformer)
     images = pipe.inpaint_faces(images, prompt, get_kwargs())
     # run_images(prompt)
     for i, image in enumerate(images):
         image.save(MODELS_DIR + f"/{prompt.id}-{i}.png")
 
 def test_inpaint_faces_2_esrgan_before_resize_big_face():
+    from astria.smash_helper import pruna_reset_transformer_cache
     prompt = JsonObj(
         **copy.copy(BASE_PROMPT.__dict__),
         inpaint_faces=True,
@@ -48,12 +51,14 @@ def test_inpaint_faces_2_esrgan_before_resize_big_face():
     images = [load_image('astria_tests/fixtures/19477436-before-inpaint-0.jpg')]
     pipe.init_pipe(MODELS_DIR + f"/{TUNE_FLUX.id}-{TUNE_FLUX.branch}")
     pipe.load_references(prompt, pipe.pipe)
+    pruna_reset_transformer_cache(pipe.pipe.transformer)
     images = pipe.inpaint_faces(images, prompt, get_kwargs())
     # run_images(prompt)
     for i, image in enumerate(images):
         image.save(MODELS_DIR + f"/{prompt.id}-{i}.png")
 
 def test_inpaint_faces_3_esrgan_after_resize_small_face():
+    from astria.smash_helper import pruna_reset_transformer_cache
     prompt = JsonObj(
         **copy.copy(BASE_PROMPT.__dict__),
         inpaint_faces=True,
@@ -64,6 +69,7 @@ def test_inpaint_faces_3_esrgan_after_resize_small_face():
     images = [load_image('astria_tests/fixtures/19477328-before-inpaint-0.jpg')]
     pipe.init_pipe(MODELS_DIR + f"/{TUNE_FLUX.id}-{TUNE_FLUX.branch}")
     pipe.load_references(prompt, pipe.pipe)
+    pruna_reset_transformer_cache(pipe.pipe.transformer)
     images = pipe.inpaint_faces(images, prompt, get_kwargs())
     # run_images(prompt)
     for i, image in enumerate(images):

@@ -10,7 +10,7 @@ import time
 import traceback
 
 import smash_helper
-from smash_helper import HOT_SWAP_SLOTS, IDENTITY_LORA, is_pruna_model
+from smash_helper import HOT_SWAP_SLOTS, IDENTITY_LORA, is_pruna_model, pruna_reset_transformer_cache
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
@@ -1002,6 +1002,7 @@ class InferPipeline(InpaintFaceMixin, VtonMixin, SamMixin):
         )
         use_regional =  prompt.use_regional or all_tunes_are_human_and_more_than_one
 
+        pipe = None
         if use_regional:
             self.init_rag_diffusion()
             pipe = self.rag_diffusion_pipe
@@ -1109,6 +1110,9 @@ class InferPipeline(InpaintFaceMixin, VtonMixin, SamMixin):
                     kwargs['strength'] = float(prompt.denoising_strength if prompt.denoising_strength != None else 0.8)
         else:
             pipe = self.pipe
+
+        if pipe and is_pruna_model(pipe):
+            pruna_reset_transformer_cache(pipe.transformer)
 
         # For tests
         self.last_pipe = pipe
