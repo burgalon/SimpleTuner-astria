@@ -105,7 +105,7 @@ lycoris-lora = { git = "https://github.com/kohakublueleaf/lycoris", rev = "dev" 
 # 425a715e35479338c06b2a68eb3a95790c1db3c52025-07-04 good
 # eea76892e87c600d98934c987c7e067640a9ce16 2025-06-26 good
 
-diffusers = { git = "https://github.com/burgalon/diffusers.git", rev = "d2e6f31b09194a0bb9e04ed945dc953fba8a128f" }
+diffusers = { git = "https://github.com/burgalon/diffusers.git", rev = "fc337d585309c4b032e8d0180bea683007219df1" }
 easy-dwpose = { git = "https://github.com/carpedm20/easy_dwpose.git", rev = "3eccc2bbdb1db1f01c9b867be92fce23d54c5558" }
 sageattention = { path = "wheels/sageattention-2.2.0-cp312-cp312-linux_x86_64.whl" }
 

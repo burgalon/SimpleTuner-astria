@@ -472,6 +472,8 @@ class InpaintFaceMixin:
         print(f"T#{prompt.tune_id} P#{prompt.id} {bbox_ratio=:.4f} {strength=:.2f}")
 
         # Inpaint the resized cropped region
+        if hasattr(pipe.transformer, 'set_number_of_steps'):
+            pipe.transformer.set_number_of_steps(28)
         inpainted_crop_resized = cropped_image_resized
         for i in range(1):
             inpainted_crop_resized = pipe(

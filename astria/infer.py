@@ -65,6 +65,7 @@ from vton_mixin import (
 )
 from watermark_helper import add_watermark
 from sam_helper import SamMixin
+from taylor_cache.transformer import FluxTransformer2DTaylorCachingModel
 
 try:
     from sageattention import sageattn
@@ -398,6 +399,12 @@ class InferPipeline(InpaintFaceMixin, VtonMixin, SamMixin):
                     torch_dtype=torch.bfloat16,
                     local_files_only=True,
                 ).to(device)
+                if hasattr(self.pipe, 'transformer') and isinstance(
+                    self.pipe.transformer,
+                    FluxTransformer2DModel,
+                ):
+                    self.pipe.transformer = FluxTransformer2DTaylorCachingModel(self.pipe.transformer)
+                    self.pipe.transformer.__class__.__name__ = "FluxTransformer2DModel"
                 end_time = time.time()
                 print(f"Initialized pipeline in {end_time - start_time:.2f}s")
                 self.setup_sage_attention(self.pipe)
@@ -802,6 +809,8 @@ class InferPipeline(InpaintFaceMixin, VtonMixin, SamMixin):
                 new_image.save(f"{MODELS_DIR}/{prompt.id}-{i_image}-outpaint.jpg")
                 mask_image.save(f"{MODELS_DIR}/{prompt.id}-{i_image}-mask-outpaint.jpg")
 
+            if hasattr(pipe.transformer, 'set_number_of_steps'):
+                pipe.transformer.set_number_of_steps(prompt.steps)
             image = pipe(
                 guidance_scale=30,
                 height=h,
@@ -836,6 +845,8 @@ class InferPipeline(InpaintFaceMixin, VtonMixin, SamMixin):
                 )
 
             print(f"T#{prompt.tune_id} P#{prompt.id} hires_fix {i_image=} {images[i_image].width}x{images[i_image].height} {strength=}")
+            if hasattr(pipe.transformer, 'set_number_of_steps'):
+                pipe.transformer.set_number_of_steps(28)
             image = self.img2img(
                 image=image,
                 strength=strength,
@@ -1155,6 +1166,8 @@ class InferPipeline(InpaintFaceMixin, VtonMixin, SamMixin):
                 kwargs['true_cfg_scale'] = float(prompt.cfg_scale or 4.0)
                 # https://huggingface.co/spaces/Qwen/Qwen-Image/blob/main/app.py#L215
                 # guidance_scale = 1.0 # distilled
+            if hasattr(pipe.transformer, 'set_number_of_steps'):
+                pipe.transformer.set_number_of_steps(prompt.steps)
             image = pipe(
                 height=prompt.h,
                 width=prompt.w,

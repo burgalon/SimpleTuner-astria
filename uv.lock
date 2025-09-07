@@ -1,5 +1,5 @@
 version = 1
-revision = 2
+revision = 3
 requires-python = "==3.12.*"
 resolution-markers = [
     "sys_platform == 'darwin'",
@@ -814,8 +814,8 @@ wheels = [
 
 [[package]]
 name = "diffusers"
-version = "0.35.0.dev0"
-source = { git = "https://github.com/burgalon/diffusers.git?rev=d2e6f31b09194a0bb9e04ed945dc953fba8a128f#d2e6f31b09194a0bb9e04ed945dc953fba8a128f" }
+version = "0.36.0.dev0"
+source = { git = "https://github.com/burgalon/diffusers.git?rev=fc337d585309c4b032e8d0180bea683007219df1#fc337d585309c4b032e8d0180bea683007219df1" }
 dependencies = [
     { name = "filelock" },
     { name = "huggingface-hub" },
@@ -3699,7 +3699,7 @@ requires-dist = [
     { name = "controlnet-aux", specifier = ">=0.0.7,<0.0.8" },
     { name = "datasets", specifier = ">=3.0.1" },
     { name = "deepspeed", specifier = ">=0.17.2" },
-    { name = "diffusers", git = "https://github.com/burgalon/diffusers.git?rev=d2e6f31b09194a0bb9e04ed945dc953fba8a128f" },
+    { name = "diffusers", git = "https://github.com/burgalon/diffusers.git?rev=fc337d585309c4b032e8d0180bea683007219df1" },
     { name = "easy-dwpose", git = "https://github.com/carpedm20/easy_dwpose.git?rev=3eccc2bbdb1db1f01c9b867be92fce23d54c5558" },
     { name = "einops", specifier = ">=0.8.0,<0.9" },
     { name = "groundingdino-py", specifier = ">=0.4.0" },
@@ -4115,8 +4115,8 @@ dependencies = [
     { name = "typing-extensions" },
 ]
 wheels = [
-    { url = "https://download.pytorch.org/whl/cu128/torch-2.8.0%2Bcu128-cp312-cp312-manylinux_2_28_x86_64.whl", hash = "sha256:4354fc05bb79b208d6995a04ca1ceef6a9547b1c4334435574353d381c55087c" },
-    { url = "https://download.pytorch.org/whl/cu128/torch-2.8.0%2Bcu128-cp312-cp312-win_amd64.whl", hash = "sha256:0ad925202387f4e7314302a1b4f8860fa824357f9b1466d7992bf276370ebcff" },
+    { url = "https://download.pytorch.org/whl/cu128/torch-2.8.0%2Bcu128-cp312-cp312-manylinux_2_28_x86_64.whl" },
+    { url = "https://download.pytorch.org/whl/cu128/torch-2.8.0%2Bcu128-cp312-cp312-win_amd64.whl" },
 ]
 
 [[package]]
@@ -4281,7 +4281,6 @@ dependencies = [
 ]
 wheels = [
     { url = "https://download.pytorch.org/whl/triton-3.3.1-cp312-cp312-manylinux_2_27_aarch64.manylinux_2_28_aarch64.whl" },
-    { url = "https://download.pytorch.org/whl/triton-3.3.1-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl" },
 ]
 
 [[package]]
