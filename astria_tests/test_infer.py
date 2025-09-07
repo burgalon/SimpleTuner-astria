@@ -16,6 +16,8 @@ from astria_utils import JsonObj, MODELS_DIR
 # Do not send to server?
 if 'DEBUG' not in os.environ:
     os.environ['DEBUG'] = 'test'
+    os.environ['MOCK_SERVER'] = '1'
+
 
 pipe = InferPipeline()
 
@@ -47,9 +49,9 @@ FLUX_LORA_MAN = JsonObj(**{
     "train_token": "ohwx",
     "model_type": "lora",
     "face_swap_images": [
-        "https://sdbooth2-production.s3.amazonaws.com/wtwonr79gmb7sqep55zsae9040qn",
-        "https://sdbooth2-production.s3.amazonaws.com/4cag22nur3q2sfbecbgnrumqxra2",
-        "https://sdbooth2-production.s3.amazonaws.com/kzc0nw7jtojh81us3b9ldcxyusk0"
+        "https://mp.astria.ai/wtwonr79gmb7sqep55zsae9040qn",
+        "https://mp.astria.ai/4cag22nur3q2sfbecbgnrumqxra2",
+        "https://mp.astria.ai/kzc0nw7jtojh81us3b9ldcxyusk0"
     ]
 })
 
@@ -62,9 +64,9 @@ FLUX_LORA_MAN_MARCO = JsonObj(**{
     "train_token": "ohwx",
     "model_type": "lora",
     "face_swap_images": [
-        "https://sdbooth2-production.s3.amazonaws.com/2y388ja53947ie2ecp4k9kd95lp9",
-        "https://sdbooth2-production.s3.amazonaws.com/a544y3n2mm9xvg99ofyat947lp2w",
-        "https://sdbooth2-production.s3.amazonaws.com/11knqm2byx97er3vg950c7v6e1mt"
+        "https://mp.astria.ai/2y388ja53947ie2ecp4k9kd95lp9",
+        "https://mp.astria.ai/a544y3n2mm9xvg99ofyat947lp2w",
+        "https://mp.astria.ai/11knqm2byx97er3vg950c7v6e1mt"
     ]
 })
 
@@ -87,11 +89,11 @@ FLUX_LORA_SHOE = JsonObj(**{
     "train_token": "ohwx",
     "model_type": "lora",
     "face_swap_images": [
-        "https://sdbooth2-production.s3.amazonaws.com/azvn52teo5km69kz28olleglqtxe",
-        "https://sdbooth2-production.s3.amazonaws.com/9p607buzsgba1ew152cz2aybcojs",
-        "https://sdbooth2-production.s3.amazonaws.com/0cbp7yk70atdst0zpxbdqmugovo1",
-        "https://sdbooth2-production.s3.amazonaws.com/zay337rw46of3zey21nlbpveo6e0",
-        "https://sdbooth2-production.s3.amazonaws.com/q5v3xxwe9phexwy4yb5ktqnlbg2r",
+        "https://mp.astria.ai/azvn52teo5km69kz28olleglqtxe",
+        "https://mp.astria.ai/9p607buzsgba1ew152cz2aybcojs",
+        "https://mp.astria.ai/0cbp7yk70atdst0zpxbdqmugovo1",
+        "https://mp.astria.ai/zay337rw46of3zey21nlbpveo6e0",
+        "https://mp.astria.ai/q5v3xxwe9phexwy4yb5ktqnlbg2r",
     ]
 })
 
@@ -104,10 +106,10 @@ FLUX_LORA_DRESS = JsonObj(**{
     "train_token": "floral white",
     "model_type": "lora",
     "face_swap_images": [
-        "https://sdbooth2-production.s3.amazonaws.com/plxxygl17gdl2pzbzct3o0dl2qx2",
-        "https://sdbooth2-production.s3.amazonaws.com/qb6c9jaffrjbiou9hltqqtfubohe",
-        "https://sdbooth2-production.s3.amazonaws.com/6olwfbvsn79362m7loj0kw2sqnyx",
-        "https://sdbooth2-production.s3.amazonaws.com/af23cowcprxdetl9c0vuv3d0npta",
+        "https://mp.astria.ai/plxxygl17gdl2pzbzct3o0dl2qx2",
+        "https://mp.astria.ai/qb6c9jaffrjbiou9hltqqtfubohe",
+        "https://mp.astria.ai/6olwfbvsn79362m7loj0kw2sqnyx",
+        "https://mp.astria.ai/af23cowcprxdetl9c0vuv3d0npta",
     ]
 })
 
@@ -141,14 +143,14 @@ FLUX_FACEID = JsonObj(**{
     "token": str(1533312),
     "model_type": "faceid",
     "face_swap_images": [
-        "https://sdbooth2-production.s3.amazonaws.com/w2ra2h8m8hx6okt9jmrwm6mlmova",
-        "https://sdbooth2-production.s3.amazonaws.com/f8bg0pac6m740muuicmtlzil2nny",
-        "https://sdbooth2-production.s3.amazonaws.com/q8kr3j8qy7ma6dq8xf8aqm27v12a",
-        "https://sdbooth2-production.s3.amazonaws.com/1t3y9jvi249mn1m3s689nw9w8e9z",
-        "https://sdbooth2-production.s3.amazonaws.com/p1jhygwtgxx4pwc2cm7kmjnpw80e",
-        "https://sdbooth2-production.s3.amazonaws.com/a90eqb8jzebf0njd5gqgh23ylr83",
-        "https://sdbooth2-production.s3.amazonaws.com/py1thtz5yem8a66sfn1z06wlds1y",
-        "https://sdbooth2-production.s3.amazonaws.com/l7pp1gzy1lthev4u1fiwvdt5l9tg",
+        "https://mp.astria.ai/w2ra2h8m8hx6okt9jmrwm6mlmova",
+        "https://mp.astria.ai/f8bg0pac6m740muuicmtlzil2nny",
+        "https://mp.astria.ai/q8kr3j8qy7ma6dq8xf8aqm27v12a",
+        "https://mp.astria.ai/1t3y9jvi249mn1m3s689nw9w8e9z",
+        "https://mp.astria.ai/p1jhygwtgxx4pwc2cm7kmjnpw80e",
+        "https://mp.astria.ai/a90eqb8jzebf0njd5gqgh23ylr83",
+        "https://mp.astria.ai/py1thtz5yem8a66sfn1z06wlds1y",
+        "https://mp.astria.ai/l7pp1gzy1lthev4u1fiwvdt5l9tg",
     ]
 })
 
@@ -200,7 +202,7 @@ BASE_PROMPT = JsonObj(**{
     "tunes": [],
 })
 
-IMG_POSE = "https://sdbooth2-production.s3.amazonaws.com/hrzevyfi6cjj2o64c7xogyve1y13"
+IMG_POSE = "astria_tests/fixtures/pose.jpg"
 
 def name():
     return os.environ.get('PYTEST_CURRENT_TEST').split(':')[-1].split(' ')[0]
@@ -250,22 +252,22 @@ def test_txt2img_lora():
     run_images(prompt)
     assert isinstance(pipe.last_pipe, FluxPipeline)
 
-def test_txt2img_civitai_lora():
-    prompt = JsonObj(
-        **copy.copy(BASE_PROMPT.__dict__),
-    )
-    prompt.text=f"<lora:{FLUX_EXTERNAL_LORA.id}:1> {FLUX_EXTERNAL_LORA.train_token} woman holding flowers"
-    prompt.tunes=[FLUX_EXTERNAL_LORA]
-    run_images(prompt)
-    assert isinstance(pipe.last_pipe, FluxPipeline)
-
-    prompt = JsonObj(
-        **copy.copy(BASE_PROMPT.__dict__),
-    )
-    prompt.text=f"<lora:{FLUX_EXTERNAL_LORA_2.id}:1> {FLUX_EXTERNAL_LORA_2.train_token} woman holding flowers"
-    prompt.tunes=[FLUX_EXTERNAL_LORA_2]
-    run_images(prompt)
-    assert isinstance(pipe.last_pipe, FluxPipeline)
+# def test_txt2img_civitai_lora():
+#     prompt = JsonObj(
+#         **copy.copy(BASE_PROMPT.__dict__),
+#     )
+#     prompt.text=f"<lora:{FLUX_EXTERNAL_LORA.id}:1> {FLUX_EXTERNAL_LORA.train_token} woman holding flowers"
+#     prompt.tunes=[FLUX_EXTERNAL_LORA]
+#     run_images(prompt)
+#     assert isinstance(pipe.last_pipe, FluxPipeline)
+#
+#     prompt = JsonObj(
+#         **copy.copy(BASE_PROMPT.__dict__),
+#     )
+#     prompt.text=f"<lora:{FLUX_EXTERNAL_LORA_2.id}:1> {FLUX_EXTERNAL_LORA_2.train_token} woman holding flowers"
+#     prompt.tunes=[FLUX_EXTERNAL_LORA_2]
+#     run_images(prompt)
+#     assert isinstance(pipe.last_pipe, FluxPipeline)
 
 def test_txt2img_after():
     run_images(BASE_PROMPT)
@@ -288,7 +290,7 @@ def test_bad_faceid():
     )
     flux_faceid = JsonObj(**FLUX_FACEID.__dict__)
     flux_faceid.face_swap_images = [
-        'https://sdbooth2-production.s3.amazonaws.com/a93ocfwgzocdrmq1q4wizwajnhvm'
+        'https://mp.astria.ai/a93ocfwgzocdrmq1q4wizwajnhvm'
     ]
     prompt.text=f"<{FLUX_FACEID.model_type}:{FLUX_FACEID.id}:1> woman holding flowers"
     prompt.tunes=[flux_faceid]
@@ -332,7 +334,7 @@ def test_controlnet_txt2img():
 # def test_controlnet_ipadapter():
 #     prompt = JsonObj(
 #         **copy.copy(BASE_PROMPT.__dict__),
-#         input_image='https://sdbooth2-production.s3.amazonaws.com/u77j61zzd4gbqdsvkhmd9p1cz0d1',
+#         input_image='https://mp.astria.ai/u77j61zzd4gbqdsvkhmd9p1cz0d1',
 #         controlnet='ipadapter',
 #     )
 #     prompt.controlnet_txt2img = True

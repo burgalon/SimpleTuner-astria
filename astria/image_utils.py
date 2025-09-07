@@ -16,9 +16,18 @@ import PIL.Image
 from typing import Union
 import os
 s3_session = requests.Session()
-s3_session.timeout = (10, 10)
-retries = requests.packages.urllib3.util.retry.Retry(total=20, backoff_factor=1, status_forcelist=[500, 502, 503, 504, 403, 404, 401], raise_on_status=True)
-s3_session.mount('', requests.adapters.HTTPAdapter(max_retries=retries))
+# 10s to connect, 11s to read/upload
+s3_session.timeout = (10, 11)
+retries = requests.packages.urllib3.util.retry.Retry(
+    total=7,
+    backoff_factor=1,
+    status_forcelist=[500, 502, 503, 504, 403, 401],
+    allowed_methods=["HEAD", "GET", "PUT", "DELETE", "POST"],
+    raise_on_status=True
+)
+adapter = requests.adapters.HTTPAdapter(max_retries=retries)
+s3_session.mount('http://', adapter)
+s3_session.mount('https://', adapter)
 
 ImageFile.LOAD_TRUNCATED_IMAGES = True
 

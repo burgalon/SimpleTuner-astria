@@ -295,23 +295,12 @@ class FluxTransformer2DModelWithPulID(ModelMixin, PeftAdapterMixin):
                 )
                 ca_idx += 1
 
-            # controlnet residual
-            if controlnet_block_samples is not None:
-                interval_control = len(self.transformer_blocks) / len(controlnet_block_samples)
-                interval_control = int(np.ceil(interval_control))
-                # For Xlabs ControlNet.
-                if controlnet_blocks_repeat:
-                    hidden_states = (
-                        hidden_states + controlnet_block_samples[index_block % len(controlnet_block_samples)]
-                    )
-                else:
-                    hidden_states = hidden_states + controlnet_block_samples[index_block // interval_control]
-
-        hidden_states = torch.cat([encoder_hidden_states, hidden_states], dim=1)
+        # hidden_states = torch.cat([encoder_hidden_states, hidden_states], dim=1)
 
         for index_block, block in enumerate(self.single_transformer_blocks):
-            hidden_states = block(
+            encoder_hidden_states, hidden_states = block(
                 hidden_states=hidden_states,
+                encoder_hidden_states=encoder_hidden_states,
                 temb=temb,
                 image_rotary_emb=image_rotary_emb,
                 joint_attention_kwargs=joint_attention_kwargs,
@@ -321,34 +310,17 @@ class FluxTransformer2DModelWithPulID(ModelMixin, PeftAdapterMixin):
                 pul_id_embedding is not None
                 and index_block % self.pulid_ca.single_interval == 0
             ):
-                img, txt = hidden_states[
-                    :, encoder_hidden_states.shape[1]:, ...
-                ], hidden_states[
-                    :, :encoder_hidden_states.shape[1], ...
-                ]
-                img = img + pul_id_weight * self.pulid_ca.pulid_ca[ca_idx](
+                hidden_states = hidden_states + pul_id_weight * self.pulid_ca.pulid_ca[ca_idx](
                     pul_id_embedding,
-                    img,
+                    hidden_states,
                 )
                 ca_idx += 1
-                hidden_states = torch.cat((txt, img), 1)
 
-            # controlnet residual
-            if controlnet_single_block_samples is not None:
-                interval_control = len(self.single_transformer_blocks) / len(controlnet_single_block_samples)
-                interval_control = int(np.ceil(interval_control))
-                hidden_states[:, encoder_hidden_states.shape[1] :, ...] = (
-                    hidden_states[:, encoder_hidden_states.shape[1] :, ...]
-                    + controlnet_single_block_samples[index_block // interval_control]
-                )
-
-        hidden_states = hidden_states[:, encoder_hidden_states.shape[1] :, ...]
 
         hidden_states = self.norm_out(hidden_states, temb)
         output = self.proj_out(hidden_states)
 
         if USE_PEFT_BACKEND:
-            # remove `lora_scale` from each PEFT layer
             unscale_lora_layers(self, lora_scale)
 
         if not return_dict:

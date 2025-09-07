@@ -45,13 +45,6 @@ def download_hinters(cached_repos_dict):
 def _download_models():
     # download_model_from_server('1504944-flux1', False)
     snapshot_download('black-forest-labs/FLUX.1-dev', ignore_patterns=['flux1-dev.safetensors', 'ae.safetensors', 'dev_grid.jpg', 'README.md', 'LICENSE.md', '.gitattributes'], local_dir=f"{MODELS_DIR}/1504944-flux1")
-    # download_model_from_server(f'{FLUX_INPAINT_MODEL_ID}-flux1', False)
-    snapshot_download('black-forest-labs/FLUX.1-Fill-dev',
-                      allow_patterns=['transformer/'],
-                      local_dir=f'{MODELS_DIR}/{FLUX_INPAINT_MODEL_ID}-flux1',
-                      revision="refs/pr/4",
-                      )
-
     # HF_TOKEN=hf_********tNke huggingface-cli upload tuner /data/cache / --exclude "torchinductor/**" .cache *.log Wan-AI
     snapshot_download(repo_id="burgalon/tuner", local_dir=CACHE_DIR, local_dir_use_symlinks=False)
 
@@ -70,6 +63,9 @@ def _download_models():
             local_dir_use_symlinks=False,
         )
 
+    print("Downloading PuLID models")
+    PuLID.download_models(local_dir=f'{CACHE_DIR}/pulid', models_dir=CACHE_DIR)
+
     fns = [
         # ('https://huggingface.co/lokCX/4x-Ultrasharp/resolve/main/4x-UltraSharp.pth', CACHE_DIR),
         ('https://huggingface.co/uwg/upscaler/resolve/main/ESRGAN/4x_NMKD-Siax_200k.pth', CACHE_DIR),
@@ -80,8 +76,6 @@ def _download_models():
         ('https://github.com/xinntao/facexlib/releases/download/v0.2.0/parsing_bisenet.pth', CACHE_DIR),
 
     ]
-    print("Downloading PuLID models")
-    PuLID.download_models(local_dir=f'{CACHE_DIR}/pulid', models_dir=CACHE_DIR)
     for url, path in fns:
         if '/blob/' in url:
             raise ValueError(f"URL {url} is a blob URL, please use the 'raw' URL")
@@ -94,6 +88,18 @@ def _download_models():
             download_url_to_file(url, target_fn)
 
 def _download_models_secondary():
+    # wait for download_model.lock to release
+    with FileLock(f"{MODELS_DIR}/download_model.lock", timeout=0):
+        print("Waiting for primary download to release download_model.lock")
+        pass
+
+    # download_model_from_server(f'{FLUX_INPAINT_MODEL_ID}-flux1', False)
+    snapshot_download('black-forest-labs/FLUX.1-Fill-dev',
+                      allow_patterns=['transformer/'],
+                      local_dir=f'{MODELS_DIR}/{FLUX_INPAINT_MODEL_ID}-flux1',
+                      revision="refs/pr/4",
+                      )
+
     print("Downloading models in secondary process")
     download_model_from_server(f"3063697-flux1") # Krea
 
@@ -113,6 +119,7 @@ def _download_models_secondary():
                 )
     download_hinters(cached_repos_dict)
     download_model_from_server(f"3086296-qwen-image-1") # QWEN
+    download_model_from_server(f"3123913-qwen-edit-1") # QWEN-Edit
 
 
 def _download_models_secondary_with_retry():

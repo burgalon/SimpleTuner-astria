@@ -10,7 +10,7 @@ from PIL import Image, ImageDraw, ImageChops, ImageOps, ImageFilter
 from torchvision.transforms.functional import to_pil_image
 from ultralytics import YOLO
 
-from astria_utils import MODELS_DIR, JsonObj, device, HUMAN_CLASS_NAMES, CACHE_DIR
+from astria_utils import MODELS_DIR, JsonObj, device, HUMAN_CLASS_NAMES, CACHE_DIR, BRANCH_QWEN
 from birefnet.BiRefNet_node import BiRefNet_node
 from face_masking import FaceMaskGenerator, visualize_parsing
 from pipeline_flux_differential_img2img import FluxDifferentialImg2ImgPipeline
@@ -355,13 +355,13 @@ class InpaintFaceMixin:
         self.yolo = None
         self.face_masker = None
         self.birefnet = None
-        
+
     def init_models(self):
         if not self.yolo:
             self.face_masker = FaceMaskGenerator(device=device, model_root=CACHE_DIR)
             self.birefnet = BiRefNet_node()
             self.yolo = YOLO(YOLO_FACE_MODEL)
-        
+
 
     def remove_background_for_inpaint_crop(self, images):
         for i_image, image in enumerate(images):
@@ -475,18 +475,16 @@ class InpaintFaceMixin:
         inpainted_crop_resized = cropped_image_resized
         for i in range(1):
             inpainted_crop_resized = pipe(
-                prompt_embeds=kwargs.get('prompt_embeds'),
-                pooled_prompt_embeds=kwargs.get('pooled_prompt_embeds'),
-                guidance_scale=float(prompt.cfg_scale or 2.5),
                 height=cropped_image_resized.height,
                 width=cropped_image_resized.width,
                 num_inference_steps=28,
-                max_sequence_length=prompt.max_sequence_length or 512,
                 generator=torch.Generator(device=device).manual_seed(42),
-                joint_attention_kwargs={"scale": 1.0},
+                **({} if 'Qwen' in pipe.__class__.__name__ else {"joint_attention_kwargs": {"scale": 1.0}}),
                 mask_image=cropped_mask_resized,
                 image=inpainted_crop_resized,
                 strength=strength,
+                # get true_cfg_scale and guidance_scale from original inference
+                **({k: v for k, v in kwargs.items() if 'prompt' in k or 'true_cfg_scale'==k or 'guidance_scale'==k}),
             ).images[0]
             if os.environ.get('DEBUG', '') == 'inpaint_faces':
                 inpainted_crop_resized.save(f"{MODELS_DIR}/{prompt.id}-inpainted-crop-{i}.jpg")
@@ -597,7 +595,8 @@ if __name__ == "__main__":
     import sys
     import copy
     sys.path.append("/app")
-    from infer import InferPipeline, load_image
+    from infer import InferPipeline, load_image, BRANCH_QWEN
+
     pipe = InferPipeline()
     from astria_tests.test_infer import TUNE_FLUX, BASE_PROMPT, FLUX_LORA
 

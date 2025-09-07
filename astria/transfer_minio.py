@@ -64,5 +64,5 @@ def download_minio(from_key, to):
                 raise
 
 if __name__ == '__main__':
-    upload_minio('/data/models/9.safetensors', 'models/9.safetensors')
-    # download_minio('models/2002368.safetensors', '/data/models/2002368.safetensors')
+    # upload_minio('/data/models/2002368.safetensors', 'models/2002368.safetensors')
+    download_minio('models/2002368.safetensors', '/data/models/2002368.safetensors')

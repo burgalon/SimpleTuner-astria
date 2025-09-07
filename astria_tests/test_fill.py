@@ -16,11 +16,11 @@ def test_fill_background_product():
     prompt = JsonObj(
         **copy.copy(BASE_PROMPT.__dict__),
         # necklace
-        # input_image='https://sdbooth2-production.s3.amazonaws.com/pwe6bcgo9ykbnt6tya91z3omoog4',
+        # input_image='https://mp.astria.ai/pwe6bcgo9ykbnt6tya91z3omoog4',
         # earings
-        # input_image='https://sdbooth2-production.s3.amazonaws.com/u77j61zzd4gbqdsvkhmd9p1cz0d1',
+        # input_image='https://mp.astria.ai/u77j61zzd4gbqdsvkhmd9p1cz0d1',
         # dogs
-        input_image='https://sdbooth2-production.s3.amazonaws.com/a93ocfwgzocdrmq1q4wizwajnhvm',
+        input_image='https://mp.astria.ai/a93ocfwgzocdrmq1q4wizwajnhvm',
     )
     # prompt.num_images = 8
     prompt.w = prompt.h = None
@@ -76,7 +76,7 @@ def test_outpaint_with_downscale_height():
         # input 576x864
         # input_image='https://v3.fal.media/files/penguin/YhNkj0L4fBh-EFGeID93O_d19ac40ce3a5492492299cc5f14247e8.png',
         # input_image='https://v3.fal.media/files/tiger/htI_fTnhrO0OZiHHE-Vbp_52d435fc9b60489498db3af9d88fddb9.png',
-        input_image='https://sdbooth2-production.s3.amazonaws.com/iimdd2modj7r52j7x6naa12vf3g6',
+        input_image='https://mp.astria.ai/iimdd2modj7r52j7x6naa12vf3g6',
     )
     # prompt.super_resolution = True
     prompt.denoising_strength = 0.0

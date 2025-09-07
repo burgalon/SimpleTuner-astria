@@ -29,7 +29,6 @@ GPU_MEMORY_GB = torch.cuda.get_device_properties(0).total_memory / 1024**3
 
 QWEN_NEGATIVE_PROMPT = "cgi, 3d render, illustration, vector art, cartoon, anime, unrealistic proportions, oversaturated, plastic skin, text artifacts"
 
-
 def poll_train() -> int:
     tune = request_tune_job_from_server()
     if tune.id is None:
@@ -38,30 +37,31 @@ def poll_train() -> int:
     return 1
 
 def create_prompt_library(tune: JsonObj, output_dir: str):
+    trigger = tune.trigger or (f"{tune.token} {tune.name}")
     if tune.name == 'man':
         data = {
-            "park": f"A detailed, high-quality photo of an {tune.token} {tune.name} wearing a v-neck sweater, making eye-contact with the camera and striking a natural pose. The photo is shot with an 85mm lens at f/1.8 with a Canon 5D camera and ZEISS lens, taken in a beautiful outdoor park setting. Use a shallow depth of field and bright, natural lighting to focus attention on the subject",
-            "city": f"A detailed, high-quality photo of an {tune.token} {tune.name} wearing a quarter-zip sweater, making eye-contact with the camera and striking a natural pose. The photo is shot with an 85mm lens at f/1.8 with a Canon 5D camera and ZEISS lens, taken in a vibrant urban city setting. Use a shallow depth of field and bright, natural lighting to focus attention on the subject",
-            # "city": f"A detailed, high-quality photo of an {tune.token} {tune.name} wearing a quarter-zip sweater, making eye-contact with the camera and striking a natural pose. The photo is shot with an 85mm lens at f/1.8 with a Canon 5D camera and ZEISS lens, taken in a vibrant urban city setting. Use a shallow depth of field and bright, natural lighting to focus attention on the subject",
+            "park": f"A detailed, high-quality photo of an {trigger} wearing a v-neck sweater, making eye-contact with the camera and striking a natural pose. The photo is shot with an 85mm lens at f/1.8 with a Canon 5D camera and ZEISS lens, taken in a beautiful outdoor park setting. Use a shallow depth of field and bright, natural lighting to focus attention on the subject",
+            # "city": f"A detailed, high-quality photo of an {trigger} wearing a quarter-zip sweater, making eye-contact with the camera and striking a natural pose. The photo is shot with an 85mm lens at f/1.8 with a Canon 5D camera and ZEISS lens, taken in a vibrant urban city setting. Use a shallow depth of field and bright, natural lighting to focus attention on the subject",
+            # "city": f"A detailed, high-quality photo of an {trigger} wearing a quarter-zip sweater, making eye-contact with the camera and striking a natural pose. The photo is shot with an 85mm lens at f/1.8 with a Canon 5D camera and ZEISS lens, taken in a vibrant urban city setting. Use a shallow depth of field and bright, natural lighting to focus attention on the subject",
             # "flowers": f"{tune.name} holding flowers, red sweater, studio photography, plain white background",
-            # "ohwx_rembrandt": f"a portrait of {tune.token} {tune.name} in the style of Rembrandt",
+            # "ohwx_rembrandt": f"a portrait of {trigger} in the style of Rembrandt",
             # "rembrandt": f"a portrait of {tune.name} in the style of Rembrandt",
         }
     elif tune.name == 'girl':
         data = {
-            "token_name": f"A photo of {tune.token} {tune.name}",
-            "mushroom": f"boring bad quality snapchat photo circa 2015 of {tune.token} {tune.name} tinkerbell , green big dress,   translucent wings, golden dust around the air, sitting on top of massive 10feet mushroom  in forest, with a focus face slightly blurred, with digital noise, slightly pale yellow colour tone, looks like 2010 photo quality",
-            "lavender": f"{tune.token} {tune.name} in a lavender dress, in the middle of a field full of purple flowers, with sunset light, , looking at the camera, portrait photography in the style of professional photograph, soft lighting, pastel colors, a dreamy atmosphere, an elegant pose, high resolution",
+            "token_name": f"A photo of {trigger}",
+            "mushroom": f"boring bad quality snapchat photo circa 2015 of {trigger} tinkerbell , green big dress,   translucent wings, golden dust around the air, sitting on top of massive 10feet mushroom  in forest, with a focus face slightly blurred, with digital noise, slightly pale yellow colour tone, looks like 2010 photo quality",
+            "lavender": f"{trigger} in a lavender dress, in the middle of a field full of purple flowers, with sunset light, , looking at the camera, portrait photography in the style of professional photograph, soft lighting, pastel colors, a dreamy atmosphere, an elegant pose, high resolution",
         }
     elif tune.name == 'woman':
         data = {
-            "body1": f"a {tune.token} {tune.name} in a black short-sleeve t-shirt paired with high-waisted white wide-leg trousers gazes intently at the camera, her expression thoughtful and warm smile, her body language conveying a sense of focus and determination. set against a softly blurred background of a modern planty office environment",
-            "body2": f"{tune.token} {tune.name} medium-large figure  wearing a fitted camel-colored turtleneck sweater with short sleeves, tucked into high-waisted cream trousers with sharp pleats for a tailored look. The trousers are accentuated with a brown leather belt featuring a textured design and a bold circular buckle, sitting on the floor in a relaxed pose, leaning on a small white stool with soft natural lighting highlighting her smile and creating a cozy, approachable atmosphere",
-            "token_name": f"{tune.token} {tune.name}",
-            "photo_token_name": f"A photo of {tune.token} {tune.name}",
-            "flowers": f"{tune.token} {tune.name} holding flowers, white dress, black background",
-            "suit": f"A {tune.token} {tune.name} with an intelligent, visionary gaze wearing a crisp, sky-blue blazer and coordinating slacks, presented in a high-resolution, venture capital-themed portrait.",
-            "pearl": f"A {tune.token} {tune.name} with an approachable, friendly demeanor dressed in a soft, pearl-colored blouse and tailored black trousers, featured in a well-lit, business-oriented portrait.",
+            "body1": f"a {trigger} in a black short-sleeve t-shirt paired with high-waisted white wide-leg trousers gazes intently at the camera, her expression thoughtful and warm smile, her body language conveying a sense of focus and determination. set against a softly blurred background of a modern planty office environment",
+            # "body2": f"{trigger} medium-large figure  wearing a fitted camel-colored turtleneck sweater with short sleeves, tucked into high-waisted cream trousers with sharp pleats for a tailored look. The trousers are accentuated with a brown leather belt featuring a textured design and a bold circular buckle, sitting on the floor in a relaxed pose, leaning on a small white stool with soft natural lighting highlighting her smile and creating a cozy, approachable atmosphere. Looking at the camera, light makeup.",
+            # "token_name": f"{trigger}",
+            # "photo_token_name": f"A photo of {trigger}",
+            "flowers": f"{trigger} holding flowers, Ultra HD, 4K, cinematic composition, Hasselblad, 85mm lens, f/1.4",
+            # "suit": f"A {trigger} with an intelligent, visionary gaze wearing a crisp, sky-blue blazer and coordinating slacks, presented in a high-resolution, venture capital-themed portrait.",
+            # "pearl": f"A {trigger} with an approachable, friendly demeanor dressed in a soft, pearl-colored blouse and tailored black trousers, featured in a well-lit, business-oriented portrait.",
         }
     else:
         data = {
@@ -163,24 +163,18 @@ def train_no_catch(tune: JsonObj):
         tune.gradient_checkpointing = True
     if tune.branch == "qwen-image-1":
         tune.model_family = "qwen_image"
-        tune.gradient_checkpointing = tune.gradient_checkpointing if tune.gradient_checkpointing is not None else True
-        tune.optimizer = "adamw" # tune.optimizer or 'optimi-lion'
-        tune.disable_inductor = True
-        tune.base_model_precision = tune.base_model_precision or 'no_change'
-        
+        tune.optimizer = tune.optimizer or 'adamw'
+        if tune.disable_inductor is None: tune.disable_inductor = True
         tune.learning_rate = tune.learning_rate or 1e-4
         tune.negative_prompt = QWEN_NEGATIVE_PROMPT
-        tune.max_grad_norm = 1.0 # 0.01 # https://huggingface.co/terminusresearch/simpletuner-example-qwen_image-peft-lora?not-for-all-audiences=true
-        # tune.validation_steps = 1
-        tune.validation_num_inference_steps = 50
-        # tune.flux_schedule_auto_shift = True
-        # tune.validation_steps = 5
-        # 1.2s/it WANDB optimizer=bnb-adam8bit disable_inductor=true base_model_precision=default/bf16?
-        # 1.4s/it WANDB optimizer=bnb-adam8bit disable_inductor=true base_model_precision=nf8-bnb
-        # 1.7s/it WANDB optimizer=optimi-lion disable_inductor=true base_model_precision=nf8-bnb rank=8
-        # 1.7s/it WANDB optimizer=optimi-lion disable_inductor=true base_model_precision=nf8-bnb rank=8
+        tune.validation_steps = 25
+        # tune.validation_num_inference_steps = '50' # doesn't really improve face similarity
+        # Need to check if this helps avoid exploding gradients
+        # tune.max_grad_norm = 0.02 # https://huggingface.co/terminusresearch/simpletuner-example-qwen_image-peft-lora?not-for-all-audiences=true
+        # tune.validation_resolution ='1328x1328'
+        # 1.9it/s + 8.5 minutes for inductor to compile
     else:
-        tune.model_family = 'flux_old'
+        tune.model_family = 'flux'
         tune.fuse_qkv_projections = tune.fuse_qkv_projections or True
 
     timestamp = time.strftime("%Y%m%d-%H%M%S")
@@ -247,7 +241,7 @@ def train_no_catch(tune: JsonObj):
     os.environ['TORCHINDUCTOR_CACHE_DIR'] = "/data/cache/torchinductor_cache"
 
     # DO NOT change this. preprocessing can equal None
-    if tune.preprocessing=='2' or tune.preprocessing=='3':
+    if tune.branch == "qwen-image-1":
         os.environ['TRAINING_DYNAMO_BACKEND'] = 'no' if tune.disable_inductor else 'inductor'
         tail_lines = run_with_output([
             'uv', 'run', '-m', 'accelerate.commands.launch',
@@ -267,7 +261,7 @@ def train_no_catch(tune: JsonObj):
             # '--base_model_default_dtype=fp32',
             '--model_type=lora',
             *(['--flux_guidance_mode', tune.flux_guidance_mode] if tune.flux_guidance_mode else []),
-            *(['--validation_negative_prompt', f"\"{tune.negative_prompt}\""] if tune.negative_prompt else []),
+            *(['--validation_negative_prompt', tune.negative_prompt] if tune.negative_prompt else []),
             *(['--tread_config', tune.tread_config] if tune.tread_config else []),
             '--pretrained_model_name_or_path', model_path,
             *(['--gradient_checkpointing'] if GPU_MEMORY_GB <= 50 or tune.gradient_checkpointing else []), # avoid OOM but slows training
@@ -279,7 +273,6 @@ def train_no_catch(tune: JsonObj):
             '--aspect_bucket_rounding=2',
             '--model_flavour=dev',
             '--num_train_epochs=0',
-            '--validation_on_startup',
             f'--max_train_steps={steps}',
 
             # ***DO NOT*** enable this - this will cause the lora_target to miss target layers and not target the fused qkv layers
@@ -291,6 +284,7 @@ def train_no_catch(tune: JsonObj):
             *([f'--max_grad_norm={tune.max_grad_norm}'] if tune.max_grad_norm else []),
             f'--optimizer={tune.optimizer or "adamw"}', # previously, adamw_bf16
             f'--lora_type', tune.lora_type or 'standard',
+            # '--validation_on_startup',
             '--init_lokr_norm', str(tune.init_lokr_norm or 1e-3),
             # "--lycoris_config=config/lycoris_config.json",
             f'--learning_rate={tune.learning_rate or 1e-4}',
@@ -313,7 +307,7 @@ def train_no_catch(tune: JsonObj):
             *([f'--flux_lora_target={tune.flux_lora_target}'] if tune.flux_lora_target else []),
             f'--lora_rank={tune.lora_rank or 64}',
             f'--lora_alpha={tune.lora_alpha or 64}',
-            *(['--user_prompt_library', create_prompt_library(tune, output_dir)] if tune.report_to else []),
+            *(['--user_prompt_library', create_prompt_library(tune, output_dir)] if tune.report_to and tune.report_to!='none' else []),
             '--model_family', tune.model_family,
             f'--train_batch={train_batch}',
             # '--max_workers=1',
@@ -330,7 +324,105 @@ def train_no_catch(tune: JsonObj):
             *(['--flow_schedule_auto_shift'] if tune.flow_schedule_auto_shift else []),
             '--flow_schedule_shift', str(tune.flow_schedule_shift if tune.flow_schedule_shift is not None else 0),
             '--num_validation_images=1',
-            f'--validation_num_inference_steps={tune.validation_num_inference_steps or 28}',
+            '--validation_num_inference_steps', tune.validation_num_inference_steps or '28',
+            '--validation_seed=42',
+            '--minimum_image_size=0',
+            f'--resolution={resolution}',
+            '--validation_resolution', tune.validation_resolution or '1024x1024',
+            '--resolution_type=pixel_area',
+            '--checkpointing_steps', str(tune.checkpointing_steps or 1000),
+            '--checkpoints_total_limit=10',
+            '--validation_steps', str(tune.validation_steps) if tune.validation_steps else '5000',
+            f'--tracker_run_name={tune.id}-{tune.branch}-{os.environ.get("TRACKER_NAME", timestamp)} {tune.title} {tune.args}',
+            *(['--evaluation_type=face'] if tune.report_to and tune.report_to!='none' and tune.face_crop else []),
+            '--tracker_project_name=flux-lora',
+            '--validation_guidance=3.5',
+            '--validation_guidance_rescale=0.0',
+            '--validation_guidance=4', '--validation_guidance_real=3.5',
+            '--disable_benchmark',
+            # '--flux_schedule_shift', str(tune.flux_schedule_shift if tune.flux_schedule_shift is not None else 0), # Deprecated
+            # '--skip_file_discovery=aspect,metadata',
+            *(['--prepend_instance_prompt'] if caption_strategy == "textfile" else []),
+        ])
+    elif tune.preprocessing=='2' or tune.preprocessing=='3':
+        tail_lines = run_with_output([
+            'accelerate',
+            'launch',
+            '--gpu_ids', CUDA_VISIBLE_DEVICES,
+            # '--mixed_precision=no',
+            # *([f'--multi_gpu'] if num_gpus > 1 else []),
+            # f'--num_processes={num_gpus}',
+            '--num_machines=1',
+            # 2 GPUs
+            # 1.77it/s dynamo_backend=no
+            # 2.8it/s dynamo_backend=inductor
+            # 1 GPU
+            # 1.04s/it dynamo_backend=no 300 steps => 4:45
+            # 1.80it/s dynamo_backend=inductor 300 steps => 23s tracing + (300/1.8) = 23 + 166 = 189s => 3:09 but in reality took 4:06
+            '--dynamo_backend', 'inductor' if not tune.disable_inductor else 'no',
+            'simpletuner_v1/train.py',
+            # '--base_model_default_dtype=fp32',
+            '--model_type=lora',
+            *(['--flux_guidance_mode', tune.flux_guidance_mode] if tune.flux_guidance_mode else []),
+            '--pretrained_model_name_or_path', model_path,
+            *([
+                  '--pretrained_transformer_model_name_or_path', download_dev2pro(),
+                  '--pretrained_transformer_subfolder', 'none',
+              ] if tune.dev2pro else []),
+            '--enable_xformers_memory_efficient_attention', # ?
+            *(['--gradient_checkpointing'] if GPU_MEMORY_GB <= 50 or tune.gradient_checkpointing else []), # avoid OOM but slows training
+            '--peft_model_precision', tune.peft_model_precision or 'bf16', # or bf16; when using adamw_bf16 this should be bf16
+            '--set_grads_to_none', # ?
+            '--gradient_accumulation_steps', str(tune.gradient_accumulation_steps or 1),
+            '--resume_from_checkpoint=latest',
+            '--snr_gamma', str(tune.snr_gamma or 5),
+            '--data_backend_config', data_backend_config,
+            '--aspect_bucket_rounding=2',
+            '--num_train_epochs=0',
+            f'--max_train_steps={steps}',
+            # '--metadata_update_interval=65', # ?
+            # https://wandb.ai/astria/lora-training/runs/b94a195701ed0a7d7b53e6c9771c4388?nw=nwuserburgalonastria
+            *([f'--max_grad_norm={tune.max_grad_norm}'] if tune.max_grad_norm else []),
+            f'--optimizer={tune.optimizer or "adamw"}', # previously, adamw_bf16
+            f'--lora_type', tune.lora_type or 'standard',
+            '--init_lokr_norm', str(tune.init_lokr_norm or 1e-3),
+            # "--lycoris_config=config/lycoris_config.json",
+            f'--learning_rate={tune.learning_rate or 1e-4}',
+            '--lr_scheduler', tune.lr_scheduler or 'constant_with_warmup',
+            '--seed=42',
+            '--lr_warmup_steps=10',
+            '--output_dir', output_dir,
+            # '--inference_scheduler_timestep_spacing=trailing', # defaults
+            # '--training_scheduler_timestep_spacing=trailing', # defaults
+            '--report_to', tune.report_to or 'none',
+            # '--allow_tf32', # deprecated
+            # '--mixed_precision=bf16',
+            # *([f'--base_model_precision={os.environ.get("BASE_MODEL_PRECISION")}'] if os.environ.get("BASE_MODEL_PRECISION") else []),
+            *([f'--base_model_precision={tune.base_model_precision}'] if tune.base_model_precision else []),
+            # helps see that we're not destroying the priors
+            # '--validation_disable_unconditional',
+            # '--i_know_what_i_am_doing',
+            '--keep_vae_loaded',
+            # ["mmdit", "context", "all"]
+            *([f'--flux_lora_target={tune.flux_lora_target}'] if tune.flux_lora_target else []),
+            f'--lora_rank={tune.lora_rank or 64}',
+            f'--lora_alpha={tune.lora_alpha or 64}',
+            *(['--user_prompt_library', create_prompt_library(tune, output_dir)] if tune.report_to else []),
+            '--model_family=flux',
+            f'--train_batch={train_batch}',
+            # '--max_workers=1',
+            # '--read_batch_size=1',
+            # '--write_batch_size=1',
+            # '--override_dataset_config',
+            '--caption_dropout_probability', str(tune.caption_dropout_probability if tune.caption_dropout_probability is not None else 0.1),
+            *(['--use_ema'] if tune.use_ema else []),
+            # '--ema_decay=0.99',
+            # '--torch_num_threads=8',
+            # '--image_processing_batch_size=32',
+            # '--vae_batch_size=1',
+            # '--validation_prompt="ohwx woman holding flowers, red sweater, studio photography, plain white background"',
+            '--num_validation_images=1',
+            '--validation_num_inference_steps=28',
             '--validation_seed=42',
             '--minimum_image_size=0',
             f'--resolution={resolution}',
@@ -344,10 +436,10 @@ def train_no_catch(tune: JsonObj):
             '--tracker_project_name=flux-lora',
             '--validation_guidance=3.5',
             '--validation_guidance_rescale=0.0',
-            '--validation_guidance=4', '--validation_guidance_real=3.5',
             '--disable_benchmark',
-            # '--flux_schedule_shift', str(tune.flux_schedule_shift if tune.flux_schedule_shift is not None else 0), # Deprecated
-            # '--skip_file_discovery=aspect,metadata',
+            *(['--flux_schedule_auto_shift'] if tune.flux_schedule_auto_shift else []),
+            '--flux_schedule_shift', str(tune.flux_schedule_shift if tune.flux_schedule_shift is not None else 0),
+            '--skip_file_discovery=aspect,metadata',
             *(['--prepend_instance_prompt'] if caption_strategy == "textfile" else []),
         ])
     else:
@@ -477,7 +569,6 @@ if __name__ == "__main__":
         print(f"Exiting poll after i={i}")
 
     for id in sys.argv[1:]:
-        print(id)
         if id == 'poll':
             poll()
             continue

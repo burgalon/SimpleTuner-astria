@@ -692,7 +692,6 @@ class TrainingSample:
         )
         self.target_size = self._limit_maximum_size(self.target_size)
 
-
         if (
             self.crop_enabled and self.crop_aspect != "random"
         ) or not self.valid_metadata:

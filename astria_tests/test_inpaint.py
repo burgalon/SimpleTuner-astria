@@ -18,11 +18,11 @@ def test_inpainting_background_product():
     prompt = JsonObj(
         **copy.copy(BASE_PROMPT.__dict__),
         # necklace
-        # input_image='https://sdbooth2-production.s3.amazonaws.com/pwe6bcgo9ykbnt6tya91z3omoog4',
+        # input_image='https://mp.astria.ai/pwe6bcgo9ykbnt6tya91z3omoog4',
         # earings
-        # input_image='https://sdbooth2-production.s3.amazonaws.com/u77j61zzd4gbqdsvkhmd9p1cz0d1',
+        # input_image='https://mp.astria.ai/u77j61zzd4gbqdsvkhmd9p1cz0d1',
         # dogs
-        input_image='https://sdbooth2-production.s3.amazonaws.com/a93ocfwgzocdrmq1q4wizwajnhvm',
+        input_image='https://mp.astria.ai/a93ocfwgzocdrmq1q4wizwajnhvm',
         denoising_strength=1,
         # cfg_scale=3,
     )

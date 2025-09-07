@@ -4,7 +4,6 @@
 # from helpers.models.sdxl.model import SDXL
 # from helpers.models.kolors.model import Kolors
 from helpers.models.flux.model import Flux
-from helpers.models.flux_old.model import Flux as FluxOld
 # from helpers.models.wan.model import Wan
 # from helpers.models.wan_t2i.model import Wan as WanT2I
 # from helpers.models.ltxvideo.model import LTXVideo
@@ -26,7 +25,6 @@ model_families = {
     # "sdxl": SDXL,
     # "kolors": Kolors,
     "flux": Flux,
-    "flux_old": FluxOld,
     # "wan": Wan,
     # "wan_t2i": WanT2I,
     # "ltxvideo": LTXVideo,

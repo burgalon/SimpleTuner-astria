@@ -31,6 +31,9 @@ os.makedirs(EPHEMERAL_MODELS_DIR, exist_ok=True)
 total_memory_in_GB = psutil.virtual_memory().total / (1024.0 ** 3)
 CUDA_VISIBLE_DEVICES = os.environ.get("CUDA_VISIBLE_DEVICES", "0")
 HUMAN_CLASS_NAMES = ['man', 'woman', 'boy', 'girl', 'child', 'baby', 'person', 'female', 'male' ]
+QWEN_NEGATIVE_PROMPT = ""
+BRANCH_QWEN = 'qwen-image-1'
+BRANCH_QWEN_EDIT = 'qwen-edit-1'
 
 device = "cuda"
 
@@ -222,6 +225,7 @@ MODEL_URLS = {
     '1504944': 'black-forest-labs/FLUX.1-dev',
     '3063697': 'black-forest-labs/FLUX.1-Krea-dev',
     '3086296': 'Qwen/Qwen-Image',
+    '3123913': 'Qwen/Qwen-Image-Edit',
 }
 def download_model_from_server(model_name: str, convert_xl_to_diffusers = True):
     cleanup_models()

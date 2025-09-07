@@ -12,9 +12,9 @@
 #     "model_type": "lora",
 #     "face_swap_images": [
 #         # front
-#         'https://sdbooth2-production.s3.amazonaws.com/l4b6doh3zhwz9usplypdoywcixfn',
+#         'https://mp.astria.ai/l4b6doh3zhwz9usplypdoywcixfn',
 #         # right
-#         # 'https://sdbooth2-production.s3.amazonaws.com/ihjcrezh9hc0ufk632vj2mk65wpb',
+#         # 'https://mp.astria.ai/ihjcrezh9hc0ufk632vj2mk65wpb',
 #     ],
 # })
 #
@@ -39,7 +39,7 @@
 #     )
 #     prompt.id = name()
 #     prompt.tunes = [FLUX_VTON_LORA]
-#     # images = [load_image('https://sdbooth2-production.s3.amazonaws.com/t5ibi8bs69e5xm87mf31a5ikbie6')]
+#     # images = [load_image('https://mp.astria.ai/t5ibi8bs69e5xm87mf31a5ikbie6')]
 #     images = [load_image('astria_tests/fixtures/19477328-before-inpaint-0.jpg')]
 #     # 384 * 493
 #     # pipe.init_pipe(MODELS_DIR + f"/{TUNE_FLUX.id}-{TUNE_FLUX.branch}")
@@ -56,10 +56,10 @@
 #     prompt.id = name()
 #     bad_tune = JsonObj(**FLUX_VTON_LORA.__dict__, )
 #     bad_tune.face_swap_images=[
-#         'https://sdbooth2-production.s3.amazonaws.com/a93ocfwgzocdrmq1q4wizwajnhvm',
+#         'https://mp.astria.ai/a93ocfwgzocdrmq1q4wizwajnhvm',
 #     ]
 #     prompt.tunes = [bad_tune]
-#     # images = [load_image('https://sdbooth2-production.s3.amazonaws.com/t5ibi8bs69e5xm87mf31a5ikbie6')]
+#     # images = [load_image('https://mp.astria.ai/t5ibi8bs69e5xm87mf31a5ikbie6')]
 #     images = [load_image('astria_tests/fixtures/19477328-before-inpaint-0.jpg')]
 #     # 384 * 493
 #     # pipe.init_pipe(MODELS_DIR + f"/{TUNE_FLUX.id}-{TUNE_FLUX.branch}")

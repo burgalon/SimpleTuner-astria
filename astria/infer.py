@@ -18,6 +18,7 @@ import torch
 from PIL import Image, ImageOps, ImageFilter
 from diffusers import DiffusionPipeline, FluxFillPipeline, FluxTransformer2DModel
 from diffusers import FluxPipeline, FluxImg2ImgPipeline, FluxControlNetPipeline, FluxControlNetModel, \
+    QwenImageImg2ImgPipeline, QwenImageInpaintPipeline, \
     FluxInpaintPipeline, FluxControlNetImg2ImgPipeline #, FluxControlNetInpaintPipeline
 from torchvision import transforms
 
@@ -38,7 +39,7 @@ from add_grain import add_grain
 from transfer_minio import download_minio
 from astria_utils import run, MODELS_DIR, download_model_from_server, JsonObj, device, \
     StaleDeploymentException, FLUX_INPAINT_MODEL_ID, CACHE_DIR, \
-    HUMAN_CLASS_NAMES, check_refresh
+    HUMAN_CLASS_NAMES, check_refresh, QWEN_NEGATIVE_PROMPT, BRANCH_QWEN, BRANCH_QWEN_EDIT
 
 if os.environ.get('MOCK_SERVER') or os.environ.get('DEBUG') == 'test':
     from astria_mock_server import report_infer_job_failure, request_infer_job_from_server, request_tune_job_from_server, send_to_server
@@ -83,8 +84,6 @@ GPU_MEMORY_GB = torch.cuda.get_device_properties(0).total_memory / 1024**3
 print(f"GPU_MEMORY_GB={GPU_MEMORY_GB:.0f}")
 UNIT_NUMBERS = {0: 'zero', 1: 'one', 2: 'two', 3: 'three', 4: 'four',
            5: 'five', 6: 'six', 7: 'seven', 8: 'eight', 9: 'nine'}
-QWEN_NEGATIVE_PROMPT = "pixart film. plastic looking people with overly shiny skin, cg rendered. ugly, cropped, blurry, low-quality, mediocre average"
-
 
 def parse_args(prompt: JsonObj):
     if '--' not in prompt.text:
@@ -238,6 +237,7 @@ class InferPipeline(InpaintFaceMixin, VtonMixin, SamMixin):
         pipe.transformer.set_attn_processor(attn_procs)
 
     def reset(self, gc_collect=False):
+        self.branch = None
         self.last_pipe = None
         self.model_path = None
         self.pipe = None
@@ -273,11 +273,7 @@ class InferPipeline(InpaintFaceMixin, VtonMixin, SamMixin):
             torch.cuda.empty_cache()
 
     def warmup(self):
-        start_time = time.time()
         self.init_pipe(MODELS_DIR + "/1504944-flux1")
-        total_time = time.time() - start_time
-        if total_time > 1:
-            print(f"Initialized pipeline in {total_time :.2f}s")
         # start_time = time.time()
         # self.init_inpaint(JsonObj(fill=True))
         # total_time = time.time() - start_time
@@ -366,7 +362,12 @@ class InferPipeline(InpaintFaceMixin, VtonMixin, SamMixin):
             for name, lora_fn in zip(names, lora_fns):
                 print(f"Loading LoRA weights {name} from {lora_fn}")
                 # use FileLock to make sure only one process is loading at a time to avoid CPU spikes
-                pipe.load_lora_weights(lora_fn, adapter_name=name, low_cpu_mem_usage=False)
+                try:
+                    pipe.load_lora_weights(lora_fn, adapter_name=name, low_cpu_mem_usage=False)
+                except Exception as e:
+                    print(f"Failed to load LoRA weights {name} from {lora_fn}: {e}")
+                    os.remove(lora_fn)
+                    raise e
 
 
             print(f"Loaded LoRA weights {names} in {time.time() - start_time:.2f}s pipe={pipe.__class__.__name__}")
@@ -404,6 +405,7 @@ class InferPipeline(InpaintFaceMixin, VtonMixin, SamMixin):
                 print(f"Failed to load model {model_path}: {e}")
                 raise e
             self.model_path = model_path
+            self.branch = '-'.join(model_path.split('-')[1:])
             if 'Qwen' in self.pipe.__class__.__name__:
                 self.resolution = (1328, 1328)
             else:
@@ -467,17 +469,28 @@ class InferPipeline(InpaintFaceMixin, VtonMixin, SamMixin):
             ).to(device)
 
     def init_img2img(self):
+        if self.branch == BRANCH_QWEN_EDIT:
+            return self.pipe
         if not self.img2img:
-            # Initialize the FluxImg2ImgPipeline for image-to-image
-            self.img2img = FluxImg2ImgPipeline(
-                transformer=self.pipe.transformer,
-                scheduler=self.pipe.scheduler,
-                vae=self.pipe.vae,
-                text_encoder=self.pipe.text_encoder,
-                text_encoder_2=self.pipe.text_encoder_2,
-                tokenizer=self.pipe.tokenizer,
-                tokenizer_2=self.pipe.tokenizer_2,
-            ).to(device)
+            if 'Qwen' in self.pipe.__class__.__name__:
+                self.img2img =QwenImageImg2ImgPipeline(
+                    scheduler=self.pipe.scheduler,
+                    vae=self.pipe.vae,
+                    text_encoder=self.pipe.text_encoder,
+                    tokenizer=self.pipe.tokenizer,
+                    transformer=self.pipe.transformer,
+                ).to(device)
+            else:
+                self.img2img = FluxImg2ImgPipeline(
+                    transformer=self.pipe.transformer,
+                    scheduler=self.pipe.scheduler,
+                    vae=self.pipe.vae,
+                    text_encoder=self.pipe.text_encoder,
+                    text_encoder_2=self.pipe.text_encoder_2,
+                    tokenizer=self.pipe.tokenizer,
+                    tokenizer_2=self.pipe.tokenizer_2,
+                ).to(device)
+        return self.img2img
 
     def init_control(self, tune: JsonObj, control_type):
         control_type = CONTROLNETS_DICT[tune.branch][control_type]
@@ -496,41 +509,52 @@ class InferPipeline(InpaintFaceMixin, VtonMixin, SamMixin):
                 self.controlnet_inpaint_txt2img.controlnet = self.control
 
     def init_inpaint(self, prompt: JsonObj):
-        if prompt.fill:
-            if not self.fill:
-                model_path = download_model_from_server(f'{FLUX_INPAINT_MODEL_ID}-flux1')
-                self.fill = FluxFillPipeline(
-                    transformer=FluxTransformer2DModel.from_pretrained(model_path, subfolder="transformer", torch_dtype=torch.bfloat16),
-                    scheduler=self.pipe.scheduler,
-                    vae=self.pipe.vae,
-                    text_encoder=self.pipe.text_encoder,
-                    text_encoder_2=self.pipe.text_encoder_2,
-                    tokenizer=self.pipe.tokenizer,
-                    tokenizer_2=self.pipe.tokenizer_2,
-                ).to(device)
-                self.setup_sage_attention(self.fill)
-
-            return self.fill
-        else:
+        if 'Qwen' in self.pipe.__class__.__name__:
             if not self.inpaint:
-                self.inpaint = FluxDifferentialImg2ImgPipeline(
-                    transformer=self.pipe.transformer,
+                self.inpaint = QwenImageInpaintPipeline(
                     scheduler=self.pipe.scheduler,
                     vae=self.pipe.vae,
                     text_encoder=self.pipe.text_encoder,
-                    text_encoder_2=self.pipe.text_encoder_2,
                     tokenizer=self.pipe.tokenizer,
-                    tokenizer_2=self.pipe.tokenizer_2,
+                    transformer=self.pipe.transformer,
                 ).to(device)
-                if os.environ.get('PRUNA'):
-                    self.inpaint = smash_helper.smash_pipe(self.inpaint)
-
-                self.setup_sage_attention(self.inpaint)
-            if os.environ.get('PRUNA'):
-                self.pipe.cache_helper.disable()
-                self.inpaint.cache_helper.enable()
-
             return self.inpaint
+        else:
+            if prompt.fill:
+                if not self.fill:
+                    model_path = download_model_from_server(f'{FLUX_INPAINT_MODEL_ID}-flux1')
+                    self.fill = FluxFillPipeline(
+                        transformer=FluxTransformer2DModel.from_pretrained(model_path, subfolder="transformer", torch_dtype=torch.bfloat16),
+                        scheduler=self.pipe.scheduler,
+                        vae=self.pipe.vae,
+                        text_encoder=self.pipe.text_encoder,
+                        text_encoder_2=self.pipe.text_encoder_2,
+                        tokenizer=self.pipe.tokenizer,
+                        tokenizer_2=self.pipe.tokenizer_2,
+                    ).to(device)
+                    self.setup_sage_attention(self.fill)
+
+                return self.fill
+            else:
+                if not self.inpaint:
+                    self.inpaint = FluxDifferentialImg2ImgPipeline(
+                        transformer=self.pipe.transformer,
+                        scheduler=self.pipe.scheduler,
+                        vae=self.pipe.vae,
+                        text_encoder=self.pipe.text_encoder,
+                        text_encoder_2=self.pipe.text_encoder_2,
+                        tokenizer=self.pipe.tokenizer,
+                        tokenizer_2=self.pipe.tokenizer_2,
+                    ).to(device)
+                    if os.environ.get('PRUNA'):
+                        self.inpaint = smash_helper.smash_pipe(self.inpaint)
+
+                    self.setup_sage_attention(self.inpaint)
+                if os.environ.get('PRUNA'):
+                    self.pipe.cache_helper.disable()
+                    self.inpaint.cache_helper.enable()
+
+                return self.inpaint
 
     def init_controlnet_inpaint_txt2img(self, tune, control_type):
         self.init_control(tune, control_type)
@@ -815,14 +839,13 @@ class InferPipeline(InpaintFaceMixin, VtonMixin, SamMixin):
             image = self.img2img(
                 image=image,
                 strength=strength,
-                guidance_scale=float(prompt.cfg_scale or 3.5),
                 height=image.height,
                 width=image.width,
                 num_inference_steps=28,
                 max_sequence_length=prompt.max_sequence_length or 512,
                 generator=torch.Generator(device="cuda").manual_seed((prompt.seed or 42) + i_image),
-                prompt_embeds=kwargs['prompt_embeds'],
-                pooled_prompt_embeds=kwargs['pooled_prompt_embeds'],
+                # get true_cfg_scale and guidance_scale from original inference
+                **({k: v for k, v in kwargs.items() if 'prompt' in k or 'true_cfg_scale'==k or 'guidance_scale'==k}),
             ).images[0]
             images[i_image] = image
 
@@ -831,10 +854,11 @@ class InferPipeline(InpaintFaceMixin, VtonMixin, SamMixin):
     def set_prompt_defaults(self, prompt: JsonObj, tune: JsonObj):
         if not prompt.steps:
             prompt.steps = 50 if 'Qwen' in self.pipe.__class__.__name__ else 28
-        if not prompt.w:
-            prompt.w = self.resolution[0]
-        if not prompt.h:
-            prompt.h = self.resolution[1]
+        if not prompt.input_image:
+            if not prompt.w:
+                prompt.w = self.resolution[0]
+            if not prompt.h:
+                prompt.h = self.resolution[1]
 
 
     def infer(self, tune: JsonObj):
@@ -999,8 +1023,12 @@ class InferPipeline(InpaintFaceMixin, VtonMixin, SamMixin):
             else:
                 orig_mask_image = None
             input_image_tensor, controlnet_hint, w, h, orig_input_image, input_image, mask_image = self.get_controlnet_hint(prompt, orig_mask_image)
-            prompt.w = prompt.w or w
-            prompt.h = prompt.h or h
+
+            # Do not set w,h for QWEN_EDIT since diffusers has some unique way of setting w,h to align with VAE
+            # https://github.com/huggingface/diffusers/issues/12216#issuecomment-3218294613
+            if self.branch != BRANCH_QWEN_EDIT:
+                prompt.w = prompt.w or w
+                prompt.h = prompt.h or h
 
             if prompt.controlnet:
                 kwargs['control_image'] = controlnet_hint
@@ -1047,8 +1075,7 @@ class InferPipeline(InpaintFaceMixin, VtonMixin, SamMixin):
                         mask_image = ImageOps.invert(mask_image)
                     kwargs['mask_image'] = mask_image
                 else:
-                    self.init_img2img()
-                    pipe = self.img2img
+                    pipe = self.init_img2img()
                 if isinstance(pipe, FluxFillPipeline):
                     if not prompt.cfg_scale or prompt.cfg_scale < 7:
                         prompt.cfg_scale = 30
@@ -1075,7 +1102,10 @@ class InferPipeline(InpaintFaceMixin, VtonMixin, SamMixin):
             del kwargs['prompt_main']
 
         # Encode text embeds
-        if 'Qwen' in pipe.__class__.__name__:
+        if self.branch == BRANCH_QWEN_EDIT:
+            kwargs['prompt'] = prompt.text
+            del kwargs['strength']
+        elif 'Qwen' in pipe.__class__.__name__:
             (
                 prompt_embeds,
                 prompt_embeds_mask,
@@ -1123,6 +1153,8 @@ class InferPipeline(InpaintFaceMixin, VtonMixin, SamMixin):
                 kwargs['joint_attention_kwargs'] = joint_attention_kwargs
             else:
                 kwargs['true_cfg_scale'] = float(prompt.cfg_scale or 4.0)
+                # https://huggingface.co/spaces/Qwen/Qwen-Image/blob/main/app.py#L215
+                # guidance_scale = 1.0 # distilled
             image = pipe(
                 height=prompt.h,
                 width=prompt.w,
@@ -1155,7 +1187,7 @@ class InferPipeline(InpaintFaceMixin, VtonMixin, SamMixin):
                     image.save(f"{MODELS_DIR}/{prompt.id}-{i_image}-before-hires.jpg")
             images = self.apply_hires_fix(images, prompt, kwargs)
 
-        if prompt.inpaint_faces or os.environ.get('INPAINT_FACES'):
+        if (prompt.inpaint_faces or os.environ.get('INPAINT_FACES')) and not os.environ.get('DISABLE_INPAINT_FACES'):
             images = self.inpaint_faces(images, prompt, kwargs)
 
         if prompt.color_grading and prompt.color_grading != 'null' and not os.environ.get('DISABLE_COLOR_GRADING'):

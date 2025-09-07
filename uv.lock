@@ -1,5 +1,5 @@
 version = 1
-revision = 3
+revision = 2
 requires-python = "==3.12.*"
 resolution-markers = [
     "sys_platform == 'darwin'",
@@ -20,7 +20,7 @@ wheels = [
 
 [[package]]
 name = "accelerate"
-version = "1.10.0"
+version = "1.6.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "huggingface-hub" },
@@ -31,9 +31,9 @@ dependencies = [
     { name = "safetensors" },
     { name = "torch" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/f7/66/be171836d86dc5b8698b3a9bf4b9eb10cb53369729939f88bf650167588b/accelerate-1.10.0.tar.gz", hash = "sha256:8270568fda9036b5cccdc09703fef47872abccd56eb5f6d53b54ea5fb7581496", size = 392261, upload-time = "2025-08-07T10:54:51.664Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/8a/6e/c29a1dcde7db07f47870ed63e5124086b11874ad52ccd533dc1ca2c799da/accelerate-1.6.0.tar.gz", hash = "sha256:28c1ef1846e690944f98b68dc7b8bb6c51d032d45e85dcbb3adb0c8b99dffb32", size = 363804, upload-time = "2025-04-01T11:53:03.037Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/30/dd/0107f0aa179869ee9f47ef5a2686abd5e022fdc82af901d535e52fe91ce1/accelerate-1.10.0-py3-none-any.whl", hash = "sha256:260a72b560e100e839b517a331ec85ed495b3889d12886e79d1913071993c5a3", size = 374718, upload-time = "2025-08-07T10:54:49.988Z" },
+    { url = "https://files.pythonhosted.org/packages/63/b1/8198e3cdd11a426b1df2912e3381018c4a4a55368f6d0857ba3ca418ef93/accelerate-1.6.0-py3-none-any.whl", hash = "sha256:1aee717d3d3735ad6d09710a7c26990ee4652b79b4e93df46551551b5227c2aa", size = 354748, upload-time = "2025-04-01T11:53:01.298Z" },
 ]
 
 [[package]]
@@ -815,7 +815,7 @@ wheels = [
 [[package]]
 name = "diffusers"
 version = "0.35.0.dev0"
-source = { git = "https://github.com/burgalon/diffusers.git?rev=e682af202787c44da4c7e583b95ec7f42dc45029#e682af202787c44da4c7e583b95ec7f42dc45029" }
+source = { git = "https://github.com/burgalon/diffusers.git?rev=d2e6f31b09194a0bb9e04ed945dc953fba8a128f#d2e6f31b09194a0bb9e04ed945dc953fba8a128f" }
 dependencies = [
     { name = "filelock" },
     { name = "huggingface-hub" },
@@ -2418,7 +2418,7 @@ wheels = [
 
 [[package]]
 name = "onnxruntime-gpu"
-version = "1.20.1"
+version = "1.22.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "coloredlogs" },
@@ -2429,8 +2429,8 @@ dependencies = [
     { name = "sympy" },
 ]
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/91/a8/6984a2fb070be372a866108e3e85c9eb6e8f0378a8567a66967d80befb75/onnxruntime_gpu-1.20.1-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:1951f96cd534c6151721e552606d0d792ea6a4c3e57e2f10eed17cca8105e953", size = 291510989, upload-time = "2024-11-21T01:13:13.02Z" },
-    { url = "https://files.pythonhosted.org/packages/e8/15/0a9887bd2931b7b7e5f36995f266d51e66c0e02f84d18cab65133b111ac1/onnxruntime_gpu-1.20.1-cp312-cp312-win_amd64.whl", hash = "sha256:696de465884480fad1deffd936bee05c6f10fdfe4f5fcef1927a71f5d28ed9ef", size = 279699210, upload-time = "2024-11-21T01:13:25.332Z" },
+    { url = "https://files.pythonhosted.org/packages/b5/5c/3f9700ba277d52c121dd2cebc8a672fb60b53e888972fc6682b6692a766c/onnxruntime_gpu-1.22.0-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:86b064c8f6cbe6da03f51f46351237d985f8fd5eb907d3f9997ea91881131a13", size = 283199528, upload-time = "2025-05-09T19:39:54.489Z" },
+    { url = "https://files.pythonhosted.org/packages/48/9e/f95af15627c8b9f866f2e372e467a9f1e14e7ebec224ed4b8e71ce970c81/onnxruntime_gpu-1.22.0-cp312-cp312-win_amd64.whl", hash = "sha256:89cfd71e1ba17a4668e8770e344f22cde64bfd70b2ad3d03b8a390d4414b5995", size = 214923964, upload-time = "2025-05-09T19:33:04.028Z" },
 ]
 
 [[package]]
@@ -3687,7 +3687,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "accelerate", specifier = ">=1.5.2" },
+    { name = "accelerate", specifier = ">=1.6.0,<1.7.0" },
     { name = "atomicwrites", specifier = ">=1.4.1" },
     { name = "bitsandbytes", specifier = ">=0.45.0,<0.46" },
     { name = "boto3", specifier = ">=1.35.83,<2" },
@@ -3699,7 +3699,7 @@ requires-dist = [
     { name = "controlnet-aux", specifier = ">=0.0.7,<0.0.8" },
     { name = "datasets", specifier = ">=3.0.1" },
     { name = "deepspeed", specifier = ">=0.17.2" },
-    { name = "diffusers", git = "https://github.com/burgalon/diffusers.git?rev=e682af202787c44da4c7e583b95ec7f42dc45029" },
+    { name = "diffusers", git = "https://github.com/burgalon/diffusers.git?rev=d2e6f31b09194a0bb9e04ed945dc953fba8a128f" },
     { name = "easy-dwpose", git = "https://github.com/carpedm20/easy_dwpose.git?rev=3eccc2bbdb1db1f01c9b867be92fce23d54c5558" },
     { name = "einops", specifier = ">=0.8.0,<0.9" },
     { name = "groundingdino-py", specifier = ">=0.4.0" },
@@ -3714,7 +3714,7 @@ requires-dist = [
     { name = "minio", specifier = ">=7.2.16" },
     { name = "numpy", specifier = "==1.26.3" },
     { name = "onnxruntime", specifier = "==1.20.1" },
-    { name = "onnxruntime-gpu", specifier = "==1.20.1" },
+    { name = "onnxruntime-gpu", specifier = "==1.22.0" },
     { name = "open-clip-torch", specifier = ">=2.26.1,<3" },
     { name = "opencv-python", specifier = ">=4.10.0.84,<5" },
     { name = "optimum-quanto", git = "https://github.com/huggingface/optimum-quanto" },
@@ -3742,7 +3742,7 @@ requires-dist = [
     { name = "torchao", specifier = ">=0.10.0,<0.11" },
     { name = "torchmetrics", specifier = ">=1.1.1,<2" },
     { name = "torchsde", specifier = ">=0.2.6,<0.3" },
-    { name = "torchvision", specifier = ">=0.23.0,<0.24", index = "https://download.pytorch.org/whl/cu128" },
+    { name = "torchvision", specifier = ">=0.23.0", index = "https://download.pytorch.org/whl/cu128" },
     { name = "transformers", specifier = "==4.55.0" },
     { name = "triton", specifier = ">=3.1.0,<4", index = "https://download.pytorch.org/whl/cu128" },
     { name = "ultralytics", specifier = ">=8.3.27,<9" },
@@ -4281,6 +4281,7 @@ dependencies = [
 ]
 wheels = [
     { url = "https://download.pytorch.org/whl/triton-3.3.1-cp312-cp312-manylinux_2_27_aarch64.manylinux_2_28_aarch64.whl" },
+    { url = "https://download.pytorch.org/whl/triton-3.3.1-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl" },
 ]
 
 [[package]]
