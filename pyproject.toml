@@ -6,8 +6,8 @@ authors = [{ name = "bghira" }]
 requires-python = ">=3.12,<3.13"
 readme = "README.md"
 dependencies = [
-    "torch>=2.8.0,<3",
-    "torchvision>=0.23.0",
+    "torch>=2.7.0,<3",
+    "torchvision>=0.20.0",
     "diffusers>=0.35.0",
     "transformers==4.55.0",
     "datasets>=3.0.1",
@@ -69,6 +69,7 @@ dependencies = [
     "atomicwrites>=1.4.1",
     "prodigy-plus-schedule-free",
     "minio>=7.2.16",
+    "pruna-pro>=0.2.7",
 ]
 
 [dependency-groups]
@@ -115,3 +116,4 @@ build-backend = "hatchling.build"
 
 [tool.pytest.ini_options]
 testpaths = [ "astria_tests" ]
+addopts = "-s"

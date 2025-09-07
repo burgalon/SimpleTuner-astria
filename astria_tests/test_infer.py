@@ -98,11 +98,11 @@ FLUX_LORA_SHOE = JsonObj(**{
 })
 
 FLUX_LORA_DRESS = JsonObj(**{
-    "id": 2689680,
+    "id": 2053283,
     "name": "dress",
     "title": "Floral dress",
     "branch": "flux1",
-    "token": str(2689680),
+    "token": str(2053283),
     "train_token": "floral white",
     "model_type": "lora",
     "face_swap_images": [
@@ -209,7 +209,7 @@ def name():
 
 test_name_invocation_count = {}
 
-def run_images(prompt, override_name=None, base_tune=TUNE_FLUX):
+def run_images(prompt, override_name=None):
     prompt.id = name() if override_name is None else override_name
     if test_name_invocation_count.get(prompt.id, None) is None:
         test_name_invocation_count[prompt.id] = 0
@@ -217,7 +217,7 @@ def run_images(prompt, override_name=None, base_tune=TUNE_FLUX):
         test_name_invocation_count[prompt.id] += 1
     count = test_name_invocation_count[prompt.id]
 
-    tune = JsonObj(**base_tune.__dict__, prompts=[prompt])
+    tune = JsonObj(**TUNE_FLUX.__dict__, prompts=[prompt])
     images = pipe.infer(tune)
 
     if not prompt.video:
@@ -235,7 +235,7 @@ def run_images(prompt, override_name=None, base_tune=TUNE_FLUX):
                 hash_ref =  imagehash.phash(Image.open(
                     (Path(__file__).parent / 'results' / img_fn).absolute()))
                 hash_out =  imagehash.phash(Image.open(pth))
-                assert hash_ref == hash_out, "Image hash does not match"
+                assert hash_ref == hash_out
     return images
 
 # Test that loras do not leak across test by having a test of before/after lora
@@ -252,22 +252,22 @@ def test_txt2img_lora():
     run_images(prompt)
     assert isinstance(pipe.last_pipe, FluxPipeline)
 
-# def test_txt2img_civitai_lora():
-#     prompt = JsonObj(
-#         **copy.copy(BASE_PROMPT.__dict__),
-#     )
-#     prompt.text=f"<lora:{FLUX_EXTERNAL_LORA.id}:1> {FLUX_EXTERNAL_LORA.train_token} woman holding flowers"
-#     prompt.tunes=[FLUX_EXTERNAL_LORA]
-#     run_images(prompt)
-#     assert isinstance(pipe.last_pipe, FluxPipeline)
-#
-#     prompt = JsonObj(
-#         **copy.copy(BASE_PROMPT.__dict__),
-#     )
-#     prompt.text=f"<lora:{FLUX_EXTERNAL_LORA_2.id}:1> {FLUX_EXTERNAL_LORA_2.train_token} woman holding flowers"
-#     prompt.tunes=[FLUX_EXTERNAL_LORA_2]
-#     run_images(prompt)
-#     assert isinstance(pipe.last_pipe, FluxPipeline)
+def test_txt2img_civitai_lora():
+    prompt = JsonObj(
+        **copy.copy(BASE_PROMPT.__dict__),
+    )
+    prompt.text=f"<lora:{FLUX_EXTERNAL_LORA.id}:1> {FLUX_EXTERNAL_LORA.train_token} woman holding flowers"
+    prompt.tunes=[FLUX_EXTERNAL_LORA]
+    run_images(prompt)
+    assert isinstance(pipe.last_pipe, FluxPipeline)
+
+    prompt = JsonObj(
+        **copy.copy(BASE_PROMPT.__dict__),
+    )
+    prompt.text=f"<lora:{FLUX_EXTERNAL_LORA_2.id}:1> {FLUX_EXTERNAL_LORA_2.train_token} woman holding flowers"
+    prompt.tunes=[FLUX_EXTERNAL_LORA_2]
+    run_images(prompt)
+    assert isinstance(pipe.last_pipe, FluxPipeline)
 
 def test_txt2img_after():
     run_images(BASE_PROMPT)

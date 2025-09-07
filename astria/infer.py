@@ -9,6 +9,9 @@ import sys
 import time
 import traceback
 
+import smash_helper
+from smash_helper import HOT_SWAP_SLOTS, IDENTITY_LORA, is_pruna_model
+
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from filelock import FileLock
@@ -199,7 +202,7 @@ def parse_args(prompt: JsonObj):
         prompt.outpaint_width = prompt.outpaint_height
 
 def get_pipe_key_for_lora(pipe):
-    return 'fill' if isinstance(pipe, FluxFillPipeline) else 'pipe'
+    return 'fill' if (smash_helper.is_pruna_model(pipe) and isinstance(pipe._PrunaProModel__internal_model_ref, FluxFillPipeline)) or isinstance(pipe, FluxFillPipeline) else 'pipe'
 
 class InferPipeline(InpaintFaceMixin, VtonMixin, SamMixin):
     reference_pattern = r'<(lora|faceid):([^>:]+):([\d\.]+)>'
@@ -273,7 +276,7 @@ class InferPipeline(InpaintFaceMixin, VtonMixin, SamMixin):
             torch.cuda.empty_cache()
 
     def warmup(self):
-        self.init_pipe(MODELS_DIR + "/1504944-flux1")
+        self.init_pipe(MODELS_DIR + "/1504944-flux1", smash=False)
         # start_time = time.time()
         # self.init_inpaint(JsonObj(fill=True))
         # total_time = time.time() - start_time
@@ -283,10 +286,31 @@ class InferPipeline(InpaintFaceMixin, VtonMixin, SamMixin):
     def unload_lora_weights(self, pipe):
         pipe_key = get_pipe_key_for_lora(pipe)
         if pipe_key == 'fill':
-            self.fill.unload_lora_weights()
+            if smash_helper.is_pruna_model(pipe) and HOT_SWAP_SLOTS>0:
+                for i in range(HOT_SWAP_SLOTS):
+                    self.fill.load_lora_weights(
+                        IDENTITY_LORA,
+                        hotswap=True,
+                        adapter_name= f"default_{i}",
+                    )
+                    smash_helper.scale_lora(self.pipe, f"default_{i}", 1.0)
+            else:
+                self.fill.unload_lora_weights()
         else:
-            self.pipe.unload_lora_weights()
-        self.current_lora_weights_map[pipe_key] = {'names': [], 'scales': []}
+            if smash_helper.is_pruna_model(pipe) and HOT_SWAP_SLOTS>0:
+                for i in range(HOT_SWAP_SLOTS):
+                    self.pipe.load_lora_weights(
+                        IDENTITY_LORA,
+                        hotswap=True,
+                        adapter_name= f"default_{i}",
+                    )
+                    smash_helper.scale_lora(self.pipe, f"default_{i}", 1.0)
+            else:
+                self.pipe.unload_lora_weights()
+        if smash_helper.is_pruna_model(pipe):
+            self.current_lora_weights_map[pipe_key] = {'names': [IDENTITY_LORA]*HOT_SWAP_SLOTS, 'scales': [1.0]*HOT_SWAP_SLOTS}
+        else:
+            self.current_lora_weights_map[pipe_key] = {'names': [], 'scales': []}
 
     def load_references(self, prompt: JsonObj, pipe):
         names = []
@@ -295,8 +319,8 @@ class InferPipeline(InpaintFaceMixin, VtonMixin, SamMixin):
         setattr(prompt, '_prompt_raw', prompt.text)
         setattr(prompt, '_prompt_with_lora_ids', prompt.text)
 
-        pipe = self.fill if isinstance(pipe, FluxFillPipeline) else self.pipe
         pipe_key = get_pipe_key_for_lora(pipe)
+        pipe = self.fill if pipe_key =='fill' else self.pipe
 
         if pipe_key not in self.current_lora_weights_map:
             self.current_lora_weights_map[pipe_key] = {'names': [], 'scales': []}
@@ -361,13 +385,7 @@ class InferPipeline(InpaintFaceMixin, VtonMixin, SamMixin):
             start_time = time.time()
             for name, lora_fn in zip(names, lora_fns):
                 print(f"Loading LoRA weights {name} from {lora_fn}")
-                # use FileLock to make sure only one process is loading at a time to avoid CPU spikes
-                try:
-                    pipe.load_lora_weights(lora_fn, adapter_name=name, low_cpu_mem_usage=False)
-                except Exception as e:
-                    print(f"Failed to load LoRA weights {name} from {lora_fn}: {e}")
-                    os.remove(lora_fn)
-                    raise e
+                pipe.load_lora_weights(lora_fn, adapter_name=name, low_cpu_mem_usage=False)
 
 
             print(f"Loaded LoRA weights {names} in {time.time() - start_time:.2f}s pipe={pipe.__class__.__name__}")
@@ -378,16 +396,11 @@ class InferPipeline(InpaintFaceMixin, VtonMixin, SamMixin):
                 print(f"current_lora_weights_map={[k.__class__.__name__ for k in self.current_lora_weights_map.keys()]}")
                 raise ValueError("current_lora_weights_map too large")
 
-        # Set adapters
-        pipe.set_adapters(names, adapter_weights=scales)
-
-        print(f"set_adapters names={names} scales={scales}")
-
         if len(names) > 1:
             return {"scale": 1.0}
         return {"scale": scales[0]}
 
-    def init_pipe(self, model_path):
+    def init_pipe(self, model_path, smash=True):
         if not self.pipe or self.model_path != model_path:
             print(f"Initializing pipeline from {model_path}")
             self.reset(gc_collect=True)
@@ -410,6 +423,12 @@ class InferPipeline(InpaintFaceMixin, VtonMixin, SamMixin):
                 self.resolution = (1328, 1328)
             else:
                 self.resolution = (1024, 1024)
+            if not os.environ.get('PRUNA'):
+                self.setup_sage_attention(self.pipe)
+
+        if os.environ.get('PRUNA') and self.branch == 'flux1' and smash and not is_pruna_model(self.pipe) :
+            self.pipe = smash_helper.smash_pipe(self.pipe, True)
+            self.current_lora_weights_map['pipe'] = {'names': [IDENTITY_LORA]*HOT_SWAP_SLOTS, 'scales': [1.0]*HOT_SWAP_SLOTS}
 
     def init_pulid(self):
         if not self.pulid_pipe:
@@ -532,6 +551,11 @@ class InferPipeline(InpaintFaceMixin, VtonMixin, SamMixin):
                         tokenizer=self.pipe.tokenizer,
                         tokenizer_2=self.pipe.tokenizer_2,
                     ).to(device)
+                # For now disable Pruna for fill pipeline - Pruna error - ValueError: Model is not compatible with auto
+                if os.environ.get('PRUNA') and False:
+                    self.fill = smash_helper.smash_pipe(self.fill, True)
+                    # self.current_lora_weights_map['fill'] = {'names': [IDENTITY_LORA]*HOT_SWAP_SLOTS, 'scales': [1.0]*HOT_SWAP_SLOTS}
+                else:
                     self.setup_sage_attention(self.fill)
 
                 return self.fill
@@ -546,13 +570,15 @@ class InferPipeline(InpaintFaceMixin, VtonMixin, SamMixin):
                         tokenizer=self.pipe.tokenizer,
                         tokenizer_2=self.pipe.tokenizer_2,
                     ).to(device)
-                    if os.environ.get('PRUNA'):
-                        self.inpaint = smash_helper.smash_pipe(self.inpaint)
+                    # This is not necessary since we're re-using the same backbone
+                    # if os.environ.get('PRUNA'):
+                    #     self.inpaint = smash_helper.smash_pipe(self.inpaint)
 
                     self.setup_sage_attention(self.inpaint)
-                if os.environ.get('PRUNA'):
-                    self.pipe.cache_helper.disable()
-                    self.inpaint.cache_helper.enable()
+                # This is not necessary since we're re-using the same backbone
+                # if os.environ.get('PRUNA'):
+                #     self.pipe.cache_helper.disable()
+                #     self.inpaint.cache_helper.enable()
 
                 return self.inpaint
 
@@ -1433,6 +1459,10 @@ def main():
                 i += 1
                 time.sleep(2)
                 print(f"{i}.", end="")
+                if i>=4 and os.environ.get('PRUNA') and is_pruna_model(pipeline.pipe):
+                    # Destroy pruna to avoid billing while idle
+                    pipeline.reset(gc_collect=True)
+                    pipeline.warmup()
             else:
                 i = 0
         print(f"Exiting poll after i={i}")
