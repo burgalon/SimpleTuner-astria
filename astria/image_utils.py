@@ -21,7 +21,7 @@ s3_session.timeout = (10, 11)
 retries = requests.packages.urllib3.util.retry.Retry(
     total=7,
     backoff_factor=1,
-    status_forcelist=[500, 502, 503, 504, 403, 401],
+    status_forcelist=[500, 502, 503, 504, 401],
     allowed_methods=["HEAD", "GET", "PUT", "DELETE", "POST"],
     raise_on_status=True
 )
