@@ -1,5 +1,5 @@
-from diffusers.models import FluxTransformer2DModel
-def cache_init(self: FluxTransformer2DModel):   
+from diffusers.models.transformers.transformer_flux import FluxTransformer2DModel
+def cache_init(self: FluxTransformer2DModel, **kwargs):   
     '''
     Initialization for cache.
     '''
@@ -23,21 +23,26 @@ def cache_init(self: FluxTransformer2DModel):
         cache[-1]['double_stream'][j] = {}
         cache_index[-1][j] = {}
         cache_dic['attn_map'][-1]['double_stream'][j] = {}
-        cache_dic['attn_map'][-1]['double_stream'][j]['total'] = {}
-        cache_dic['attn_map'][-1]['double_stream'][j]['txt_mlp'] = {}
-        cache_dic['attn_map'][-1]['double_stream'][j]['img_mlp'] = {}
+
+        # initialize all possible module keys expected in forwards
+        for module in ["total", "attn", "img_attn", "img_mlp", "txt_attn", "txt_mlp"]:
+            cache_dic['attn_map'][-1]['double_stream'][j][module] = {}
+            cache[-1]['double_stream'][j][module] = {}
+            cache_index[-1][j][module] = {}
 
     #for j in range(38):
-    for j in range(self.config.num_single_layers):
+    for j in range(getattr(self.config, "num_single_layers", 0)):
         cache[-1]['single_stream'][j] = {}
         cache_index[-1][j] = {}
         cache_dic['attn_map'][-1]['single_stream'][j] = {}
-        cache_dic['attn_map'][-1]['single_stream'][j]['total'] = {}
-
-    cache_dic['taylor_cache'] = False
-    cache_dic['Delta-DiT'] = False
+        for module in ["total", "attn", "img_attn", "img_mlp", "txt_attn", "txt_mlp"]:
+            cache_dic['attn_map'][-1]['single_stream'][j][module] = {}
+            cache[-1]['single_stream'][j][module] = {}
+            cache_index[-1][j][module] = {}
 
     mode = 'Taylor'
+    if 'kwargs' in locals() and kwargs.get('mode', None) is not None:
+        mode = kwargs['mode']
 
     if mode == 'original':
         cache_dic['cache_type'] = 'random' 
@@ -74,7 +79,7 @@ def cache_init(self: FluxTransformer2DModel):
         cache_dic['soft_fresh_weight'] = 0.0
         cache_dic['taylor_cache'] = True
         cache_dic['max_order'] = 1
-        cache_dic['first_enhance'] = 3
+        cache_dic['first_enhance'] = 6
 
     elif mode == 'Delta':
         cache_dic['cache_type'] = 'random'
@@ -93,5 +98,11 @@ def cache_init(self: FluxTransformer2DModel):
     current['activated_steps'] = [0]
     current['step'] = 0
     current['num_steps'] = self.num_steps
+
+    # apply any additional override kwargs directly to cache_dic, if provided
+    if 'kwargs' in locals():
+        for k, v in kwargs.items():
+            if k in cache_dic:
+                cache_dic[k] = v
 
     return cache_dic, current

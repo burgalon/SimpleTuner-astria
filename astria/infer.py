@@ -65,7 +65,9 @@ from vton_mixin import (
 )
 from watermark_helper import add_watermark
 from sam_helper import SamMixin
-from taylor_cache.transformer import FluxTransformer2DTaylorCachingModel
+from taylor_cache.transformer import (
+    FluxTransformer2DDiCacheCachingModel,
+)
 
 try:
     from sageattention import sageattn
@@ -403,7 +405,19 @@ class InferPipeline(InpaintFaceMixin, VtonMixin, SamMixin):
                     self.pipe.transformer,
                     FluxTransformer2DModel,
                 ):
-                    self.pipe.transformer = FluxTransformer2DTaylorCachingModel(self.pipe.transformer)
+                    self.pipe.transformer = FluxTransformer2DDiCacheCachingModel(
+                        self.pipe.transformer,
+                        error_choice="cosine_l1_hybrid",
+                        probe_depth=1,
+                        rel_thresh_map=[
+                            {"start": 0.00, "threshold": 0.05},
+                            {"start": 0.35, "threshold": 0.08},
+                            {"start": 0.45, "threshold": 0.15},
+                            {"start": 0.75, "threshold": 0.25},
+                        ],
+                        ret_ratio=0.0,
+                        max_consec_skips=8,
+                    )
                     self.pipe.transformer.__class__.__name__ = "FluxTransformer2DModel"
                 end_time = time.time()
                 print(f"Initialized pipeline in {end_time - start_time:.2f}s")
@@ -1168,6 +1182,8 @@ class InferPipeline(InpaintFaceMixin, VtonMixin, SamMixin):
                 # guidance_scale = 1.0 # distilled
             if hasattr(pipe.transformer, 'set_number_of_steps'):
                 pipe.transformer.set_number_of_steps(prompt.steps)
+            if hasattr(pipe.transformer, 'clear_cache'):
+                pipe.transformer.clear_cache()
             image = pipe(
                 height=prompt.h,
                 width=prompt.w,

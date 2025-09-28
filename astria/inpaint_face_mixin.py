@@ -474,6 +474,8 @@ class InpaintFaceMixin:
         # Inpaint the resized cropped region
         if hasattr(pipe.transformer, 'set_number_of_steps'):
             pipe.transformer.set_number_of_steps(28)
+        if hasattr(pipe.transformer, 'clear_cache'):
+            pipe.transformer.clear_cache()
         inpainted_crop_resized = cropped_image_resized
         for i in range(1):
             inpainted_crop_resized = pipe(

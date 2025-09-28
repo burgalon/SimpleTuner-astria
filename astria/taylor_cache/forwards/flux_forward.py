@@ -55,7 +55,8 @@ def taylorseer_flux_forward(
     if joint_attention_kwargs is None:
         joint_attention_kwargs = {}
     if joint_attention_kwargs.get("cache_dic", None) is None:
-        joint_attention_kwargs['cache_dic'], joint_attention_kwargs['current'] = cache_init(self)
+        optional_cache_kwargs = joint_attention_kwargs.get('cache_overrides', {})
+        joint_attention_kwargs['cache_dic'], joint_attention_kwargs['current'] = cache_init(self, **optional_cache_kwargs)
 
     cal_type(joint_attention_kwargs['cache_dic'], joint_attention_kwargs['current'])
 

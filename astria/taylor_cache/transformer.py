@@ -13,6 +13,8 @@
 # limitations under the License.
 
 import inspect
+import types
+
 from contextlib import nullcontext
 from typing import Any, Dict, List, Optional, Tuple, Union
 
@@ -42,6 +44,9 @@ from astria.taylor_cache.forwards import (
     taylorseer_flux_single_block_forward, 
     taylorseer_flux_double_block_forward, 
     taylorseer_flux_forward,
+)
+from astria.taylor_cache.forwards.dicache_forward import (
+    dicache_forward,
 )
 
 
@@ -287,3 +292,165 @@ class FluxTransformer2DTaylorCachingModel(
             return_dict,
             controlnet_blocks_repeat,
         )
+
+
+class FluxTransformerBlockDiCacheCaching(nn.Module):
+    """
+    Block-level variant for DiCache. Mirrors structure of TaylorCaching but leaves
+    forward delegation to normal block execution (DiCache logic is handled at model level).
+    """
+    def __init__(self, dim: int, num_attention_heads: int, attention_head_dim: int, eps: float = 1e-6):
+        super().__init__()
+        self.norm1 = AdaLayerNormZero(dim)
+        self.norm1_context = AdaLayerNormZero(dim)
+
+        self.attn = FluxAttention(
+            query_dim=dim,
+            added_kv_proj_dim=dim,
+            dim_head=attention_head_dim,
+            heads=num_attention_heads,
+            out_dim=dim,
+            context_pre_only=False,
+            bias=True,
+            processor=FluxAttnProcessor(),
+            eps=eps,
+        )
+
+        self.norm2 = nn.LayerNorm(dim, elementwise_affine=False, eps=1e-6)
+        self.ff = FeedForward(dim=dim, dim_out=dim, activation_fn="gelu-approximate")
+
+        self.norm2_context = nn.LayerNorm(dim, elementwise_affine=False, eps=1e-6)
+        self.ff_context = FeedForward(dim=dim, dim_out=dim, activation_fn="gelu-approximate")
+
+    def forward(
+        self,
+        hidden_states: torch.Tensor,
+        encoder_hidden_states: torch.Tensor,
+        temb: torch.Tensor,
+        image_rotary_emb: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
+        joint_attention_kwargs: Optional[Dict[str, Any]] = None,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        # For DiCache we want plain block behavior, not Taylor caching hooks.
+        # This mirrors the original FluxTransformerBlock forward:
+        norm_hidden_states = self.norm1(hidden_states, temb)
+        norm_encoder_hidden_states = self.norm1_context(encoder_hidden_states, temb)
+
+        attn_output = self.attn(
+            hidden_states=norm_hidden_states,
+            encoder_hidden_states=norm_encoder_hidden_states,
+            image_rotary_emb=image_rotary_emb,
+            joint_attention_kwargs=joint_attention_kwargs,
+        )
+        hidden_states = hidden_states + attn_output
+
+        norm_hidden_states = self.norm2(hidden_states)
+        hidden_states = hidden_states + self.ff(norm_hidden_states)
+
+        norm_encoder_hidden_states = self.norm2_context(encoder_hidden_states)
+        encoder_hidden_states = encoder_hidden_states + self.ff_context(norm_encoder_hidden_states)
+
+        return encoder_hidden_states, hidden_states
+
+
+class FluxTransformer2DDiCacheCachingModel(
+    ModelMixin,
+    ConfigMixin,
+    PeftAdapterMixin,
+    FromOriginalModelMixin,
+    FluxTransformer2DLoadersMixin,
+    AttentionMixin,
+):
+    """
+    Full model variant that wires in block subclasses and attaches dicache_forward
+    as the forward method.
+    """
+    _supports_gradient_checkpointing = True
+    _no_split_modules = ["FluxTransformerBlock", "FluxSingleTransformerBlock"]
+    _skip_layerwise_casting_patterns = ["pos_embed", "norm"]
+    _repeated_blocks = ["FluxTransformerBlock", "FluxSingleTransformerBlock"]
+
+    _supports_gradient_checkpointing = True
+    _no_split_modules = ["FluxTransformerBlock", "FluxSingleTransformerBlock"]
+    _skip_layerwise_casting_patterns = ["pos_embed", "norm"]
+    _repeated_blocks = ["FluxTransformerBlock", "FluxSingleTransformerBlock"]
+
+    def __init__(self, transformer: "FluxTransformer2DModel", in_channels: int = 64, **dicache_kwargs):
+        super().__init__()
+        self.out_channels = in_channels
+
+        self._config = {}
+
+        self.add_module("pos_embed", transformer.pos_embed)
+        self.add_module("time_text_embed", transformer.time_text_embed)
+        self.add_module("context_embedder", transformer.context_embedder)
+        self.add_module("x_embedder", transformer.x_embedder)
+        self.add_module("transformer_blocks", transformer.transformer_blocks)
+        self.add_module("single_transformer_blocks", transformer.single_transformer_blocks)
+        self.add_module("norm_out", transformer.norm_out)
+        self.add_module("proj_out", transformer.proj_out)
+
+        self.pulid_ca = None
+        self.config = transformer.config
+        self.gradient_checkpointing = False
+
+        # dicache-specific parameters
+        self.enable_dicache = True
+        self.cnt = 0
+        self.num_steps = dicache_kwargs.get("num_steps", 1)
+        self.probe_depth = dicache_kwargs.get("probe_depth", 1)
+        self.error_choice = dicache_kwargs.get("error_choice", "delta_y")
+        self.rel_l1_thresh = dicache_kwargs.get("rel_l1_thresh", 0.1)
+        self.rel_thresh_map = dicache_kwargs.get("rel_thresh_map", None)
+        self.ret_ratio = dicache_kwargs.get("ret_ratio", 0.2)
+        self.skip_end_ratio = dicache_kwargs.get("skip_end_ratio", 0.0)
+        self.max_consec_skips = dicache_kwargs.get("max_consec_skips", 8)
+        
+        self.accumulated_rel_l1_distance = 0
+        self.previous_modulated_input = None
+        self.previous_residual = None
+        self.residual_window = []
+        self.probe_residual_window = []
+
+        # If probe_depth wasn't specified in dicache_kwargs, enforce a safe default
+        if "probe_depth" not in dicache_kwargs:
+            self.probe_depth = 1  # recommend 1~5
+
+        # attach dicache forward
+        self.forward = types.MethodType(dicache_forward, self)
+
+    @classmethod
+    def from_transformer(cls, tf: "FluxTransformer2DModel", **kwargs):
+        return cls(tf, **kwargs)
+
+    @property
+    def config(self):
+        return self._config
+
+    @config.setter
+    def config(self, value):
+        self._config = value
+
+    def clear_cache(self):
+        # scalars / counters
+        self.accumulated_rel_l1_distance = 0
+        self.cnt = 0
+        self.resume_flag = False
+        self._consec_skips = 0
+
+        # primary cached tensors
+        self.previous_input = None
+        self.previous_output = None
+        self.previous_residual = None
+        self.previous_probe_states = None
+        self.previous_probe_residual = None
+        self.previous_modulated_input = None  # if you actually use this elsewhere
+
+        # windows
+        self.residual_window = []
+        self.probe_residual_window = []
+
+    def cache_context(self, *_args, **_kwargs):
+        return nullcontext()
+
+    def set_number_of_steps(self, steps: int):
+        self.num_steps = steps
