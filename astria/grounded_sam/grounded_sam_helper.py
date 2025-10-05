@@ -14,7 +14,12 @@ from groundingdino.util import box_ops
 from segment_anything.utils.transforms import ResizeLongestSide
 
 from huggingface_hub import hf_hub_download
-from astria_utils import device, MODELS_DIR
+from astria_utils import device, MODELS_DIR, CACHE_DIR
+
+
+SAM_REPO_ID = "HCMUE-Research/SAM-vit-h"
+SAM_FILENAME = "sam_vit_h_4b8939.pth"
+SAM_LOCAL_PATH = f"{CACHE_DIR}/{SAM_FILENAME}"
 
 
 def load_model_hf(repo_id, filename, ckpt_config_filename, device='cpu'):
@@ -30,6 +35,49 @@ def load_model_hf(repo_id, filename, ckpt_config_filename, device='cpu'):
     print("Model loaded from {} \n => {}".format(cache_file, log))
     _ = model.eval()
     return model
+
+def ensure_sam_checkpoint(
+    repo_id: str = SAM_REPO_ID,
+    filename: str = SAM_FILENAME,
+    local_path: str = SAM_LOCAL_PATH,
+    use_symlinks: bool = False,
+) -> str:
+    """
+    Ensure the SAM checkpoint exists at `local_path`.
+    If missing, download from HF and place/copy it there.
+
+    Returns:
+        str: absolute path to the checkpoint file (local_path).
+    """
+    os.makedirs(os.path.dirname(local_path), exist_ok=True)
+
+    # If already there and non-empty, we're done.
+    if os.path.exists(local_path) and os.path.getsize(local_path) > 0:
+        return local_path
+
+    # Try to download directly into desired directory (best path).
+    try:
+        downloaded = hf_hub_download(
+            repo_id=repo_id,
+            filename=filename,
+            local_dir=os.path.dirname(local_path),
+            local_dir_use_symlinks=use_symlinks,  # False => real file copy
+        )
+        # hf_hub_download returns the absolute path to the file in local_dir.
+        # It should already be at `local_path`, but guard just in case:
+        if downloaded != local_path and os.path.exists(downloaded):
+            try:
+                # If user asked for a real file but hub made a symlink, or the
+                # path differs, copy it to the exact target path.
+                shutil.copy2(downloaded, local_path)
+            except Exception:
+                pass
+        return local_path
+    except Exception:
+        # Fallback: download to HF cache, then copy to target.
+        cached = hf_hub_download(repo_id=repo_id, filename=filename)
+        shutil.copy2(cached, local_path)
+        return local_path
 
 # detect object using grounding DINO
 def detect(image, image_source, text_prompt, model, box_threshold = 0.3, text_threshold = 0.25):
@@ -146,7 +194,7 @@ if __name__ == "__main__":
     ckpt_filename = GROUNDING_DINO_MAPPING["checkpoint"]
     ckpt_config_filename = GROUNDING_DINO_MAPPING["config"]
     groundingdino_model = load_model_hf(ckpt_repo_id, ckpt_filename, ckpt_config_filename, device)
-    sam_predictor = SamPredictor(build_sam(checkpoint='/data/cache/annotator_ckpts/sam_vit_h_4b8939.pth').to(device))
+    sam_predictor = SamPredictor(build_sam(checkpoint=SAM_LOCAL_PATH).to(device))
     mask = get_masks_by_class(
         image,
         prompt_text,

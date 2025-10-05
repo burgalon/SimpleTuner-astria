@@ -6,7 +6,7 @@ from image_utils import load_image
 from segment_anything import SamPredictor, build_sam
 
 from astria_utils import MODELS_DIR, device, JsonObj, CACHE_DIR
-from grounded_sam.grounded_sam_helper import load_model_hf, get_masks_by_class
+from grounded_sam.grounded_sam_helper import load_model_hf, get_masks_by_class, ensure_sam_checkpoint
 from hinter_helper import annotator_ckpts_path
 
 GROUNDING_DINO_MAPPING = {
@@ -72,7 +72,8 @@ class SamMixin:
         ckpt_config_filename = GROUNDING_DINO_MAPPING["config"]
         self.groundingdino_model = load_model_hf(ckpt_repo_id, ckpt_filename, ckpt_config_filename, device)
 
-        self.sam_predictor = SamPredictor(build_sam(checkpoint=SAM_CHECKPOINT_MAPPING['sam']).to(device))
+        sam_checkpoint_path = ensure_sam_checkpoint(local_path=SAM_CHECKPOINT_MAPPING['sam'])
+        self.sam_predictor = SamPredictor(build_sam(checkpoint=sam_checkpoint_path).to(device))
 
         # MobileSAM
         # sam_checkpoint = f"/data/cache/{SAM_CHECKPOINT_MAPPING['mobile_sam']}"
@@ -136,3 +137,4 @@ if __name__ == "__main__":
     ))
 
     print("SAM initialized successfully.")
+

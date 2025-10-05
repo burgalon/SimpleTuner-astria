@@ -174,6 +174,16 @@ FLUX_LORA_2 = JsonObj(**{
     "model_type": "lora",
 })
 
+FLUX_LORA_RING = JsonObj(**{
+    "id": 3392298,
+    "name": "ring",
+    "title": "Ring",
+    "branch": "flux1",
+    "token": str(3392298),
+    "train_token": "ohwx",
+    "model_type": "lora",
+})
+
 FLUX_EXTERNAL_LORA = JsonObj(**{
     "id": "wow_details",
     "name": "style",
@@ -220,7 +230,7 @@ def run_images(prompt, override_name=None, base_tune=TUNE_FLUX):
     tune = JsonObj(**base_tune.__dict__, prompts=[prompt])
     images = pipe.infer(tune)
 
-    if not prompt.video:
+    if not prompt.video and not prompt.mask_crop:
         for i, image in enumerate(images):
             # check if has alpha
             if image.mode == 'RGBA':

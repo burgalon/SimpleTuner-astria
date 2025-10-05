@@ -57,6 +57,7 @@ from runpod_utils import kill_pod
 from sig_listener import TerminateException, is_terminated, set_current_infer_tune, set_current_train_tune
 from super_resolution_helper import load_sr, upscale_sr
 from inpaint_face_mixin import InpaintFaceMixin
+from inpaint_region_mixin import InpaintRegionMixin
 from vton_mixin import (
     VtonMixin,
     OTHER_CLOTHING_CATEGORIES,
@@ -139,6 +140,7 @@ def parse_args(prompt: JsonObj):
     parser.add_argument("--vton_model", help="VTON Hi resolution", type=str, default=None)
     parser.add_argument("--vton_quality", help="VTON Quality - fast, quality", type=str, default=None)
     parser.add_argument("--remove_background", help="Remove background", action='store_true', default=False)
+    parser.add_argument("--mask_crop", help="Regional crop inpaint flag", action='store_true', default=False)
     parser.add_argument("--composite", help="Composite image after removing background", type=str, default=None)
     parser.add_argument(
         "--use_regional",
@@ -204,13 +206,14 @@ def parse_args(prompt: JsonObj):
 def get_pipe_key_for_lora(pipe):
     return 'fill' if isinstance(pipe, FluxFillPipeline) else 'pipe'
 
-class InferPipeline(InpaintFaceMixin, VtonMixin, SamMixin):
+class InferPipeline(InpaintFaceMixin, InpaintRegionMixin, VtonMixin, SamMixin):
     reference_pattern = r'<(lora|faceid):([^>:]+):([\d\.]+)>'
     reference_pattern_re = re.compile(reference_pattern)
 
     def __init__(self):
         os.environ["TRANSFORMERS_OFFLINE"] = "1"
         InpaintFaceMixin.__init__(self)
+        InpaintRegionMixin.__init__(self)
         self.reset()
 
     def setup_sage_attention(self, pipe):
@@ -1000,6 +1003,7 @@ class InferPipeline(InpaintFaceMixin, VtonMixin, SamMixin):
                 and len(prompt.tunes) > 1
         )
         use_regional =  prompt.use_regional or all_tunes_are_human_and_more_than_one
+        inpaint_is_cropped_region_sess = None
 
         if use_regional:
             self.init_rag_diffusion()
@@ -1042,11 +1046,12 @@ class InferPipeline(InpaintFaceMixin, VtonMixin, SamMixin):
                         continue
                     print(f"T#{prompt.tune_id} P#{prompt.id} faceid={token} scale={scale}")
                     break
-        elif prompt.input_image:
+        elif prompt.input_image and not prompt.mask_crop:
             if prompt.mask_image:
                 orig_mask_image = load_image(prompt.mask_image, "L")
             else:
                 orig_mask_image = None
+
             input_image_tensor, controlnet_hint, w, h, orig_input_image, input_image, mask_image = self.get_controlnet_hint(prompt, orig_mask_image)
 
             # Do not set w,h for QWEN_EDIT since diffusers has some unique way of setting w,h to align with VAE
@@ -1106,6 +1111,41 @@ class InferPipeline(InpaintFaceMixin, VtonMixin, SamMixin):
                         prompt.cfg_scale = 30
                 else:
                     kwargs['strength'] = float(prompt.denoising_strength if prompt.denoising_strength != None else 0.8)
+        elif prompt.mask_crop:
+            # Always use the inpaint pipeline for regional crop flow.
+            pipe = self.init_inpaint(prompt)
+
+            # Ensure we actually have a mask; if only mask_prompt was given, infer it.
+            if not prompt.mask_image and prompt.mask_prompt:
+                prompt.mask_image = self.infer_mask(prompt)
+
+            # Use the ORIGINAL full-res input image as the base.
+            base_image = None
+            if prompt.input_image:
+                try:
+                    base_image = load_image(prompt.input_image)
+                except Exception:
+                    base_image = None
+            if base_image is None:
+                base_image = kwargs.get("image")
+            if base_image is None:
+                raise ValueError("mask_crop=True requires an input_image or image in kwargs")
+            kwargs["image"] = base_image
+
+            # Optional: snap bbox to mask if requested.
+            if getattr(prompt, "mask_crop", False):
+                self.crop_mask(prompt)
+
+            # Prepare crop + soft mask + strength; session drives height/width.
+            # The "magic" happens here to extract the proper inference sizes
+            # and prepare the input images.
+            # This is necessary as we need to bypass all the extra stuff in
+            # elif prompt.input_image and not prompt.mask_crop:
+            # above to make the `mask_crop` option reliable.
+            inpaint_is_cropped_region_sess = self.maybe_build_region_session(prompt, pipe, kwargs)
+
+            # For bookkeeping (not required for generation):
+            prompt.w, prompt.h = base_image.size
         else:
             pipe = self.pipe
 
@@ -1180,13 +1220,23 @@ class InferPipeline(InpaintFaceMixin, VtonMixin, SamMixin):
                 kwargs['true_cfg_scale'] = float(prompt.cfg_scale or 4.0)
                 # https://huggingface.co/spaces/Qwen/Qwen-Image/blob/main/app.py#L215
                 # guidance_scale = 1.0 # distilled
+
             if hasattr(pipe.transformer, 'set_number_of_steps'):
                 pipe.transformer.set_number_of_steps(prompt.steps)
             if hasattr(pipe.transformer, 'clear_cache'):
                 pipe.transformer.clear_cache()
+
+            # If a region session is active, call the pipe at crop size.
+            call_h = inpaint_is_cropped_region_sess.in_h if (
+                inpaint_is_cropped_region_sess and inpaint_is_cropped_region_sess.active
+            ) else prompt.h
+            call_w = inpaint_is_cropped_region_sess.in_w if (
+                inpaint_is_cropped_region_sess and inpaint_is_cropped_region_sess.active
+            ) else prompt.w
+
             image = pipe(
-                height=prompt.h,
-                width=prompt.w,
+                height=call_h,
+                width=call_w,
                 num_inference_steps=prompt.steps,
                 generator=torch.Generator(device="cuda").manual_seed((prompt.seed or 42) + i_image),
                 **kwargs,
@@ -1195,6 +1245,12 @@ class InferPipeline(InpaintFaceMixin, VtonMixin, SamMixin):
                 pipe.reset()
             if is_terminated():
                 raise TerminateException("terminated")
+            
+            # Restore the cropped region according to previously initialized
+            # cropping/inpainting session above.
+            if inpaint_is_cropped_region_sess is not None and inpaint_is_cropped_region_sess.active:
+                image = self.post_region_paste(inpaint_is_cropped_region_sess, image)
+
             images.append(image)
 
         # Sanity check - if images are black - raise exception
