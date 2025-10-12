@@ -174,6 +174,16 @@ FLUX_LORA_2 = JsonObj(**{
     "model_type": "lora",
 })
 
+FLUX_LORA_IRIT = JsonObj(**{
+    "id": 2696862,
+    "name": "woman",
+    "title": "Emma",
+    "branch": "flux1",
+    "token": str(2696862),
+    "train_token": "ohwx",
+    "model_type": "lora",
+})
+
 FLUX_EXTERNAL_LORA = JsonObj(**{
     "id": "wow_details",
     "name": "style",

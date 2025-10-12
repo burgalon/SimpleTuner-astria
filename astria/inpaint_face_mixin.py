@@ -10,6 +10,11 @@ from PIL import Image, ImageDraw, ImageChops, ImageOps, ImageFilter
 from torchvision.transforms.functional import to_pil_image
 from ultralytics import YOLO
 
+from astria.callbacks import (
+    FluxCFGCutoffCallback,
+    enable_dynamic_fake_cfg,
+    disable_dynamic_fake_cfg,
+)
 from astria_utils import MODELS_DIR, JsonObj, device, HUMAN_CLASS_NAMES, CACHE_DIR, BRANCH_QWEN
 from birefnet.BiRefNet_node import BiRefNet_node
 from face_masking import FaceMaskGenerator, visualize_parsing
@@ -345,6 +350,8 @@ def restore_colors(original: Image.Image, inpainted: Image.Image):
     matched = match_histograms(inpainted_rgb, original_rgb, channel_axis=-1)
     return Image.fromarray(matched)
 
+
+
 INPAINT_RESOLUTION = 1024
 MASK_PADDING = 0.02
 class InpaintFaceMixin:
@@ -469,6 +476,7 @@ class InpaintFaceMixin:
             strength = prompt.face_inpaint_denoising
         else:
             strength = 0.4 + 0.2 * (1-min(1, (bbox_ratio-0.03) / MAX_BBOX_RATIO))
+
         print(f"T#{prompt.tune_id} P#{prompt.id} {bbox_ratio=:.4f} {strength=:.2f}")
 
         # Inpaint the resized cropped region
@@ -476,6 +484,20 @@ class InpaintFaceMixin:
             pipe.transformer.set_number_of_steps(28)
         if hasattr(pipe.transformer, 'clear_cache'):
             pipe.transformer.clear_cache()
+
+        cb = lambda *args, **kwargs: None
+        if 'Qwen' not in pipe.__class__.__name__:
+            # TODO Changeme for gemini and add a flag
+            strength = 0.9
+            cfg_mapping = [
+                {"start": 0.00, "cfg": 3.5},
+                {"start": 0.15, "cfg": 2.0},
+                {"start": 0.45, "cfg": 1.5},
+                {"start": 0.65, "cfg": 4.5},
+            ]
+            cb = FluxCFGCutoffCallback(cfg_mapping=cfg_mapping)
+            enable_dynamic_fake_cfg(pipe)
+
         inpainted_crop_resized = cropped_image_resized
         for i in range(1):
             inpainted_crop_resized = pipe(
@@ -487,11 +509,16 @@ class InpaintFaceMixin:
                 mask_image=cropped_mask_resized,
                 image=inpainted_crop_resized,
                 strength=strength,
+                callback_on_step_end=cb,
+                callback_on_step_end_tensor_inputs=[],  # we don't need latents/etc.
                 # get true_cfg_scale and guidance_scale from original inference
                 **({k: v for k, v in kwargs.items() if 'prompt' in k or 'true_cfg_scale'==k or 'guidance_scale'==k}),
             ).images[0]
             if os.environ.get('DEBUG', '') == 'inpaint_faces':
                 inpainted_crop_resized.save(f"{MODELS_DIR}/{prompt.id}-inpainted-crop-{i}.jpg")
+
+        if 'Qwen' not in pipe.__class__.__name__:
+            disable_dynamic_fake_cfg(pipe)
 
         inpainted_crop_with_alpha = restore_colors(cropped_image_resized, inpainted_crop_resized)
         if os.environ.get('DEBUG', '') == 'inpaint_faces':

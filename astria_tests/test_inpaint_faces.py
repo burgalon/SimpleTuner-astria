@@ -1,18 +1,18 @@
 import copy
 import json
 
-from test_infer import pipe, TUNE_FLUX, FLUX_LORA, BASE_PROMPT, run_images, IMG_POSE, MODELS_DIR, name, JsonObj, FluxPipeline, device
+from test_infer import pipe, TUNE_FLUX, FLUX_LORA, FLUX_LORA_IRIT, BASE_PROMPT, run_images, IMG_POSE, MODELS_DIR, name, JsonObj, FluxPipeline, device
 from image_utils import load_image
 
-def get_kwargs():
+def get_kwargs(prompt="ohwx woman holding flowers"):
     # Encode text embeds
     (
         prompt_embeds,
         pooled_prompt_embeds,
         _,
     ) = pipe.pipe.encode_prompt(
-        "ohwx woman holding flowers",
-        "ohwx woman holding flowers",
+        prompt,
+        prompt,
         max_sequence_length=512,
         device=device,
     )
@@ -20,6 +20,26 @@ def get_kwargs():
         "prompt_embeds": prompt_embeds,
         "pooled_prompt_embeds": pooled_prompt_embeds,
     }
+
+def test_inpaint_faces_gemini():
+    prompt = JsonObj(
+        **copy.copy(BASE_PROMPT.__dict__),
+        inpaint_faces=True,
+    )
+    prompt.id = name()
+    prompt.text=f"<lora:{FLUX_LORA_IRIT.id}:1> {FLUX_LORA.train_token} woman face"
+    prompt.tunes=[FLUX_LORA_IRIT]
+    # prompt.face_inpaint_denoising = 0.1
+    images = [
+        load_image('astria_tests/fixtures/31389674-0-before-esrgan-with-synthid.jpg'),
+    ]
+    images = pipe.upscale(images, prompt)
+    pipe.init_pipe(MODELS_DIR + f"/{TUNE_FLUX.id}-{TUNE_FLUX.branch}")
+    pipe.load_references(prompt, pipe.pipe)
+    images = pipe.inpaint_faces(images, prompt, get_kwargs(prompt.text))
+    # run_images(prompt)
+    for i, image in enumerate(images):
+        image.save(MODELS_DIR + f"/{prompt.id}-{i}.png")
 
 def test_inpaint_faces_1():
     prompt = JsonObj(
