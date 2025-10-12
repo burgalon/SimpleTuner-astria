@@ -25,7 +25,7 @@ from diffusers.pipelines.pipeline_utils import DiffusionPipeline
 from diffusers.pipelines.flux.pipeline_output import FluxPipelineOutput
 
 from .pulid_ext import PuLID
-from .transformer import FluxTransformer2DModelWithPulID
+from .transformer import FluxTransformer2DModelWithPulIDDiCache
 
 
 if is_torch_xla_available():
@@ -176,7 +176,19 @@ class FluxPipelineWithPulID(
         pulid: PuLID,
     ):
         super().__init__()
-        transformer = FluxTransformer2DModelWithPulID.from_transformer(transformer)
+        transformer = FluxTransformer2DModelWithPulIDDiCache.from_transformer(
+            transformer,
+            error_choice="cosine_l1_hybrid",
+            probe_depth=1,
+            rel_thresh_map=[
+                {"start": 0.00, "threshold": 0.05},
+                {"start": 0.35, "threshold": 0.08},
+                {"start": 0.45, "threshold": 0.15},
+                {"start": 0.75, "threshold": 0.25},
+            ],
+            ret_ratio=0.0,
+            max_consec_skips=8,
+        )
         transformer.set_pulid_ca(pulid.model)
 
         self.register_modules(
@@ -750,6 +762,10 @@ class FluxPipelineWithPulID(
             guidance = None
 
         # 6. Denoising loop
+        # Possibly redundant?
+        self.transformer.clear_cache()
+        if hasattr(self.transformer, 'set_number_of_steps'):
+            self.transformer.set_number_of_steps(num_inference_steps)
         with self.progress_bar(total=num_inference_steps) as progress_bar:
             for i, t in enumerate(timesteps):
                 if self.interrupt:
