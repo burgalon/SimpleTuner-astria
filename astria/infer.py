@@ -11,6 +11,8 @@ import traceback
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
+from contextlib import contextmanager, nullcontext
+
 from filelock import FileLock
 import cv2
 import numpy as np
@@ -68,6 +70,7 @@ from sam_helper import SamMixin
 from taylor_cache.transformer import (
     FluxTransformer2DDiCacheCachingModel,
 )
+from seedvr2.upscaler import SeedVR2ImageUpscaler
 
 try:
     from sageattention import sageattn
@@ -87,6 +90,66 @@ GPU_MEMORY_GB = torch.cuda.get_device_properties(0).total_memory / 1024**3
 print(f"GPU_MEMORY_GB={GPU_MEMORY_GB:.0f}")
 UNIT_NUMBERS = {0: 'zero', 1: 'one', 2: 'two', 3: 'three', 4: 'four',
            5: 'five', 6: 'six', 7: 'seven', 8: 'eight', 9: 'nine'}
+
+
+def _module_has_cuda_params(m):
+    try:
+        return any(p.is_cuda for p in m.parameters())
+    except Exception:
+        return False
+
+
+@contextmanager
+def offload_to_cpu(*mods):
+    """
+    Move each module/pipeline to CPU, then restore afterwards.
+    We don't try to detect CUDA params — diffusers pipelines implement .to() even if they aren't nn.Module.
+    """
+    moved = []
+    for m in mods:
+        if m is None:
+            continue
+        try:
+            m.to("cpu")   # always attempt
+            moved.append(m)
+        except Exception:
+            # Best-effort: try common nested attributes when .to() isn't on the object itself
+            for attr in ("model", "clip_vision_model"):
+                try:
+                    sub = getattr(m, attr, None)
+                    if sub is not None:
+                        sub.to("cpu")
+                        moved.append(sub)
+                except Exception:
+                    pass
+    torch.cuda.synchronize()
+    torch.cuda.empty_cache()
+    try:
+        yield
+    finally:
+        for m in moved:
+            try:
+                m.to("cuda")
+            except Exception:
+                pass
+
+
+def _stash_ctx_to_cpu(kwargs):
+    ctx = {}
+    for k in [
+        "prompt_embeds", "pooled_prompt_embeds",
+        "negative_prompt_embeds", "negative_prompt_embeds_mask",
+        "prompt_embeds_mask",
+    ]:
+        if k in kwargs and torch.is_tensor(kwargs[k]):
+            ctx[k] = kwargs[k].cpu()
+    return ctx
+
+
+def _restore_ctx_to_cuda(kwargs, ctx):
+    for k, v in ctx.items():
+        kwargs[k] = v.to("cuda") if torch.is_tensor(v) else v
+
 
 def parse_args(prompt: JsonObj):
     if '--' not in prompt.text:
@@ -128,6 +191,7 @@ def parse_args(prompt: JsonObj):
     parser.add_argument("--loras", type=int, nargs="+", help="LoRa model id from Civit")
     parser.add_argument("--lora_weights", type=float, nargs="+")
     parser.add_argument("--resolution_factor", type=float, default=1, help="Resolution factor to use for generate")
+    parser.add_argument("--upscale_v4", action='store_true', default=False, help="Use seedvr2 to upscale")
     parser.add_argument("--upscale_factor", type=int, default=None, help="Upscale factor to use for generate")
     parser.add_argument("--tiled_upscale", action='store_true', help="Tiled upscaling", default=prompt.tiled_upscale or os.environ.get('TILED_UPSCALE'))
     parser.add_argument("--only_upscale", action='store_true', help="Only upscale without txt2img or img2img", default=prompt.only_upscale or os.environ.get('ONLY_UPSCALE'))
@@ -171,7 +235,6 @@ def parse_args(prompt: JsonObj):
     # Other inference
     parser.add_argument('--controlnet_txt2img', action='store_true', help="Use controlnet txt2img instead of img2img", default=prompt.controlnet_txt2img or False)
 
-
     try:
         text_part, args_part = prompt.text.split('--', 1)
         args_part = '--' + args_part
@@ -196,6 +259,8 @@ def parse_args(prompt: JsonObj):
         prompt.hires_fix = False
         prompt.inpaint_faces = False
         prompt.controlnet = None
+    elif prompt.upscale_v4:
+        prompt.super_resolution = True
     if prompt.outpaint_width and not prompt.outpaint_height:
         prompt.outpaint_height = prompt.outpaint_width
     if prompt.outpaint_height and not prompt.outpaint_width:
@@ -968,6 +1033,9 @@ class InferPipeline(InpaintFaceMixin, VtonMixin, SamMixin):
         return mask
 
     def upscale(self, images, prompt):
+        if prompt.upscale_v4:
+            return self.upscale_seedvr2(images)
+
         if not self.sr_model:
             self.sr_model = load_sr(f"/data/cache/4x_NMKD-Siax_200k.pth")
         for i_image, image in enumerate(images):
@@ -983,6 +1051,20 @@ class InferPipeline(InpaintFaceMixin, VtonMixin, SamMixin):
 
             images[i_image] = upscale_sr(self.sr_model, image, upscale_factor)
         return images
+    
+    def upscale_seedvr2(self, images: list[Image.Image]) -> list[Image.Image]:
+        upscaler_svr2 = SeedVR2ImageUpscaler()
+        upscaler_svr2.load()
+
+        images_out = []
+        for image in images:
+            images_out.append(
+                upscaler_svr2.upscale(image, seed=0, sample_steps=1, cfg_scale=1.0)
+            )
+        del upscaler_svr2
+        gc.collect()
+        torch.cuda.empty_cache()
+        return images_out
 
     def infer_prompt(self, prompt, tune: JsonObj, should_send_to_server=True):
         if prompt.w and prompt.h:
@@ -1207,8 +1289,28 @@ class InferPipeline(InpaintFaceMixin, VtonMixin, SamMixin):
 
         if not use_regional:
             images = self.vton(images, prompt)
-        if prompt.super_resolution or os.environ.get('SUPER_RESOLUTION'):
-            images = self.upscale(images, prompt)
+
+        if prompt.upscale_v4:
+            ctx = _stash_ctx_to_cpu(kwargs)
+        with offload_to_cpu(
+            self.pipe, self.img2img, self.inpaint,
+            self.controlnet_txt2img, self.controlnet_img2img,
+            self.controlnet_inpaint_txt2img,
+            self.rag_diffusion_pipe, self.pulid_pipe,
+        ) if prompt.upscale_v4 else nullcontext:
+            if prompt.upscale_v4:
+                try:
+                    pipe.to("cpu")
+                except Exception:
+                    pass
+
+            gc.collect()
+            torch.cuda.empty_cache()
+            if (prompt.super_resolution or os.environ.get('SUPER_RESOLUTION')):
+                images = self.upscale(images, prompt)
+        if prompt.upscale_v4:
+            pipe.to("cuda")
+            _restore_ctx_to_cuda(kwargs, ctx)
 
         if prompt.hires_fix or os.environ.get('HIRES_FIX'):
             if os.environ.get('DEBUG'):
@@ -1247,6 +1349,17 @@ class InferPipeline(InpaintFaceMixin, VtonMixin, SamMixin):
             if prompt.composite:
                 images = self.composite(images, prompt)
 
+        if use_regional:
+            # hack since we're hijacking the transformer
+            # self.rag_diffusion_pipe.transformer_set_lora_scalings({
+            #     adapter_id: scaling
+            #     for adapter_id, scaling in zip(
+            #         self.current_lora_weights_map['pipe'].get('names', []),
+            #         self.current_lora_weights_map['pipe'].get('scales', []),
+            #     )
+            # })
+            self.reset(gc_collect=True)
+
         if os.environ.get('DEBUG'):
             if os.environ.get('DEBUG') != 'test':
                 for i_image, image in enumerate(images):
@@ -1258,17 +1371,6 @@ class InferPipeline(InpaintFaceMixin, VtonMixin, SamMixin):
             content_types = ["image/png" if prompt.remove_background else "image/jpeg"] * len(images)
             send_to_server(images, prompt.id, content_types)
         prompt.trained_at = True
-
-        if use_regional:
-            # hack since we're hijacking the transformer
-            # self.rag_diffusion_pipe.transformer_set_lora_scalings({
-            #     adapter_id: scaling
-            #     for adapter_id, scaling in zip(
-            #         self.current_lora_weights_map['pipe'].get('names', []),
-            #         self.current_lora_weights_map['pipe'].get('scales', []),
-            #     )
-            # })
-            self.reset(gc_collect=True)
 
         return images
 

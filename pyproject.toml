@@ -69,6 +69,8 @@ dependencies = [
     "atomicwrites>=1.4.1",
     "prodigy-plus-schedule-free",
     "minio>=7.2.16",
+    "omegaconf>=2.3.0",
+    "rotary-embedding-torch>=0.8.9",
 ]
 
 [dependency-groups]

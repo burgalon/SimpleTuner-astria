@@ -9,6 +9,7 @@ from huggingface_hub import scan_cache_dir, snapshot_download
 from torch.hub import download_url_to_file
 from transformers import pipeline
 
+from astria.seedvr2.download import ensure_seedvr2_7b_checkpoint, ensure_seedvr2_vae_checkpoint
 from astria_utils import MODELS_DIR, CACHE_DIR, run, download_model_from_server, FLUX_INPAINT_MODEL_ID
 from controlnet_constants import CONTROLNETS_DICT
 from add_clut import CLUT_DICT
@@ -102,6 +103,10 @@ def _download_models_secondary():
 
     print("Downloading models in secondary process")
     download_model_from_server(f"3063697-flux1") # Krea
+
+    # seedvr2 7b
+    ensure_seedvr2_7b_checkpoint(target_dir=str(CACHE_DIR))
+    ensure_seedvr2_vae_checkpoint(target_dir=str(CACHE_DIR))
 
     snapshot_download(repo_id="HCMUE-Research/SAM-vit-h", local_dir=CACHE_DIR, local_dir_use_symlinks=False, allow_patterns=["*.pth"])
     os.makedirs("/data/cache/HaldCLUT", exist_ok=True)
