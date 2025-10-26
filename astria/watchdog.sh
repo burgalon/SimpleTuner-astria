@@ -52,8 +52,6 @@ while true; do
       if [ "$FIRST_RUN" = true ]; then
         sleep 15
         FIRST_RUN=false
-      else
-        sleep 10
       fi
 
       # After starting (and sleeping), break from the for-loop to re-check from GPU 0
