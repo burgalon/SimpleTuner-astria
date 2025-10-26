@@ -71,6 +71,7 @@ import numpy as np
 from PIL import Image
 
 from astria.astria_utils import CACHE_DIR
+from astria.tensorize import seedvr2_load_or_tensorize
 from astria.seedvr2.download import ensure_seedvr2_7b_checkpoint, ensure_seedvr2_vae_checkpoint
 
 
@@ -105,8 +106,6 @@ from astria.seedvr2.common.colorfix import wavelet_reconstruction
 
 
 # ------------------------------ Utilities ---------------------------------------
-
-# add near the top
 
 def _resolve_config_path(explicit: Optional[Union[str, Path]] = None) -> Path:
     """
@@ -295,7 +294,6 @@ class SeedVR2ImageUpscaler:
         )
 
     # --------- Model lifecycle ---------
-
     def load(self) -> None:
         """
         Load config + models. Safe to call once and reuse for many inferences.
@@ -317,21 +315,48 @@ class SeedVR2ImageUpscaler:
         if vae_yaml.is_file():
             runner.config.vae.model.__inherit__ = str(vae_yaml)
 
-        # 2) Ensure/download VAE weight into CACHE_DIR and patch the config
+        # # 2) Ensure/download VAE weight into CACHE_DIR and patch the config
         vae_ckpt_path = ensure_seedvr2_vae_checkpoint(target_dir=str(CACHE_DIR))
-        runner.config.vae.checkpoint = str(vae_ckpt_path)
+        # runner.config.vae.checkpoint = str(vae_ckpt_path)
 
-        # Models
+        # # Models
         ckpt_path, pos_path, neg_path = ensure_seedvr2_7b_checkpoint(self.checkpoint_path)
         self.pos_path = pos_path
         self.neg_path = neg_path
         self.checkpoint_path = ckpt_path  # keep the resolved path
-        runner.configure_dit_model(device=self._device, checkpoint=ckpt_path)
-        runner.configure_vae_model()
 
-        # VAE memory limit if exposed
-        if hasattr(runner.vae, "set_memory_limit"):
-            runner.vae.set_memory_limit(**runner.config.vae.memory_limit)
+        # LEGACY (SLOW) LOADING
+        # runner.configure_dit_model(device=self._device, checkpoint=ckpt_path)
+        # runner.configure_vae_model()
+
+        # # VAE memory limit if exposed
+        # if hasattr(runner.vae, "set_memory_limit"):
+        #     runner.vae.set_memory_limit(**runner.config.vae.memory_limit)
+
+        # self.runner = runner
+
+        # --- FAST PATH: tensorizer bundle ---
+        import time
+        start = time.time()
+        dit, vae = seedvr2_load_or_tensorize(
+            config_yaml=str(self.config_path),
+            dit_ckpt=str(ckpt_path),
+            vae_ckpt=str(vae_ckpt_path),
+            device=self._device,
+            force_rebuild=False,
+        )
+        print(f'inited seedvr2 in {time.time() - start} seconds')
+        # Apply the small runtime settings that configure_* used to do
+        dit.set_gradient_checkpointing(runner.config.dit.gradient_checkpoint)
+        runner.dit = dit
+
+        vae.requires_grad_(False).eval()
+        # optional: respect any memory/slicing knobs from the config
+        if hasattr(runner.config.vae, "slicing") and hasattr(vae, "set_causal_slicing"):
+            vae.set_causal_slicing(**runner.config.vae.slicing)
+        if hasattr(vae, "set_memory_limit") and hasattr(runner.config.vae, "memory_limit"):
+            vae.set_memory_limit(**runner.config.vae.memory_limit)
+        runner.vae = vae
 
         self.runner = runner
 

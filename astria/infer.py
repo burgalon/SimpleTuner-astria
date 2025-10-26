@@ -36,6 +36,8 @@ from ragdiffusion import (
     openai_gpt4o_get_regions,
 )
 
+from tensorize import load_or_tensorize_bundle
+
 from add_clut import add_clut
 from add_grain import add_grain
 from transfer_minio import download_minio
@@ -475,11 +477,16 @@ class InferPipeline(InpaintFaceMixin, VtonMixin, SamMixin):
             self.reset(gc_collect=True)
             try:
                 start_time = time.time()
-                self.pipe = DiffusionPipeline.from_pretrained(
+                # self.pipe = DiffusionPipeline.from_pretrained(
+                #     model_path,
+                #     torch_dtype=torch.bfloat16,
+                #     local_files_only=True,
+                # ).to(device)
+                self.pipe = load_or_tensorize_bundle(
                     model_path,
-                    torch_dtype=torch.bfloat16,
-                    local_files_only=True,
-                ).to(device)
+                    device,
+                    default_dtype=torch.bfloat16,
+                )
                 if hasattr(self.pipe, 'transformer') and isinstance(
                     self.pipe.transformer,
                     FluxTransformer2DModel,
