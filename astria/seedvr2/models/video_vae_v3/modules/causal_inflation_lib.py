@@ -80,91 +80,109 @@ class InflatedCausalConv3d(Conv3d):
         x,
         *,
         split_dim=3,
-        padding=(0, 0, 0, 0, 0, 0),
+        padding=(0, 0, 0, 0, 0, 0),  # (w_l, w_r, h_l, h_r, t_l, t_r)
         prev_cache=None,
     ):
-        # Compatible with no limit.
+        # Fast path: no limit → concat (& let Conv3d handle its own padding)
         if math.isinf(self.memory_limit):
             if prev_cache is not None:
                 x = torch.cat([prev_cache, x], dim=split_dim - 1)
+            x = x.contiguous(memory_format=torch.channels_last_3d)
             return super().forward(x)
 
-        # Compute tensor shape after concat & padding.
-        shape = torch.tensor(x.size())
+        # Compute post-concat, post-pad shape in pure Python (no tensor allocs)
+        sz = list(x.size())  # [B, C, T, H, W]
         if prev_cache is not None:
-            shape[split_dim - 1] += prev_cache.size(split_dim - 1)
-        shape[-3:] += torch.tensor(padding).view(3, 2).sum(-1).flip(0)
-        memory_occupy = shape.prod() * x.element_size() / 1024**3  # GiB
+            sz[split_dim - 1] += prev_cache.size(split_dim - 1)
+        pw_l, pw_r, ph_l, ph_r, pt_l, pt_r = padding
+        sz[-1] += (pw_l + pw_r)  # W
+        sz[-2] += (ph_l + ph_r)  # H
+        sz[-3] += (pt_l + pt_r)  # T
+
+        numel = 1
+        for d in sz:
+            numel *= int(d)
+        memory_occupy = (numel * x.element_size()) / (1024.0 ** 3)  # GiB
+
         logger.debug(
-            f"x:{(shape, x.dtype)} {memory_occupy:.3f}GiB "
-            f"prev_cache:{prev_cache.shape if prev_cache is not None else None}"
+            f"x:({tuple(sz)}, {x.dtype}) {memory_occupy:.3f}GiB "
+            f"prev_cache:{tuple(prev_cache.shape) if prev_cache is not None else None}"
         )
+
+        # If it fits (or we're at the last split dimension), just do it
         if memory_occupy < self.memory_limit or split_dim == x.ndim:
             if prev_cache is not None:
                 x = torch.cat([prev_cache, x], dim=split_dim - 1)
-            x = safe_pad_operation(x, padding, value=0.0)
+            if (pw_l | pw_r | ph_l | ph_r | pt_l | pt_r) != 0:
+                # constant mode is fast; no need for the safe wrapper here
+                x = F.pad(x, padding, mode="constant", value=0.0)
             with ignore_padding(self):
+                x = x.contiguous(memory_format=torch.channels_last_3d)
                 return super().forward(x)
 
         logger.debug(
-            f"Exceed memory limit {memory_occupy} > {self.memory_limit}, split dim {split_dim}"
+            f"Exceed memory limit {memory_occupy:.3f} > {self.memory_limit:.3f}, split dim {split_dim}"
         )
 
-        # Split input (& prev_cache).
+        # Split x (and prev_cache) along the target dim
         num_splits = math.ceil(memory_occupy / self.memory_limit)
         size_per_split = x.size(split_dim) // num_splits
         split_sizes = [size_per_split] * (num_splits - 1)
         split_sizes += [x.size(split_dim) - sum(split_sizes)]
 
-        x = list(x.split(split_sizes, dim=split_dim))
-        logger.debug(f"Conv inputs: {[inp.size() for inp in x]} {x[0].dtype}")
+        x_slices = list(torch.split(x, split_sizes, dim=split_dim))
+        logger.debug(f"Conv inputs: {[tuple(inp.size()) for inp in x_slices]} {x_slices[0].dtype}")
         if prev_cache is not None:
-            prev_cache = list(prev_cache.split(split_sizes, dim=split_dim))
+            prev_cache_slices = list(torch.split(prev_cache, split_sizes, dim=split_dim))
+        else:
+            prev_cache_slices = [None] * len(x_slices)
 
-        # Loop Fwd.
+        # Recursive forward over slices
         cache = None
-        for idx in range(len(x)):
-            # Concat prev cache from last dim
-            if prev_cache is not None:
-                x[idx] = torch.cat([prev_cache[idx], x[idx]], dim=split_dim - 1)
+        for idx in range(len(x_slices)):
+            cur = x_slices[idx]
+            prev_cur = prev_cache_slices[idx]
 
-            # Get padding pattern.
-            lpad_dim = (x[idx].ndim - split_dim - 1) * 2
+            # Concat incoming cache on the previous dimension
+            if prev_cur is not None:
+                cur = torch.cat([prev_cur, cur], dim=split_dim - 1)
+
+            # Build per-slice asymmetric padding (only pad at outer edges)
+            # Indexing into (w_l,w_r,h_l,h_r,t_l,t_r)
+            lpad_dim = (cur.ndim - split_dim - 1) * 2
             rpad_dim = lpad_dim + 1
-            padding = list(padding)
-            padding[lpad_dim] = self.padding[split_dim - 2] if idx == 0 else 0
-            padding[rpad_dim] = self.padding[split_dim - 2] if idx == len(x) - 1 else 0
-            pad_len = padding[lpad_dim] + padding[rpad_dim]
-            padding = tuple(padding)
+            p = list(padding)
+            p[lpad_dim] = self.padding[split_dim - 2] if idx == 0 else 0
+            p[rpad_dim] = self.padding[split_dim - 2] if idx == len(x_slices) - 1 else 0
+            pad_len = p[lpad_dim] + p[rpad_dim]
+            p = tuple(p)
 
-            # Prepare cache for next slice (this dim).
+            # Prepare next cache length (for this split dimension)
             next_cache = None
             cache_len = cache.size(split_dim) if cache is not None else 0
             next_catch_size = get_cache_size(
                 conv_module=self,
-                input_len=x[idx].size(split_dim) + cache_len,
+                input_len=cur.size(split_dim) + cache_len,
                 pad_len=pad_len,
                 dim=split_dim - 2,
             )
             if next_catch_size != 0:
-                assert next_catch_size <= x[idx].size(split_dim)
-                next_cache = (
-                    x[idx].transpose(0, split_dim)[-next_catch_size:].transpose(0, split_dim)
-                )
+                assert next_catch_size <= cur.size(split_dim)
+                next_cache = cur.transpose(0, split_dim)[-next_catch_size:].transpose(0, split_dim)
 
-            # Recursive.
-            x[idx] = self.memory_limit_conv(
-                x[idx],
+            # Recurse into the next split dimension
+            out = self.memory_limit_conv(
+                cur,
                 split_dim=split_dim + 1,
-                padding=padding,
+                padding=p,
                 prev_cache=cache,
             )
 
-            # Update cache.
+            x_slices[idx] = out
             cache = next_cache
 
-        logger.debug(f"Conv outputs, concat(dim={split_dim}): {[d.size() for d in x]}")
-        return torch.cat(x, split_dim)
+        logger.debug(f"Conv outputs, concat(dim={split_dim}): {[tuple(d.size()) for d in x_slices]}")
+        return torch.cat(x_slices, dim=split_dim)
 
     def forward(
         self,
@@ -181,23 +199,33 @@ class InflatedCausalConv3d(Conv3d):
 
     def basic_forward(self, input: Tensor, memory_state: MemoryState = MemoryState.UNSET):
         mem_size = self.stride[0] - self.kernel_size[0]
+
         if (self.memory is not None) and (memory_state == MemoryState.ACTIVE):
             input = extend_head(input, memory=self.memory, times=-1)
         else:
             input = extend_head(input, times=self.temporal_padding * 2)
+
         memory = (
             input[:, :, mem_size:].detach()
             if (mem_size != 0 and memory_state != MemoryState.DISABLED)
             else None
         )
+
         if (
             memory_state != MemoryState.DISABLED
             and not self.training
             and (self.memory_device is not None)
         ):
             self.memory = memory
+            # Avoid expensive sync; only move to CPU if explicitly requested
             if self.memory_device == "cpu" and self.memory is not None:
-                self.memory = self.memory.to("cpu")
+                try:
+                    self.memory = self.memory.to("cpu", non_blocking=True)
+                except Exception:
+                    self.memory = self.memory.to("cpu")
+
+        # Feed CuDNN with a cache/layer-friendly layout
+        input = input.contiguous(memory_format=torch.channels_last_3d)
         return super().forward(input)
 
     def slicing_forward(
@@ -339,42 +367,69 @@ def init_causal_conv3d(
 
 
 def causal_norm_wrapper(norm_layer: nn.Module, x: torch.Tensor) -> torch.Tensor:
+    """
+    Normalize while preserving the incoming dtype. Only cast back to the
+    input dtype when the norm changes it. Avoids redundant .to(...) hops.
+    """
     input_dtype = x.dtype
+
+    # LayerNorm / RMSNorm expect channels-last; temporarily permute.
     if isinstance(norm_layer, (nn.LayerNorm, RMSNorm)):
         if x.ndim == 4:
-            x = rearrange(x, "b c h w -> b h w c")
-            x = norm_layer(x)
-            x = rearrange(x, "b h w c -> b c h w")
-            return x.to(input_dtype)
+            x_ = rearrange(x, "b c h w -> b h w c")
+            y = norm_layer(x_)
+            y = rearrange(y, "b h w c -> b c h w")
+            if y.dtype != input_dtype:
+                y = y.to(input_dtype, non_blocking=True)
+            return y
+
         if x.ndim == 5:
-            x = rearrange(x, "b c t h w -> b t h w c")
-            x = norm_layer(x)
-            x = rearrange(x, "b t h w c -> b c t h w")
-            return x.to(input_dtype)
+            x_ = rearrange(x, "b c t h w -> b t h w c")
+            y = norm_layer(x_)
+            y = rearrange(y, "b t h w c -> b c t h w")
+            if y.dtype != input_dtype:
+                y = y.to(input_dtype, non_blocking=True)
+            return y
+
+    # GroupNorm / BatchNorm paths.
     if isinstance(norm_layer, (nn.GroupNorm, nn.BatchNorm2d, nn.SyncBatchNorm)):
+        # 2D/3D (<=4D tensor) — apply directly.
         if x.ndim <= 4:
-            return norm_layer(x).to(input_dtype)
+            y = norm_layer(x)
+            if y.dtype != input_dtype:
+                y = y.to(input_dtype, non_blocking=True)
+            return y
+
+        # 3D video (5D tensor): flatten time for norm, then restore.
         if x.ndim == 5:
             t = x.size(2)
-            x = rearrange(x, "b c t h w -> (b t) c h w")
-            memory_occupy = x.numel() * x.element_size() / 1024**3
-            if isinstance(norm_layer, nn.GroupNorm) and memory_occupy > get_norm_limit():
-                num_chunks = min(4 if x.element_size() == 2 else 2, norm_layer.num_groups)
-                logger.debug(f"large tensor {x.shape}, norm in {num_chunks} chunks")
+            x2 = rearrange(x, "b c t h w -> (b t) c h w")
+
+            # If very large GroupNorm activation, chunk to cap memory.
+            memory_occupy_gib = x2.numel() * x2.element_size() / 1024**3
+            if isinstance(norm_layer, nn.GroupNorm) and memory_occupy_gib > get_norm_limit():
+                num_chunks = min(4 if x2.element_size() == 2 else 2, norm_layer.num_groups)
                 assert norm_layer.num_groups % num_chunks == 0
                 num_groups_per_chunk = norm_layer.num_groups // num_chunks
 
-                x = list(x.chunk(num_chunks, dim=1))
-                weights = norm_layer.weight.chunk(num_chunks, dim=0)
-                biases = norm_layer.bias.chunk(num_chunks, dim=0)
-                for i, (w, b) in enumerate(zip(weights, biases)):
-                    x[i] = F.group_norm(x[i], num_groups_per_chunk, w, b, norm_layer.eps)
-                    x[i] = x[i].to(input_dtype)
-                x = torch.cat(x, dim=1)
+                xs = list(x2.chunk(num_chunks, dim=1))
+                ws = norm_layer.weight.chunk(num_chunks, dim=0)
+                bs = norm_layer.bias.chunk(num_chunks, dim=0)
+
+                for i, (w, b) in enumerate(zip(ws, bs)):
+                    xi = F.group_norm(xs[i], num_groups_per_chunk, w, b, norm_layer.eps)
+                    if xi.dtype != input_dtype:
+                        xi = xi.to(input_dtype, non_blocking=True)
+                    xs[i] = xi
+                y2 = torch.cat(xs, dim=1)
             else:
-                x = norm_layer(x)
-            x = rearrange(x, "(b t) c h w -> b c t h w", t=t)
-            return x.to(input_dtype)
+                y2 = norm_layer(x2)
+
+            y = rearrange(y2, "(b t) c h w -> b c t h w", t=t)
+            if y.dtype != input_dtype:
+                y = y.to(input_dtype, non_blocking=True)
+            return y
+
     raise NotImplementedError
 
 

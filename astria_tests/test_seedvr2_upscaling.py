@@ -20,6 +20,47 @@ def test_seedvr2_image_upscale():
     out = up.upscale(IMG_POSE, seed=0, sample_steps=1, cfg_scale=1.0)
     out.save(MODELS_DIR + f"/test_seedvr2_image_upscale.png")
 
+# def test_seedvr2_image_upscale_profile():
+#     import cProfile, pstats, io, torch, re
+#     from astria.seedvr2.upscaler import SeedVR2ImageUpscaler
+#     from astria.astria_utils import MODELS_DIR
+
+#     up = SeedVR2ImageUpscaler()
+#     up.load()
+
+#     # Warmup so caches/JIT don’t skew
+#     _ = up.upscale(IMG_POSE, seed=0, sample_steps=1, cfg_scale=1.0)
+#     torch.cuda.synchronize()
+
+#     pr = cProfile.Profile()
+#     pr.enable()
+
+#     out = up.upscale(IMG_POSE, seed=0, sample_steps=1, cfg_scale=1.0)
+#     torch.cuda.synchronize()           # <-- crucial: include GPU time
+#     pr.disable()
+
+#     s = io.StringIO()
+#     ps = pstats.Stats(pr, stream=s).sort_stats('cumtime')  # no strip_dirs -> regex can match paths
+
+#     # 1) Top 50 overall
+#     ps.print_stats(50)
+
+#     # 2) Narrow to the files/functions you care about
+#     #    Since we didn't strip dirs, these will match full paths like '.../astria/seedvr2/...'
+#     ps.print_stats(r'astria/seedvr2|tensor_bundles|video_diffusion_sr|upscaler\.py', 60)
+
+#     # 3) Who calls your hot funcs / what they call
+#     ps.print_callers(r"\{method 'to' of 'torch\._C\.TensorBase' objects\}")
+#     ps.print_callers(r"torch\.nn\.modules\.module\.Module\.to")
+
+#     report_path = f"{MODELS_DIR}/seedvr2_cprofile.txt"
+#     with open(report_path, "w") as f:
+#         f.write(s.getvalue())
+#     print(s.getvalue())
+#     print(f"[cProfile] Wrote detailed report to {report_path}")
+
+#     out.save(MODELS_DIR + "/test_seedvr2_image_upscale.png")
+
 def test_seedvr2_pipe():
     pipe.reset(True)
     input_images = [load_image(t) for t in [

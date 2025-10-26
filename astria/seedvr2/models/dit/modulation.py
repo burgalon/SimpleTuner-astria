@@ -20,8 +20,8 @@ from torch import nn
 from astria.seedvr2.common.cache import Cache
 from astria.seedvr2.common.distributed.ops import slice_inputs
 
-# (dim: int, emb_dim: int)
-ada_layer_type = Callable[[int, int], nn.Module]
+# (dim: int, emb_dim: int, layers: List[str])
+ada_layer_type = Callable[[int, int, List[str]], nn.Module]
 
 
 def get_ada_layer(ada_layer: str) -> ada_layer_type:
@@ -59,25 +59,51 @@ class AdaSingle(nn.Module):
 
     def forward(
         self,
-        hid: torch.FloatTensor,  # b ... c
-        emb: torch.FloatTensor,  # b d
+        hid: torch.Tensor,  # b ... c
+        emb: torch.Tensor,  # b d
         layer: str,
         mode: str,
         cache: Cache = Cache(disable=True),
         branch_tag: str = "",
-        hid_len: Optional[torch.LongTensor] = None,  # b
-    ) -> torch.FloatTensor:
+        hid_len: Optional[torch.Tensor] = None,  # b
+    ) -> torch.Tensor:
         idx = self.layers.index(layer)
         emb = rearrange(emb, "b (d l g) -> b d l g", l=len(self.layers), g=3)[..., idx, :]
         emb = expand_dims(emb, 1, hid.ndim + 1)
 
         if hid_len is not None:
+            # repeats = hid_len.to(device=emb.device, dtype=torch.long)
+            # repeat_signature = "_".join(map(str, repeats.tolist()))
+
+            # a) avoid redundant casts/moves
+            repeats = hid_len
+            if repeats.dtype is not torch.long or repeats.device != emb.device:
+                repeats = repeats.to(device=emb.device, dtype=torch.long, non_blocking=True)
+
+            # b) cheap cache key without .tolist() ping-pong
+            #    (one CPU hop, but far less data than tolist(); also only when caching)
+            if not cache.disable:
+                import hashlib
+                # detach to avoid autograd tracking, hop once to CPU if needed
+                r_cpu = repeats.detach()
+                if r_cpu.device.type != "cpu":
+                    r_cpu = r_cpu.to("cpu", non_blocking=True)
+                # 12–16 bytes of reductions instead of the whole vector
+                h = hashlib.blake2b(
+                    r_cpu.numpy().tobytes(),
+                    digest_size=8
+                ).hexdigest()
+                repeat_signature = h
+            else:
+                repeat_signature = "nocache"
+
+            def _materialize_emb():
+                expanded = torch.repeat_interleave(emb, repeats, dim=0)
+                return slice_inputs(expanded, dim=0)
+
             emb = cache(
-                f"emb_repeat_{idx}_{branch_tag}",
-                lambda: slice_inputs(
-                    torch.cat([e.repeat(l, *([1] * e.ndim)) for e, l in zip(emb, hid_len)]),
-                    dim=0,
-                ),
+                f"emb_repeat_{idx}_{branch_tag}_{repeat_signature}",
+                _materialize_emb,
             )
 
         shiftA, scaleA, gateA = emb.unbind(-1)

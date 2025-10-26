@@ -81,11 +81,17 @@ class NaRotaryEmbedding3d(RotaryEmbedding3d):
         torch.FloatTensor,
         torch.FloatTensor,
     ]:
-        freqs = cache("rope_freqs_3d", lambda: self.get_freqs(shape))
+        # Get/cast freqs once per device+dtype and cache it
+        key = f"rope_freqs_3d_{q.device.type}_{str(q.dtype)}"
+        freqs = cache(key, lambda: self.get_freqs(shape).to(q.device, q.dtype))
+
         q = rearrange(q, "L h d -> h L d")
         k = rearrange(k, "L h d -> h L d")
-        q = apply_rotary_emb(freqs, q.float()).to(q.dtype)
-        k = apply_rotary_emb(freqs, k.float()).to(k.dtype)
+
+        # No more q.float() ... .to(q.dtype)
+        q = apply_rotary_emb(freqs, q)
+        k = apply_rotary_emb(freqs, k)
+
         q = rearrange(q, "h L d -> L h d")
         k = rearrange(k, "h L d -> L h d")
         return q, k
