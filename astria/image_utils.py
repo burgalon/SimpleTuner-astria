@@ -146,6 +146,22 @@ def pil2base64(image: Image, format="PNG") -> str:
     image.save(buffered, format=format, optimize=False, compression=0)
     return base64.b64encode(buffered.getvalue()).decode('utf-8')
 
+def pil2base64_datauri(image: Image, format="PNG") -> str:
+    """
+    Convert PIL image to base64 data URI string.
+    Re-uses pil2base64 and adds data-uri prefix.
+
+    Args:
+        image: PIL Image to convert
+        format: Image format (default: PNG)
+
+    Returns:
+        Base64 encoded string with data-uri prefix (e.g., "data:image/png;base64,...")
+    """
+    base64_str = pil2base64(image, format)
+    mime_type = f"image/{format.lower()}"
+    return f"data:{mime_type};base64,{base64_str}"
+
 def load_images(images: list[Union[str, PIL.Image.Image]], convert = 'RGB') -> list[PIL.Image.Image]:
     return [load_image(image, convert) for image in images]
 

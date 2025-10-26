@@ -11,6 +11,8 @@ import traceback
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
+from contextlib import contextmanager, nullcontext
+
 from filelock import FileLock
 import cv2
 import numpy as np
@@ -65,9 +67,11 @@ from vton_mixin import (
 )
 from watermark_helper import add_watermark
 from sam_helper import SamMixin
+from partner_pipelines import GeminiPipeline, PartnerPipeline
 from taylor_cache.transformer import (
     FluxTransformer2DDiCacheCachingModel,
 )
+from seedvr2.upscaler import SeedVR2ImageUpscaler
 
 try:
     from sageattention import sageattn
@@ -87,6 +91,69 @@ GPU_MEMORY_GB = torch.cuda.get_device_properties(0).total_memory / 1024**3
 print(f"GPU_MEMORY_GB={GPU_MEMORY_GB:.0f}")
 UNIT_NUMBERS = {0: 'zero', 1: 'one', 2: 'two', 3: 'three', 4: 'four',
            5: 'five', 6: 'six', 7: 'seven', 8: 'eight', 9: 'nine'}
+GEMINI_2_BRANCH = 'gemini-2'
+FLUX1_BRANCH = 'flux1'
+PARTNER_BRANCH = 'partner-1'
+
+
+def _module_has_cuda_params(m):
+    try:
+        return any(p.is_cuda for p in m.parameters())
+    except Exception:
+        return False
+
+
+@contextmanager
+def offload_to_cpu(*mods):
+    """
+    Move each module/pipeline to CPU, then restore afterwards.
+    We don't try to detect CUDA params — diffusers pipelines implement .to() even if they aren't nn.Module.
+    """
+    moved = []
+    for m in mods:
+        if m is None:
+            continue
+        try:
+            m.to("cpu")   # always attempt
+            moved.append(m)
+        except Exception:
+            # Best-effort: try common nested attributes when .to() isn't on the object itself
+            for attr in ("model", "clip_vision_model"):
+                try:
+                    sub = getattr(m, attr, None)
+                    if sub is not None:
+                        sub.to("cpu")
+                        moved.append(sub)
+                except Exception:
+                    pass
+    torch.cuda.synchronize()
+    torch.cuda.empty_cache()
+    try:
+        yield
+    finally:
+        for m in moved:
+            try:
+                m.to("cuda")
+            except Exception:
+                pass
+
+
+def _stash_ctx_to_cpu(kwargs):
+    ctx = {}
+    for k in [
+        "prompt_embeds", "pooled_prompt_embeds",
+        "negative_prompt_embeds", "negative_prompt_embeds_mask",
+        "prompt_embeds_mask",
+    ]:
+        if k in kwargs and torch.is_tensor(kwargs[k]):
+            ctx[k] = kwargs[k].cpu()
+    return ctx
+
+
+def _restore_ctx_to_cuda(kwargs, ctx):
+    for k, v in ctx.items():
+        kwargs[k] = v.to("cuda") if torch.is_tensor(v) else v
+
 
 def parse_args(prompt: JsonObj):
     if '--' not in prompt.text:
@@ -128,6 +195,7 @@ def parse_args(prompt: JsonObj):
     parser.add_argument("--loras", type=int, nargs="+", help="LoRa model id from Civit")
     parser.add_argument("--lora_weights", type=float, nargs="+")
     parser.add_argument("--resolution_factor", type=float, default=1, help="Resolution factor to use for generate")
+    parser.add_argument("--upscale_v4", action='store_true', default=False, help="Use seedvr2 to upscale")
     parser.add_argument("--upscale_factor", type=int, default=None, help="Upscale factor to use for generate")
     parser.add_argument("--tiled_upscale", action='store_true', help="Tiled upscaling", default=prompt.tiled_upscale or os.environ.get('TILED_UPSCALE'))
     parser.add_argument("--only_upscale", action='store_true', help="Only upscale without txt2img or img2img", default=prompt.only_upscale or os.environ.get('ONLY_UPSCALE'))
@@ -136,7 +204,8 @@ def parse_args(prompt: JsonObj):
     parser.add_argument("--fix_bindi", help="Inpaint dot on the forehead", action='store_true', default=False)
     parser.add_argument("--vton_cfg_scale", help="VTON cfg_scale", type=float, default=None)
     parser.add_argument("--vton_hires", help="VTON Hi resolution", action='store_true', default=False)
-    parser.add_argument("--vton_model", help="VTON Hi resolution", type=str, default=None)
+    parser.add_argument("--vton_model", help="seedream/gemini/reve", type=str, default=None)
+    parser.add_argument("--vton_prompt", help="VTON prompt for edit models", type=str, default=None)
     parser.add_argument("--vton_quality", help="VTON Quality - fast, quality", type=str, default=None)
     parser.add_argument("--remove_background", help="Remove background", action='store_true', default=False)
     parser.add_argument("--composite", help="Composite image after removing background", type=str, default=None)
@@ -170,7 +239,6 @@ def parse_args(prompt: JsonObj):
 
     # Other inference
     parser.add_argument('--controlnet_txt2img', action='store_true', help="Use controlnet txt2img instead of img2img", default=prompt.controlnet_txt2img or False)
-
 
     try:
         text_part, args_part = prompt.text.split('--', 1)
@@ -211,6 +279,7 @@ class InferPipeline(InpaintFaceMixin, VtonMixin, SamMixin):
     def __init__(self):
         os.environ["TRANSFORMERS_OFFLINE"] = "1"
         InpaintFaceMixin.__init__(self)
+        VtonMixin.__init__(self)
         self.reset()
 
     def setup_sage_attention(self, pipe):
@@ -390,7 +459,17 @@ class InferPipeline(InpaintFaceMixin, VtonMixin, SamMixin):
             return {"scale": 1.0}
         return {"scale": scales[0]}
 
-    def init_pipe(self, model_path):
+    def init_pipe(self, model_path=None):
+        # Handle Gemini-2 branch (API-based, no model loading needed)
+        if model_path == GEMINI_2_BRANCH:
+            # We want to keep Flux loaded in memory so not overriding self.pipe
+            # but only returning GeminiPipeline()
+            return GeminiPipeline()
+        elif model_path == PARTNER_BRANCH:
+            # We want to keep Flux loaded in memory so not overriding self.pipe
+            # but only returning PartnerPipeline()
+            return PartnerPipeline()
+
         if not self.pipe or self.model_path != model_path:
             print(f"Initializing pipeline from {model_path}")
             self.reset(gc_collect=True)
@@ -567,13 +646,8 @@ class InferPipeline(InpaintFaceMixin, VtonMixin, SamMixin):
                         tokenizer=self.pipe.tokenizer,
                         tokenizer_2=self.pipe.tokenizer_2,
                     ).to(device)
-                    if os.environ.get('PRUNA'):
-                        self.inpaint = smash_helper.smash_pipe(self.inpaint)
 
                     self.setup_sage_attention(self.inpaint)
-                if os.environ.get('PRUNA'):
-                    self.pipe.cache_helper.disable()
-                    self.inpaint.cache_helper.enable()
 
                 return self.inpaint
 
@@ -859,8 +933,8 @@ class InferPipeline(InpaintFaceMixin, VtonMixin, SamMixin):
                 )
 
             print(f"T#{prompt.tune_id} P#{prompt.id} hires_fix {i_image=} {images[i_image].width}x{images[i_image].height} {strength=}")
-            if hasattr(pipe.transformer, 'set_number_of_steps'):
-                pipe.transformer.set_number_of_steps(28)
+            if hasattr(self.img2img.transformer, 'set_number_of_steps'):
+                self.img2img.transformer.set_number_of_steps(28)
             image = self.img2img(
                 image=image,
                 strength=strength,
@@ -877,9 +951,15 @@ class InferPipeline(InpaintFaceMixin, VtonMixin, SamMixin):
         return images
 
     def set_prompt_defaults(self, prompt: JsonObj, tune: JsonObj):
+        for k, v in os.environ.items():
+            if k.startswith('IN_'):
+                setattr(prompt, k[3:].lower(), v)
+                print(f"Setting {k[3:].lower()}={v}")
+        if os.environ.get('NUM_IMAGES'):
+            prompt.num_images = int(os.environ.get('NUM_IMAGES'))
         if not prompt.steps:
             prompt.steps = 50 if 'Qwen' in self.pipe.__class__.__name__ else 28
-        if not prompt.input_image:
+        if not prompt.input_image and self.resolution:
             if not prompt.w:
                 prompt.w = self.resolution[0]
             if not prompt.h:
@@ -888,8 +968,12 @@ class InferPipeline(InpaintFaceMixin, VtonMixin, SamMixin):
 
     def infer(self, tune: JsonObj):
         set_current_infer_tune(tune)
-        model_path = download_model_from_server(f"{tune.id}-{tune.branch}")
-        self.init_pipe(model_path)
+        self.branch = tune.branch
+        if tune.branch in [GEMINI_2_BRANCH, PARTNER_BRANCH]:
+            pass
+        else:
+            model_path = download_model_from_server(f"{tune.id}-{tune.branch}")
+            self.init_pipe(model_path)
 
         images = None
         for i_prompt, prompt in enumerate(tune.prompts):
@@ -905,7 +989,25 @@ class InferPipeline(InpaintFaceMixin, VtonMixin, SamMixin):
         print(f"T#{prompt.tune_id} P#{prompt.id} Compositing image with {prompt.composite}")
         # turn this off so that images are not saved as PNG
         prompt.remove_background = None
-        composite = load_image(prompt.composite, None)
+
+        if prompt.composite.startswith('#'):
+            # Handle hex color codes (3 or 6 digits)
+            hex_code = prompt.composite[1:]  # Remove the '#'
+            if len(hex_code) == 3:
+                # Expand 3-digit hex to 6-digit
+                hex_code = ''.join(c * 2 for c in hex_code)
+            elif len(hex_code) != 6:
+                raise ValueError(f"Invalid hex color code: {prompt.composite}. Must be 3 or 6 digits after '#'")
+
+            # Convert hex to RGB tuple
+            r = int(hex_code[0:2], 16)
+            g = int(hex_code[2:4], 16)
+            b = int(hex_code[4:6], 16)
+
+            # Create a solid color image (will be resized later to match image size)
+            composite = Image.new('RGB', (100, 100), (r, g, b))  # Temporary size, will be resized
+        else:
+            composite = load_image(prompt.composite, None)
         out_images = []
         for i_image, image in enumerate(images):
             if image.size != composite.size:
@@ -974,9 +1076,7 @@ class InferPipeline(InpaintFaceMixin, VtonMixin, SamMixin):
             if os.environ.get('DEBUG'):
                 image.save(f"{MODELS_DIR}/{prompt.id}-{i_image}-before-esrgan.jpg")
 
-            if os.environ.get('UPSCALE_FACTOR'):
-                upscale_factor = int(os.environ.get('UPSCALE_FACTOR'))
-            elif prompt.upscale_factor:
+            if prompt.upscale_factor:
                 upscale_factor = prompt.upscale_factor
             else:
                 upscale_factor = 4 if image.width * image.height < 512 * 512 else 2
@@ -984,16 +1084,61 @@ class InferPipeline(InpaintFaceMixin, VtonMixin, SamMixin):
             images[i_image] = upscale_sr(self.sr_model, image, upscale_factor)
         return images
 
+    def upscale_seedvr2(self, images: list[Image.Image], prompt) -> list[Image.Image]:
+        gc.collect()
+        torch.cuda.empty_cache()
+
+        # 2160*3840=8MP
+        image = images[0]
+        upscale_factor = prompt.upscale_factor or 4
+        w, h = image.width*upscale_factor, image.height*upscale_factor
+        max_size = 20e6
+        if w*h> max_size:
+            k = (max_size / (w * h)) ** 0.5
+            new_h = int(np.round(h * k))
+            new_w = int(np.round(w * k))
+            print(f"T#{prompt.tune_id} P#{prompt.id} upscale {w}x{h} is too large, resizing to {new_w}x{new_h}")
+            w, h = new_w, new_h
+        offload = w*h > 12e6
+        print(f"T#{prompt.tune_id} P#{prompt.id} upscale seedvr2 {w}x{h} offload={offload} {image.size} => {w}x{h}")
+
+        upscaler_svr2 = SeedVR2ImageUpscaler(res_h=h, res_w=w)
+        upscaler_svr2.load()
+
+        images_out = []
+        start_time = time.time()
+        for i_image, image in enumerate(images):
+            if os.environ.get('DEBUG'):
+                image.save(f"{MODELS_DIR}/{prompt.id}-{i_image}-before-upscale.jpg")
+            images_out.append(
+                upscaler_svr2.upscale(image, seed=0, sample_steps=1, cfg_scale=1.0, model_offloading=offload, dit_offload=offload)
+            )
+        print(f"T#{prompt.tune_id} P#{prompt.id} upscale seedvr2 {len(images)} {time.time() - start_time:.2f} seconds")
+        del upscaler_svr2
+        gc.collect()
+        torch.cuda.empty_cache()
+        return images_out
+
     def infer_prompt(self, prompt, tune: JsonObj, should_send_to_server=True):
         if prompt.w and prompt.h:
             prompt.w, prompt.h = int(np.round(prompt.w / 32.0) * 32), int(np.round(prompt.h / 32.0) * 32)
 
         kwargs = {}
+        images = []
 
         if prompt.mask_prompt and prompt.input_image and not prompt.mask_image:
             prompt.mask_image = self.infer_mask(prompt)
 
         input_image_tensor, controlnet_hint, w, h, orig_input_image, input_image, mask_image = None, None, None, None, None, None, None
+
+        # Initialize Gemini pipeline if needed
+        # if self.branch == GEMINI_2_BRANCH:
+        #     self.pipe = GeminiPipeline()
+        #     if prompt.inpaint_faces:
+        #         print("GEMINI INPAINT")
+        #         self.warmup()
+        #         kwargs['strength'] = 0
+        #         prompt.cfg_scale = 2.5
 
         all_tunes_are_human_and_more_than_one = (
                 all(tune.name in HUMAN_CLASS_NAMES for tune in prompt.tunes)
@@ -1001,14 +1146,19 @@ class InferPipeline(InpaintFaceMixin, VtonMixin, SamMixin):
         )
         use_regional =  prompt.use_regional or all_tunes_are_human_and_more_than_one
 
-        if use_regional:
+        if self.branch in [GEMINI_2_BRANCH, PARTNER_BRANCH]:
+            pipe = self.init_pipe(self.branch)
+            # Load Flux for face inpainting
+            if prompt.inpaint_faces:
+                self.warmup()
+        elif use_regional:
             self.init_rag_diffusion()
             pipe = self.rag_diffusion_pipe
             # kwargs are processed later
 
         # Note that the below condition is IMPORTANT and need to be modified cautiously
         # See test_vton_img2img_strength0
-        elif any([tune.model_type == 'faceid' and tune.name in HUMAN_CLASS_NAMES for tune in prompt.tunes]):
+        elif any([_tune.model_type == 'faceid' and _tune.name in HUMAN_CLASS_NAMES for _tune in prompt.tunes]):
             if input_image:
                 raise Exception("Cannot have both faceid and input_image")
             if use_regional:
@@ -1016,24 +1166,24 @@ class InferPipeline(InpaintFaceMixin, VtonMixin, SamMixin):
             for match_groups in re.findall(self.reference_pattern_re, prompt.text):
                 type, token, scale = match_groups
                 if type == "faceid":
-                    tune = next(iter([tune for tune in prompt.tunes if tune.token == token or str(tune.id) == token]), None)
-                    if not tune:
+                    _tune = next(iter([t for t in prompt.tunes if t.token == token or str(t.id) == token]), None)
+                    if not _tune:
                         raise Exception(f"Token {token} not found in prompt {prompt.id} tokens={prompt.tunes}")
-                    if not tune.face_swap_images:
+                    if not _tune.face_swap_images:
                         raise Exception(f"Token {token} has no face_swap_images")
 
                     # Clean the match from the prompt
                     # also needs to be cleaned for VTON
                     prompt.text = prompt.text.replace(f"<{type}:{token}:{scale}>", "")
 
-                    if tune.name in VTON_CATEGORIES:
+                    if _tune.name in VTON_CATEGORIES:
                         pipe = self.pipe
                         continue
-                    if tune.name not in HUMAN_CLASS_NAMES:
+                    if _tune.name not in HUMAN_CLASS_NAMES:
                         raise Exception(f"Token {token} is not a human")
                     self.init_pulid()
                     try:
-                        kwargs['id_image_embeddings'] = self.get_pulid_embedding(tune)
+                        kwargs['id_image_embeddings'] = self.get_pulid_embedding(_tune)
                         kwargs['id_image_scale'] = float(scale)
                         pipe = self.pulid_pipe
                     except RuntimeError:
@@ -1102,7 +1252,7 @@ class InferPipeline(InpaintFaceMixin, VtonMixin, SamMixin):
                 else:
                     pipe = self.init_img2img()
                 if isinstance(pipe, FluxFillPipeline):
-                    if not prompt.cfg_scale or prompt.cfg_scale < 7:
+                    if not prompt.cfg_scale or float(prompt.cfg_scale) < 7:
                         prompt.cfg_scale = 30
                 else:
                     kwargs['strength'] = float(prompt.denoising_strength if prompt.denoising_strength != None else 0.8)
@@ -1111,12 +1261,14 @@ class InferPipeline(InpaintFaceMixin, VtonMixin, SamMixin):
 
         # For tests
         self.last_pipe = pipe
-        images = []
         num_images = int(os.environ.get('NUM_IMAGES', prompt.num_images) or 1)
 
         if use_regional:
             self.sort_tunes_according_to_prompt(prompt)
-        joint_attention_kwargs = self.load_references(prompt, pipe)
+        if self.branch in [GEMINI_2_BRANCH, PARTNER_BRANCH]:
+            pass
+        else:
+            joint_attention_kwargs = self.load_references(prompt, pipe)
         prompt.text = prompt.text.strip(" ,").strip(" ").strip('"')
 
         # load_references mutates prompt.text, so this needs to be down here.
@@ -1127,10 +1279,10 @@ class InferPipeline(InpaintFaceMixin, VtonMixin, SamMixin):
             del kwargs['prompt_main']
 
         # Encode text embeds
-        if self.branch == BRANCH_QWEN_EDIT:
+        if tune.branch == BRANCH_QWEN_EDIT:
             kwargs['prompt'] = prompt.text
             del kwargs['strength']
-        elif 'Qwen' in pipe.__class__.__name__:
+        elif tune.branch == BRANCH_QWEN:
             (
                 prompt_embeds,
                 prompt_embeds_mask,
@@ -1152,50 +1304,57 @@ class InferPipeline(InpaintFaceMixin, VtonMixin, SamMixin):
             )
             kwargs['negative_prompt_embeds'] = neg_prompt_embeds
             kwargs['negative_prompt_embeds_mask'] = neg_prompt_embeds_mask
-        else:
-            (
-                prompt_embeds,
-                pooled_prompt_embeds,
-                _, # text_ids
-            ) = pipe.encode_prompt(
-                prompt=prompt.text,
-                prompt_2=prompt.text,
-                max_sequence_length=prompt.max_sequence_length or 512,
-                device=device,
-            )
-            kwargs['prompt_embeds'] = prompt_embeds
-            kwargs['pooled_prompt_embeds'] = pooled_prompt_embeds
+        elif tune.branch in [FLUX1_BRANCH, GEMINI_2_BRANCH, PARTNER_BRANCH]:
+            if tune.branch in [GEMINI_2_BRANCH, PARTNER_BRANCH]:
+                kwargs['prompt'] = prompt
+            if tune.branch == FLUX1_BRANCH or prompt.inpaint_faces:
+                (
+                    prompt_embeds,
+                    pooled_prompt_embeds,
+                    _, # text_ids
+                ) = self.pipe.encode_prompt(
+                    prompt=prompt.text,
+                    prompt_2=prompt.text,
+                    max_sequence_length=prompt.max_sequence_length or 512,
+                    device=device,
+                )
+                kwargs['prompt_embeds'] = prompt_embeds
+                kwargs['pooled_prompt_embeds'] = pooled_prompt_embeds
 
-        print(f"T#{prompt.tune_id} P#{prompt.id} pipe={pipe.__class__.__name__} {prompt.text=} loras={self.current_lora_weights_map[get_pipe_key_for_lora(pipe)]}")
-        for i_image in range(num_images):
-            if 'image' in kwargs is not None and 'strength' in kwargs and kwargs['strength'] == 0:
+        # print(f"T#{prompt.tune_id} P#{prompt.id} pipe={pipe.__class__.__name__} {prompt.text=} loras={self.current_lora_weights_map[get_pipe_key_for_lora(pipe)]}")
+        num_images_steps = num_images if tune.branch in [GEMINI_2_BRANCH, PARTNER_BRANCH] else 1
+        for i_image in range(0, num_images, num_images_steps):
+            if 'strength' in kwargs and kwargs['strength'] == 0:
                 print(f"T#{prompt.tune_id} P#{prompt.id} Skipping image {i_image} because strength=0. Probably just VTON or outpaint only?")
-                images.append(kwargs['image'])
+                if 'image' in kwargs is not None:
+                    images.append(kwargs['image'])
                 continue
 
-            if 'Qwen' not in pipe.__class__.__name__:
+            if tune.branch in [GEMINI_2_BRANCH, PARTNER_BRANCH]:
+                pass
+            elif tune.branch == FLUX1_BRANCH:
                 kwargs['guidance_scale'] = float(prompt.cfg_scale if prompt.cfg_scale is not None else 3.5)
                 kwargs['joint_attention_kwargs'] = joint_attention_kwargs
+                if hasattr(pipe.transformer, 'set_number_of_steps'):
+                    pipe.transformer.set_number_of_steps(prompt.steps)
+                if hasattr(pipe.transformer, 'clear_cache'):
+                    pipe.transformer.clear_cache()
             else:
                 kwargs['true_cfg_scale'] = float(prompt.cfg_scale or 4.0)
                 # https://huggingface.co/spaces/Qwen/Qwen-Image/blob/main/app.py#L215
                 # guidance_scale = 1.0 # distilled
-            if hasattr(pipe.transformer, 'set_number_of_steps'):
-                pipe.transformer.set_number_of_steps(prompt.steps)
-            if hasattr(pipe.transformer, 'clear_cache'):
-                pipe.transformer.clear_cache()
-            image = pipe(
+            out_images = pipe(
                 height=prompt.h,
                 width=prompt.w,
                 num_inference_steps=prompt.steps,
                 generator=torch.Generator(device="cuda").manual_seed((prompt.seed or 42) + i_image),
                 **kwargs,
-            ).images[0]
+            ).images
             if use_regional:
                 pipe.reset()
             if is_terminated():
                 raise TerminateException("terminated")
-            images.append(image)
+            images = images + out_images
 
         # Sanity check - if images are black - raise exception
         for i_image, image in enumerate(images):
@@ -1205,10 +1364,34 @@ class InferPipeline(InpaintFaceMixin, VtonMixin, SamMixin):
         if prompt.outpaint:
             images = self.outpaint(images, prompt, kwargs)
 
-        if not use_regional:
+        # Do not do vton on editing models since that's already included in the inference
+        if not use_regional and tune.branch not in [GEMINI_2_BRANCH, PARTNER_BRANCH]:
             images = self.vton(images, prompt)
-        if prompt.super_resolution or os.environ.get('SUPER_RESOLUTION'):
+
+        if prompt.super_resolution and prompt.upscale_v4:
+            self.reset_controlnet()
+            self.reset_sam()
+            self.reset_inpaint_faces()
+            ctx = _stash_ctx_to_cpu(kwargs)
+            with offload_to_cpu(
+                self.last_pipe, self.pipe, self.img2img, self.inpaint,
+                self.controlnet_txt2img, self.controlnet_img2img,
+                self.controlnet_inpaint_txt2img,
+                self.rag_diffusion_pipe, self.pulid_pipe,
+            ):
+                # try:
+                #     self.pipe.to("cpu")
+                # except Exception:
+                #     pass
+                gc.collect()
+                torch.cuda.empty_cache()
+                if (prompt.super_resolution or os.environ.get('SUPER_RESOLUTION')):
+                    images = self.upscale_seedvr2(images, prompt)
+                # self.pipe.to("cuda")
+                _restore_ctx_to_cuda(kwargs, ctx)
+        elif prompt.super_resolution:
             images = self.upscale(images, prompt)
+
 
         if prompt.hires_fix or os.environ.get('HIRES_FIX'):
             if os.environ.get('DEBUG'):
@@ -1241,23 +1424,11 @@ class InferPipeline(InpaintFaceMixin, VtonMixin, SamMixin):
                 image = Image.composite(image, input_image.resize(image.size, Image.LANCZOS), mask_image.resize(image.size, Image.LANCZOS))
                 images[i_image] = image
 
-        if prompt.remove_background:
+        if prompt.remove_background or prompt.composite:
             images = self.remove_background(images)
 
             if prompt.composite:
                 images = self.composite(images, prompt)
-
-        if os.environ.get('DEBUG'):
-            if os.environ.get('DEBUG') != 'test':
-                for i_image, image in enumerate(images):
-                    if prompt.remove_background:
-                        image.save(f"{MODELS_DIR}/{prompt.id}-{i_image}.png")
-                    else:
-                        image.save(f"{MODELS_DIR}/{prompt.id}-{i_image}.jpg")
-        elif should_send_to_server:
-            content_types = ["image/png" if prompt.remove_background else "image/jpeg"] * len(images)
-            send_to_server(images, prompt.id, content_types)
-        prompt.trained_at = True
 
         if use_regional:
             # hack since we're hijacking the transformer
@@ -1269,6 +1440,19 @@ class InferPipeline(InpaintFaceMixin, VtonMixin, SamMixin):
             #     )
             # })
             self.reset(gc_collect=True)
+
+        if os.environ.get('DEBUG'):
+            if os.environ.get('DEBUG') != 'test':
+                for i_image, image in enumerate(images):
+                    if prompt.remove_background:
+                        image.save(f"{MODELS_DIR}/{prompt.id}-{i_image}.png")
+                    else:
+                        image.save(f"{MODELS_DIR}/{prompt.id}-{i_image}.jpg")
+        elif should_send_to_server:
+            content_types = ["image/png" if prompt.remove_background else "image/jpeg"] * len(images)
+            # GeminiPipeline will set prompt.state = 1
+            send_to_server(images, prompt.id, content_types)
+        prompt.trained_at = True
 
         return images
 
@@ -1438,7 +1622,7 @@ def main():
 
             # Give a few chances for inference before starting training
             if not os.environ.get('DISABLE_TRAINING') and not os.path.exists(f'{MODELS_DIR}/DISABLE_TRAINING'):
-                while not is_terminated():
+                while not is_terminated() and not os.path.exists(f'{MODELS_DIR}/DISABLE_TRAINING'):
                     tune = request_tune_job_from_server()
                     if not tune.id:
                         if GPU_MEMORY_GB > 50 and not os.environ.get('DISABLE_INFERENCE'):
@@ -1483,7 +1667,7 @@ def main():
         if id == "json":
             import json
             # read test.json
-            ar = json.loads(open("test.json").read(), object_hook=lambda d: JsonObj(**d))
+            ar = json.loads(open("astria/test.json").read(), object_hook=lambda d: JsonObj(**d))
             for tune in ar:
                 pipeline.infer(tune)
             continue

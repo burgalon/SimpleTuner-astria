@@ -1,9 +1,10 @@
 import time
 import os
+import minio
 from minio import Minio
 from minio.error import S3Error
 from urllib3 import PoolManager, Timeout
-from urllib3.exceptions import ReadTimeoutError
+from urllib3.exceptions import ReadTimeoutError, ProtocolError
 
 http_client = PoolManager(
     timeout=Timeout(connect=5, read=15),
@@ -35,7 +36,7 @@ def upload_minio(file, target):
             end_time = time.time()
             print(f"Uploaded {target} in {end_time - start_time:.2f} seconds")
             return
-        except (S3Error, ReadTimeoutError) as exc:
+        except (S3Error, ReadTimeoutError, ProtocolError, minio.error.InvalidResponseError) as exc:
             print(f"Upload of {target} failed on attempt {attempt + 1}/{MAX_RETRIES}: {exc}")
             if attempt < MAX_RETRIES - 1:
                 sleep_time = 1
@@ -53,7 +54,7 @@ def download_minio(from_key, to):
             end_time = time.time()
             print(f"Downloaded {from_key} in {end_time - start_time:.2f} seconds")
             return
-        except (S3Error, ReadTimeoutError) as exc:
+        except (S3Error, ReadTimeoutError, ProtocolError, minio.error.InvalidResponseError) as exc:
             print(f"Download of {from_key} failed on attempt {attempt + 1}/{MAX_RETRIES}: {exc}")
             if attempt < MAX_RETRIES - 1:
                 sleep_time = 1
@@ -65,4 +66,4 @@ def download_minio(from_key, to):
 
 if __name__ == '__main__':
     # upload_minio('/data/models/2002368.safetensors', 'models/2002368.safetensors')
-    download_minio('models/2002368.safetensors', '/data/models/2002368.safetensors')
+    upload_minio('/data/models/3496531.safetensors', '/data/models/3496531.safetensors')

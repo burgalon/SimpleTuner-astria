@@ -10,14 +10,15 @@ sys.path.append("astria")
 import imagehash
 from PIL import Image
 
-from infer import *
-from astria_utils import JsonObj, MODELS_DIR
-
 # Do not send to server?
+# Needs to be before import infer so that sig_listener doesn't create hooks
 if 'DEBUG' not in os.environ:
     os.environ['DEBUG'] = 'test'
     os.environ['MOCK_SERVER'] = '1'
 
+
+from infer import *
+from astria_utils import JsonObj, MODELS_DIR
 
 pipe = InferPipeline()
 
@@ -38,6 +39,16 @@ FLUX_LORA = JsonObj(**{
     "token": str(1533312),
     "train_token": "ohwx",
     "model_type": "lora",
+    "face_swap_images": [
+        "https://mp.astria.ai/w2ra2h8m8hx6okt9jmrwm6mlmova",
+        "https://mp.astria.ai/f8bg0pac6m740muuicmtlzil2nny",
+        "https://mp.astria.ai/q8kr3j8qy7ma6dq8xf8aqm27v12a",
+        "https://mp.astria.ai/1t3y9jvi249mn1m3s689nw9w8e9z",
+        "https://mp.astria.ai/p1jhygwtgxx4pwc2cm7kmjnpw80e",
+        "https://mp.astria.ai/a90eqb8jzebf0njd5gqgh23ylr83",
+        "https://mp.astria.ai/py1thtz5yem8a66sfn1z06wlds1y",
+        "https://mp.astria.ai/l7pp1gzy1lthev4u1fiwvdt5l9tg",
+    ]
 })
 
 FLUX_LORA_MAN = JsonObj(**{
@@ -174,15 +185,15 @@ FLUX_LORA_2 = JsonObj(**{
     "model_type": "lora",
 })
 
-FLUX_EXTERNAL_LORA = JsonObj(**{
-    "id": "wow_details",
-    "name": "style",
-    "title": "Wow details comfyui compatible LoRA",
-    "branch": "flux1",
-    "token": "wow_details",
-    "train_token": "ohwx",
-    "model_type": "lora",
-})
+# FLUX_EXTERNAL_LORA = JsonObj(**{
+#     "id": "wow_details",
+#     "name": "style",
+#     "title": "Wow details comfyui compatible LoRA",
+#     "branch": "flux1",
+#     "token": "wow_details",
+#     "train_token": "ohwx",
+#     "model_type": "lora",
+# })
 
 FLUX_EXTERNAL_LORA_2 = JsonObj(**{
     "id": "flux_realism_lora",
@@ -252,14 +263,14 @@ def test_txt2img_lora():
     run_images(prompt)
     assert isinstance(pipe.last_pipe, FluxPipeline)
 
-# def test_txt2img_civitai_lora():
-#     prompt = JsonObj(
-#         **copy.copy(BASE_PROMPT.__dict__),
-#     )
-#     prompt.text=f"<lora:{FLUX_EXTERNAL_LORA.id}:1> {FLUX_EXTERNAL_LORA.train_token} woman holding flowers"
-#     prompt.tunes=[FLUX_EXTERNAL_LORA]
-#     run_images(prompt)
-#     assert isinstance(pipe.last_pipe, FluxPipeline)
+#def test_txt2img_civitai_lora():
+    # prompt = JsonObj(
+    #     **copy.copy(BASE_PROMPT.__dict__),
+    # )
+    # prompt.text=f"<lora:{FLUX_EXTERNAL_LORA.id}:1> {FLUX_EXTERNAL_LORA.train_token} woman holding flowers"
+    # prompt.tunes=[FLUX_EXTERNAL_LORA]
+    # run_images(prompt)
+    #     assert isinstance(pipe.last_pipe, FluxPipeline)
 #
 #     prompt = JsonObj(
 #         **copy.copy(BASE_PROMPT.__dict__),

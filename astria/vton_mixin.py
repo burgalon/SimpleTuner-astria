@@ -14,7 +14,10 @@ import boto3
 import requests
 import rollbar
 from PIL import Image
-from astria_utils import JsonObj, MODELS_DIR
+from astria_utils import JsonObj, MODELS_DIR, HUMAN_CLASS_NAMES
+from exceptions import ApplicativeApiError
+from partner_pipelines import PartnerPipeline, GeminiPipeline, PARTNER_REVE_TUNE_ID, PARTNER_GEMINI_TUNE_ID, \
+    PARTNER_SEEDREAM_TUNE_ID
 
 if os.environ.get('MOCK_SERVER') or os.environ.get('DEBUG') == 'test':
     from astria_mock_server import FASHN_API_KEY, BAKE_API_KEY
@@ -38,13 +41,11 @@ HEADERS_BAKE = {"Authorization": f"Key {BAKE_API_KEY}", "Content-Type": "applica
 FASHN_BASE_URL_V1 = 'https://api.fashn.ai/v1'
 FASHN_BASE_URL_NIGHTLY = 'https://api.fashn.ai/nightly'
 
-s3_boto = None
-if not os.environ.get('MOCK_SERVER', False):
-    s3_boto = boto3.client('s3',
-        endpoint_url=os.environ.get('R2_ENDPOINT_URL_S3'),
-        aws_access_key_id=os.environ.get('R2_ACCESS_KEY_ID'),
-        aws_secret_access_key=os.environ.get('R2_SECRET_ACCESS_KEY'),
-    )
+s3_boto = boto3.client('s3',
+                    endpoint_url=os.environ.get('R2_ENDPOINT_URL_S3'),
+                    aws_access_key_id=os.environ.get('R2_ACCESS_KEY_ID'),
+                    aws_secret_access_key=os.environ.get('R2_SECRET_ACCESS_KEY'),
+                    )
 S3_BUCKET = 'sdbooth2-production'
 PUBLIC_BUCKET_URL = 'https://mp.astria.ai/'
 
@@ -65,12 +66,29 @@ def crop_to_aspect_ratio(result_image: Image.Image, image: Image.Image) -> Image
 
 class VtonMixin:
     def __init__(self):
-        pass
+        # Dictionary to map vton_model to corresponding function
+        self.vton_functions = {
+            'fashn': self.vton_image,
+            'bake': self.vton_image_bake,
+            'seedream': self.vton_image_partner,
+            'reve': self.vton_image_partner,
+            'gemini': self.vton_image_partner,
+        }
 
     def vton(self, images: List[Image.Image], prompt: JsonObj):
+        filtered_tunes = [t for t in prompt.tunes if t.face_swap_images and t.model_type == 'faceid' and t.name not in HUMAN_CLASS_NAMES]
+        if not filtered_tunes:
+            return images
+
+        if not prompt.vton_model:
+            # select 'seedream' if all prompt.tunes where model_type=faceid and name in VTON_CATEGORIES
+            prompt.vton_model = all(t.name in VTON_CATEGORIES for t in filtered_tunes) and 'seedream' or 'gemini'
+            print(f"Set {prompt.vton_model=}")
+        vton_func = self.vton_functions[prompt.vton_model]
+
         with ThreadPoolExecutor() as executor:
             futures = [
-                executor.submit(self.vton_image if os.environ.get('USE_FASHN') or prompt.vton_model == 'fashn' else self.vton_image_bake, image, prompt)
+                executor.submit(vton_func, image, prompt)
                 for image in images
             ]
 
@@ -176,6 +194,56 @@ class VtonMixin:
         s3_client.delete_object(Bucket=bucket, Key=key) # Cleanup failed upload
         return None, None
 
+    def vton_image_partner(self, image: Image.Image, prompt: JsonObj):
+        partner_pipeline = {
+            'seedream': PartnerPipeline,
+            'reve': PartnerPipeline,
+            'gemini': GeminiPipeline,
+        }[prompt.vton_model]()
+        tune_id = {
+            'seedream': PARTNER_SEEDREAM_TUNE_ID,
+            'reve': PARTNER_REVE_TUNE_ID,
+            'gemini': PARTNER_GEMINI_TUNE_ID,
+        }[prompt.vton_model]
+        if prompt.vton_prompt:
+            text = prompt.vton_prompt
+            tunes = [t for t in prompt.tunes if t.face_swap_images and t.model_type == 'faceid' and t.name not in HUMAN_CLASS_NAMES]
+        else:
+            text = ""
+            idx_image = 1
+            tunes = []
+            for tune in prompt.tunes:
+                if not tune.face_swap_images or tune.model_type != 'faceid' or tune.name in HUMAN_CLASS_NAMES:
+                    continue
+                tunes.append(tune)
+                name = tune.name
+                if tune.name in VTON_CATEGORIES:
+                    text = text + {
+                        'seedream': f"Use the {name} from image {idx_image+1} to replace/add on the model in image 1",
+                    }.get(prompt.vton_model, f"Add/Replace the person's outfit from the first image with the exact {name} of the second image (while ignoring the person in the second image), make it exactly the person from the first image, don't change the hairdo")
+                else:
+                    # Gemini & Reve input_image is first
+                    # Seedream input_image is 2
+                    text = text + {
+                        'seedream': f'Add or replace {name} from image {idx_image+1} into image 1. Do not change anything else',
+                    }.get(prompt.vton_model, f'Add or replace {name} from image 1 into image [LAST]. Blend it nicely.')
+                idx_image += min(3, len(tune.face_swap_images))
+            text = text.replace('[LAST]', str(idx_image))
+        if text =="":
+            raise ValueError("No vton_prompt or tunes found")
+        prompt = JsonObj(
+            text=text,
+            input_image=image,
+            tunes=tunes,
+            tune_id=tune_id,
+            aspect_ratio=prompt.aspect_ratio,
+        )
+        try:
+            return partner_pipeline(prompt=prompt).images[0]
+        except ApplicativeApiError as e:
+            print(f"P={prompt.id} Failed to run partner pipeline: {e}")
+            return image
+
     def vton_image_bake(self, image: Image.Image, prompt: JsonObj):
         for tune in prompt.tunes:
             if tune.name not in VTON_CATEGORIES or not tune.face_swap_images:
@@ -224,9 +292,8 @@ class VtonMixin:
 
             print(f"VTON response: {response.status_code} {response.text}")
             # delete the temporary image from S3
-            if s3_boto is not None:
-                s3_boto.delete_object(Bucket=S3_BUCKET, Key=human_key)
-                s3_boto.delete_object(Bucket=S3_BUCKET, Key=garment_key)
+            s3_boto.delete_object(Bucket=S3_BUCKET, Key=human_key)
+            s3_boto.delete_object(Bucket=S3_BUCKET, Key=garment_key)
 
 
             response_data = response.json()
@@ -292,6 +359,7 @@ class VtonMixin:
                 'model_image': "data:image/png;base64, " + pil2base64(image),
                 'garment_image': tune.face_swap_images[0],
                 'category': category,
+                'model': 'quality',
                 'guidance_scale': cfg_scale,
                 'garment_photo_type': garment_photo_type,
                 'nsfw_filter': False,

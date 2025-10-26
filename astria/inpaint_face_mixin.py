@@ -488,7 +488,7 @@ class InpaintFaceMixin:
                 image=inpainted_crop_resized,
                 strength=strength,
                 # get true_cfg_scale and guidance_scale from original inference
-                **({k: v for k, v in kwargs.items() if 'prompt' in k or 'true_cfg_scale'==k or 'guidance_scale'==k}),
+                **({k: v for k, v in kwargs.items() if 'prompt_' in k or 'true_cfg_scale'==k or 'guidance_scale'==k}),
             ).images[0]
             if os.environ.get('DEBUG', '') == 'inpaint_faces':
                 inpainted_crop_resized.save(f"{MODELS_DIR}/{prompt.id}-inpainted-crop-{i}.jpg")

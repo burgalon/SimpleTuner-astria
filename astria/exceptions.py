@@ -1,0 +1,2 @@
+class ApplicativeApiError(Exception):
+    pass

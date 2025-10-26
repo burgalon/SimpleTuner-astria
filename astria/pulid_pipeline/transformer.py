@@ -12,7 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import types
 
+from contextlib import nullcontext
 from typing import Any, Dict, Optional, Union
 
 import numpy as np
@@ -327,3 +329,66 @@ class FluxTransformer2DModelWithPulID(ModelMixin, PeftAdapterMixin):
             return (output,)
 
         return Transformer2DModelOutput(sample=output)
+
+
+class FluxTransformer2DModelWithPulIDDiCache(FluxTransformer2DModelWithPulID):
+    """
+    PulID variant that wires in a dicache-style forward (image-only thresholds)
+    and handles PulID CA injection during probe + compute paths.
+    """
+    _supports_gradient_checkpointing = False
+    _no_split_modules = ["FluxTransformerBlock", "FluxSingleTransformerBlock"]
+
+    def __init__(self, transformer, in_channels: int = 64, **dicache_kwargs):
+        super().__init__(transformer=transformer, in_channels=in_channels)
+        self.enable_dicache = True
+        self.cnt = 0
+        self.num_steps = dicache_kwargs.get("num_steps", 1)
+        self.probe_depth = dicache_kwargs.get("probe_depth", 1)
+        self.error_choice = dicache_kwargs.get("error_choice", "delta_y")
+        self.rel_l1_thresh = dicache_kwargs.get("rel_l1_thresh", 0.1)
+        self.rel_thresh_map = dicache_kwargs.get("rel_thresh_map", None)
+        self.ret_ratio = dicache_kwargs.get("ret_ratio", 0.2)
+        self.skip_end_ratio = dicache_kwargs.get("skip_end_ratio", 0.0)
+        self.max_consec_skips = dicache_kwargs.get("max_consec_skips", 8)
+
+        # state
+        self.accumulated_rel_l1_distance = 0
+        self.previous_input = None
+        self.previous_output = None
+        self.previous_residual = None
+        self.previous_probe_states = None
+        self.previous_probe_residual = None
+        self.residual_window = []
+        self.probe_residual_window = []
+        self.resume_flag = False
+        self._consec_skips = 0
+
+        # attach new forward
+        from astria.pulid_pipeline.forwards import pulid_dicache_forward
+        self.forward = types.MethodType(pulid_dicache_forward, self)
+
+    @classmethod
+    def from_transformer(cls, tf, **kwargs):
+        return cls(tf, **kwargs)
+
+    def cache_context(self, *_args, **_kwargs):
+        return nullcontext()
+
+    def clear_cache(self):
+        self.accumulated_rel_l1_distance = 0
+        self.cnt = 0
+        self.resume_flag = False
+        self._consec_skips = 0
+
+        self.previous_input = None
+        self.previous_output = None
+        self.previous_residual = None
+        self.previous_probe_states = None
+        self.previous_probe_residual = None
+
+        self.residual_window = []
+        self.probe_residual_window = []
+
+    def set_number_of_steps(self, steps: int):
+        self.num_steps = steps
