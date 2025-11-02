@@ -1,6 +1,7 @@
+import os
 import sys
 
-sys.path.append("astria")
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 import copy
 from astria_tests.test_infer import IMG_POSE, BASE_PROMPT, FLUX_LORA, run_images, FLUX_FACEID, pipe

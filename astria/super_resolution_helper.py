@@ -1,5 +1,6 @@
 from tqdm import tqdm
 import math
+import os
 import cv2
 import numpy as np
 import torch
@@ -7,6 +8,8 @@ from PIL import Image
 from realesrgan import RealESRGANer
 from realesrgan.archs.srvgg_arch import SRVGGNetCompact
 from torch.nn import functional as F
+from filelock import FileLock
+from torch.hub import download_url_to_file
 
 from esrgan_model import load_esrgan
 
@@ -222,6 +225,33 @@ class ESRGANer():
         return output, img_mode
 
 
+def _ensure_esrgan_siax_weight(target_fn: str):
+    """Ensure /data/cache/4x_NMKD-Siax_200k.pth exists; download once with a file lock."""
+    os.makedirs(os.path.dirname(target_fn), exist_ok=True)
+    url = (
+        os.environ.get("ESRGAN_SIAX_URL")
+        or "https://huggingface.co/uwg/upscaler/resolve/main/ESRGAN/4x_NMKD-Siax_200k.pth"
+    )
+    lock_path = target_fn + ".lock"
+    with FileLock(lock_path, timeout=600):
+        # Might have been created while waiting for the lock
+        if not os.path.exists(target_fn) or os.path.getsize(target_fn) == 0:
+            tmp = target_fn + ".tmp"
+            try:
+                print(f"Downloading ESRGAN weight from {url} -> {target_fn}")
+                download_url_to_file(url, tmp, progress=True)
+                if os.path.getsize(tmp) == 0:
+                    raise RuntimeError("Downloaded ESRGAN weight is empty.")
+                os.replace(tmp, target_fn)  # atomic
+            finally:
+                # Clean up tmp if anything went wrong
+                if os.path.exists(tmp):
+                    try:
+                        os.remove(tmp)
+                    except Exception:
+                        pass
+
+
 def load_sr(filename: str):
     if filename == "/data/cache/realesr-general-x4v3.pth":
         print(f"Loading RealESRGAN {filename}")
@@ -237,6 +267,10 @@ def load_sr(filename: str):
             half=True,
         )
     else:
+        # Ensure NMKD-Siax exists if that’s what we’re about to load
+        if os.path.basename(filename) == "4x_NMKD-Siax_200k.pth":
+            _ensure_esrgan_siax_weight(filename)
+
         print(f"Loading ESRGAN {filename}")
         return ESRGANer(
             model=load_esrgan(filename),

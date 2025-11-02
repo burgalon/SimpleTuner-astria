@@ -341,6 +341,9 @@ class SeedVR2ImageUpscaler:
         self,
         vae_decode_conv_max_mem: float = 8.0,
         vae_decode_norm_max_mem: float = 4.0,
+        causal_slicing: bool = False,
+        causal_slicing_split_size: int = 0,
+        causal_slicing_memory_device: str = 'cpu',  # "cpu" or "same"
     ) -> None:
         """
         Load config + models. Safe to call once and reuse for many inferences.
@@ -397,8 +400,14 @@ class SeedVR2ImageUpscaler:
 
         vae.requires_grad_(False).eval()
         # optional: respect any memory/slicing knobs from the config
-        if hasattr(runner.config.vae, "slicing") and hasattr(vae, "set_causal_slicing"):
+        if not causal_slicing and hasattr(runner.config.vae, "slicing") and hasattr(vae, "set_causal_slicing"):
             vae.set_causal_slicing(**runner.config.vae.slicing)
+        if causal_slicing:
+            vae.set_causal_slicing(**{
+                'split_size': causal_slicing_split_size,
+                'memory_device': causal_slicing_memory_device,
+            })
+
         # if hasattr(vae, "set_memory_limit") and hasattr(runner.config.vae, "memory_limit"):
         #     vae.set_memory_limit(**runner.config.vae.memory_limit)
         vae.set_memory_limit(

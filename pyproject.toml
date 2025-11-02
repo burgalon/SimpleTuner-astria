@@ -71,6 +71,9 @@ dependencies = [
     "minio>=7.2.16",
     "omegaconf>=2.3.0",
     "rotary-embedding-torch>=0.8.9",
+    "boxmot>=15.0.9",
+    "segmentation-models-pytorch>=0.5.0",
+    "ivy>=1.0.0.5",
 ]
 
 [dependency-groups]
