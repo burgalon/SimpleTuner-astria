@@ -1,5 +1,6 @@
 import base64
 from io import BytesIO
+import concurrent.futures
 
 # do not remove - this import registers AV1 handler
 import pillow_avif
@@ -163,7 +164,9 @@ def pil2base64_datauri(image: Image, format="PNG") -> str:
     return f"data:{mime_type};base64,{base64_str}"
 
 def load_images(images: list[Union[str, PIL.Image.Image]], convert = 'RGB') -> list[PIL.Image.Image]:
-    return [load_image(image, convert) for image in images]
+    with concurrent.futures.ThreadPoolExecutor() as executor:
+        results = list(executor.map(lambda img: load_image(img, convert), images))
+    return results
 
 def load_image(image: Union[str, PIL.Image.Image], convert = 'RGB') -> PIL.Image.Image:
     """
@@ -189,5 +192,9 @@ def save_img(image: Image, fn: str, format="PNG") -> str:
 
 if __name__ == "__main__":
     # Test the functions
-    img = url2img("https://mp.astria.ai/mie32w532no789744zhae2n0xvmm")
+    images  = load_images([
+        "https://mp.astria.ai/mie32w532no789744zhae2n0xvmm"
+    ])
+    img = images[0]
+    # img = url2img("https://mp.astria.ai/mie32w532no789744zhae2n0xvmm")
     print(f"Image size: {img.size}, mode: {img.mode}")

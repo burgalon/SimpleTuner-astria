@@ -71,6 +71,7 @@ import numpy as np
 from PIL import Image
 
 from astria.astria_utils import CACHE_DIR
+from astria.tensorize import seedvr2_load_or_tensorize
 from astria.seedvr2.download import ensure_seedvr2_7b_checkpoint, ensure_seedvr2_vae_checkpoint
 
 
@@ -105,8 +106,6 @@ from astria.seedvr2.common.colorfix import wavelet_reconstruction
 
 
 # ------------------------------ Utilities ---------------------------------------
-
-# add near the top
 
 def _resolve_config_path(explicit: Optional[Union[str, Path]] = None) -> Path:
     """
@@ -171,6 +170,49 @@ def _resolve_config_path(explicit: Optional[Union[str, Path]] = None) -> Path:
 def _is_image_file(path: str) -> bool:
     ext = os.path.splitext(path.lower())[1]
     return ext in {".jpg", ".jpeg", ".png", ".bmp", ".tiff", ".webp"}
+
+
+def _gpu_hist_match_uint8(src_hwc_u8: torch.Tensor,
+                          ref_hwc_u8: torch.Tensor,
+                          downsample: int = 4) -> torch.Tensor:
+    """
+    Histogram-match src to ref on GPU. Both are uint8 HxWxC (C=3), CUDA tensors.
+    We compute LUTs per channel (0..255) using downsampled histograms,
+    then apply LUTs to the full-resolution src on GPU.
+
+    Returns: uint8 HxWxC (CUDA)
+    """
+    assert src_hwc_u8.dtype == torch.uint8 and ref_hwc_u8.dtype == torch.uint8
+    assert src_hwc_u8.device.type == "cuda" and ref_hwc_u8.device.type == "cuda"
+    assert src_hwc_u8.shape[-1] == ref_hwc_u8.shape[-1] == 3, "expects RGB"
+
+    if downsample > 1:
+        src_ds = src_hwc_u8[::downsample, ::downsample]
+        ref_ds = ref_hwc_u8[::downsample, ::downsample]
+    else:
+        src_ds, ref_ds = src_hwc_u8, ref_hwc_u8
+
+    luts = []
+    for c in range(3):
+        s = src_ds[..., c].reshape(-1).to(torch.int64)
+        r = ref_ds[..., c].reshape(-1).to(torch.int64)
+        hist_s = torch.bincount(s, minlength=256)
+        hist_r = torch.bincount(r, minlength=256)
+        cdf_s = hist_s.cumsum(0).float()
+        cdf_r = hist_r.cumsum(0).float()
+        cdf_s /= cdf_s[-1].clamp_min(1)
+        cdf_r /= cdf_r[-1].clamp_min(1)
+        # LUT[v] = smallest j with CDF_ref[j] >= CDF_src[v]
+        lut_c = torch.searchsorted(cdf_r, cdf_s).clamp_(0, 255).to(torch.uint8)
+        luts.append(lut_c)
+    lut = torch.stack(luts, 0)  # (3,256)
+
+    H, W, _ = src_hwc_u8.shape
+    src_flat = src_hwc_u8.reshape(-1, 3).long().transpose(0, 1)      # (3, N)
+    matched_flat = torch.gather(lut, 1, src_flat)                     # (3, N)
+    matched = matched_flat.transpose(0, 1).reshape(H, W, 3).to(torch.uint8)
+    return matched
+
 
 
 def _to_tchw(
@@ -295,8 +337,11 @@ class SeedVR2ImageUpscaler:
         )
 
     # --------- Model lifecycle ---------
-
-    def load(self) -> None:
+    def load(
+        self,
+        vae_decode_conv_max_mem: float = 8.0,
+        vae_decode_norm_max_mem: float = 4.0,
+    ) -> None:
         """
         Load config + models. Safe to call once and reuse for many inferences.
         """
@@ -317,21 +362,59 @@ class SeedVR2ImageUpscaler:
         if vae_yaml.is_file():
             runner.config.vae.model.__inherit__ = str(vae_yaml)
 
-        # 2) Ensure/download VAE weight into CACHE_DIR and patch the config
+        # # 2) Ensure/download VAE weight into CACHE_DIR and patch the config
         vae_ckpt_path = ensure_seedvr2_vae_checkpoint(target_dir=str(CACHE_DIR))
-        runner.config.vae.checkpoint = str(vae_ckpt_path)
+        # runner.config.vae.checkpoint = str(vae_ckpt_path)
 
-        # Models
+        # # Models
         ckpt_path, pos_path, neg_path = ensure_seedvr2_7b_checkpoint(self.checkpoint_path)
         self.pos_path = pos_path
         self.neg_path = neg_path
         self.checkpoint_path = ckpt_path  # keep the resolved path
-        runner.configure_dit_model(device=self._device, checkpoint=ckpt_path)
-        runner.configure_vae_model()
 
-        # VAE memory limit if exposed
-        if hasattr(runner.vae, "set_memory_limit"):
-            runner.vae.set_memory_limit(**runner.config.vae.memory_limit)
+        # LEGACY (SLOW) LOADING
+        # runner.configure_dit_model(device=self._device, checkpoint=ckpt_path)
+        # runner.configure_vae_model()
+
+        # # VAE memory limit if exposed
+        # if hasattr(runner.vae, "set_memory_limit"):
+        #     runner.vae.set_memory_limit(**runner.config.vae.memory_limit)
+
+        # self.runner = runner
+
+        # --- FAST PATH: tensorizer bundle ---
+        import time
+        start = time.time()
+        dit, vae = seedvr2_load_or_tensorize(
+            config_yaml=str(self.config_path),
+            dit_ckpt=str(ckpt_path),
+            vae_ckpt=str(vae_ckpt_path),
+            device=self._device,
+            force_rebuild=False,
+        )
+        print(f'inited seedvr2 in {time.time() - start} seconds')
+        runner.dit = dit
+
+        vae.requires_grad_(False).eval()
+        # optional: respect any memory/slicing knobs from the config
+        if hasattr(runner.config.vae, "slicing") and hasattr(vae, "set_causal_slicing"):
+            vae.set_causal_slicing(**runner.config.vae.slicing)
+        # if hasattr(vae, "set_memory_limit") and hasattr(runner.config.vae, "memory_limit"):
+        #     vae.set_memory_limit(**runner.config.vae.memory_limit)
+        vae.set_memory_limit(
+            conv_max_mem=vae_decode_conv_max_mem,
+            norm_max_mem=vae_decode_norm_max_mem,
+        )
+        runner.vae = vae
+
+        from astria.seedvr2.models.video_vae_v3.modules.causal_inflation_lib import InflatedCausalConv3d
+        from astria.seedvr2.models.video_vae_v3.modules.inflated_layers import InflatedCausalConv3d as InflatedCausalConv3dV2
+        for m in vae.modules():
+            if isinstance(m, InflatedCausalConv3d) or isinstance(m, InflatedCausalConv3dV2):
+                m.set_memory_device("same")
+
+        runner.config.dit.gradient_checkpoint = False
+        dit.set_gradient_checkpointing(False)
 
         self.runner = runner
 
@@ -348,7 +431,6 @@ class SeedVR2ImageUpscaler:
         self._text_neg = None
 
     # --------- Inference ---------
-
     @torch.inference_mode()
     def upscale(
         self,
@@ -364,21 +446,21 @@ class SeedVR2ImageUpscaler:
         return_pil: bool = True,
         model_offloading: bool = False,
         dit_offload: bool = False,
+        slow_color_fix: bool = False,
     ) -> Union["np.ndarray", "torch.Tensor", "Image.Image"]:
         """
-        Run single-image enhancement/upscaling and return an uint8 HxWxC numpy array (default).
+        Run single-image enhancement/upscaling and return an uint8 HxWxC image.
 
         Args:
             image: str path, numpy array (HWC/CHW), or torch tensor (CHW/HWC). Will be normalized to TCHW (T=1).
-            seed: RNG seed (shared across ranks, parity with original script).
-            sample_steps: diffusion sampling steps (1 by default, mirroring the fast path).
-            cfg_scale: classifier-free guidance scale.
-            cfg_rescale: guidance rescale.
-            pos_emb_path / neg_emb_path: If text embeddings weren’t set beforehand, load them from files here.
-            return_torch: If True, returns a torch.uint8 tensor (H,W,C) on CPU; else returns numpy uint8.
-
-        Returns:
-            numpy.ndarray (H, W, C), dtype=uint8 by default; or torch.Tensor if return_torch=True.
+            seed: RNG seed (shared across ranks).
+            sample_steps: diffusion sampling steps (default 1).
+            cfg_scale / cfg_rescale: classifier-free guidance knobs.
+            pos_emb_path / neg_emb_path: paths to text embeddings if not set via set_text_embeddings().
+            return_torch: If True, returns a torch.uint8 tensor (H,W,C) on CPU.
+            return_pil: If True, returns a PIL.Image.
+            model_offloading / dit_offload: optional memory knobs.
+            slow_color_fix: if True, use wavelet-based color fix (slow); otherwise fast histogram match.
         """
         if self.runner is None:
             raise RuntimeError("Model not loaded. Call `load()` before `upscale()`.")
@@ -396,23 +478,26 @@ class SeedVR2ImageUpscaler:
         runner.config.diffusion.timesteps.sampling.steps = int(sample_steps)
         runner.configure_diffusion()
 
-        # Prepare text embeddings
+        # Prepare text embeddings (as tensors)
         texts_pos, texts_neg = self._resolve_text_embeds(pos_emb_path, neg_emb_path)
-        # ensure list wrapper as expected by runner.inference signature
         text_embeds_dict = {"texts_pos": [texts_pos], "texts_neg": [texts_neg]}
 
-        # Input -> TCHW float [0,1]
-        tchw = _to_tchw(image)
-        ori_h = tchw.shape[-2]
-        ori_w = tchw.shape[-1]
+        # Input -> TCHW float [0,1] (CPU)
+        tchw = _to_tchw(image)  # (1,C,H,W)
 
-        # Transform -> CTHW normalized [-1,1]
+        # Keep original input as uint8 HWC on CPU for fast color matching (reference)
+        orig_uint8 = (
+            tchw[0].permute(1, 2, 0)      # CHW -> HWC
+            .mul(255).round().clamp(0, 255)
+            .to(torch.uint8).cpu().numpy()
+        )
+
+        # Transform -> CTHW normalized [-1,1] (GPU)
         cond = self._video_transform(tchw.to(self._device))  # C T H W
-        ori_length = cond.shape[1]  # T
-        if ori_length != 1:
-            raise ValueError(f"Expected single-frame image, got T={ori_length}")
+        if cond.shape[1] != 1:
+            raise ValueError(f"Expected single-frame image, got T={cond.shape[1]}")
 
-        # Move models to appropriate devices for encode/infer, mirroring original memory pattern
+        # Encode with VAE (optionally offloading)
         if model_offloading:
             runner.dit.to("cpu")
             runner.vae.to(self._device)
@@ -421,44 +506,59 @@ class SeedVR2ImageUpscaler:
             runner.vae.to("cpu")
             runner.dit.to(self._device)
 
-        # Prepare noises/conditions and run the diffusion model
+        # Diffusion step (DiT)
         samples = self._generation_step(runner, text_embeds_dict, cond_latents, dit_offload=dit_offload)
-
-        # samples: list with a single item – shape (T,C,H,W) with values in [-1,1]
-        sample = samples[0]
+        sample = samples[0]  # T,C,H,W in [-1,1]
         if sample.shape[0] > 1:
-            sample = sample[:1]  # clamp to one frame
+            sample = sample[:1]  # T=1
 
-        # Optional color fix vs. direct
-        # Build input frames in T,C,H,W for color fix
-        inp = rearrange(cond, "c t h w -> t c h w")
-        try:
-            sample = wavelet_reconstruction(sample.to("cpu"), inp[: sample.size(0)].to("cpu"))
-        except Exception:
-            warnings.warn("Color fix failed; returning raw output.")
-        sample = sample.to("cpu")
+        # ---- Color fix ----
+        if slow_color_fix:
+            # Original wavelet path (CPU) — slower but potentially higher fidelity
+            inp = rearrange(cond, "c t h w -> t c h w")
+            try:
+                sample = wavelet_reconstruction(sample.to("cpu"), inp[: sample.size(0)].to("cpu"))
+            except Exception:
+                warnings.warn("Color fix failed; returning raw output.")
 
-        # Convert to uint8 HxWxC
-        # (either 3D TCHW or 4D TCHW where T=1)
-        if sample.ndim == 3:  # C,H,W (no T)
-            chw = sample
-        else:  # T,C,H,W with T=1
-            chw = sample[0]
-        hwc = rearrange(chw, "c h w -> h w c")
+            # Convert to uint8 HWC on CPU
+            chw = sample if sample.ndim == 3 else sample[0]  # C,H,W
+            hwc = rearrange(chw, "c h w -> h w c")
+            final_uint8 = (
+                hwc.clamp_(-1, 1).mul_(0.5).add_(0.5).mul_(255).round_()
+                .to(torch.uint8).cpu().numpy()
+            )
+        else:
+            ref_hwc_u8_gpu = (
+                rearrange(tchw.to(self._device)[0], "c h w -> h w c")
+                .clamp_(0, 1).mul_(255).round_().to(torch.uint8)
+            )
 
-        # Scale from [-1,1] -> [0,255]
-        hwc = hwc.clamp_(-1, 1).mul_(0.5).add_(0.5).mul_(255).round_().to(torch.uint8)
+            # Model output -> uint8 on GPU
+            out_chw = sample if sample.ndim == 3 else sample[0]  # C,H,W
+            out_hwc_u8_gpu = (
+                rearrange(out_chw, "c h w -> h w c")
+                .clamp_(-1, 1).mul_(0.5).add_(0.5).mul_(255).round_()
+                .to(torch.uint8)
+            )
 
+            # Histogram match entirely on GPU; one LUT per channel
+            matched_u8_gpu = _gpu_hist_match_uint8(out_hwc_u8_gpu, ref_hwc_u8_gpu, downsample=4)
+
+            # Single final copy for return
+            final_uint8 = matched_u8_gpu.cpu().numpy()
+
+        # ---- Return in requested format ----
         if return_pil and return_torch:
             raise ValueError("Choose only one of return_pil or return_torch.")
 
         if return_pil:
-            return self.as_pil(hwc)
+            return self.as_pil(final_uint8)
 
-        # Return
         if return_torch:
-            return hwc  # CPU uint8 tensor HxWxC
-        return hwc.numpy()
+            return torch.from_numpy(final_uint8)  # CPU uint8 HxWxC
+
+        return final_uint8  # numpy uint8 HxWxC
 
     # --------- Helpers ---------
 
@@ -500,45 +600,51 @@ class SeedVR2ImageUpscaler:
         text_embeds_dict: Dict[str, Iterable[torch.Tensor]],
         cond_latents: Iterable[torch.Tensor],
         dit_offload: bool = False,
+        *,
+        cond_noise_scale: float = 0.0,      # knob (0 = skip)
+        aggressive_gc: bool = False,        # keep False for speed
     ) -> Iterable[torch.Tensor]:
         """
-        Mirrors the original `generation_step` with single-item semantics for images.
+        Mirrors the original generation_step but:
+        - short-circuits blur/noise when cond_noise_scale == 0
+        - avoids extra device moves / lambda map
+        - does not call empty_cache() by default (expensive)
         """
-        def _move_to_cuda(x):
-            return [i.to(get_device()) for i in x]
+        dev = get_device()
 
+        # latents are already on dev from vae_encode(); keep them there
         cond_latents = list(cond_latents)
-        noises = [torch.randn_like(latent) for latent in cond_latents]
-        aug_noises = [torch.randn_like(latent) for latent in cond_latents]
 
+        # Create noises directly on the latent's device/dtype
+        noises     = [torch.randn_like(latent, device=latent.device) for latent in cond_latents]
+        aug_noises = [torch.randn_like(latent, device=latent.device) for latent in cond_latents]
+
+        # If you truly run single-process you could skip this; keeping for parity
         noises, aug_noises, cond_latents = sync_data((noises, aug_noises, cond_latents), 0)
-        noises, aug_noises, cond_latents = list(map(lambda x: _move_to_cuda(x), (noises, aug_noises, cond_latents)))
 
-        cond_noise_scale = 0.0
-
-        def _add_noise(x, aug_noise):
-            t = torch.tensor([1000.0], device=get_device()) * cond_noise_scale
-            shape = torch.tensor(x.shape[1:], device=get_device())[None]
-            t = runner.timestep_transform(t, shape)
-            x = runner.schedule.forward(x, aug_noise, t)
-            return x
+        # Fast path: no conditioning blur/noise
+        if cond_noise_scale == 0.0:
+            latent_blurs = cond_latents
+        else:
+            latent_blurs = []
+            for lb, an in zip(cond_latents, aug_noises):
+                t = torch.tensor([1000.0], device=dev).mul_(cond_noise_scale)
+                shape = torch.tensor(lb.shape[1:], device=dev)[None]
+                t = runner.timestep_transform(t, shape)
+                latent_blurs.append(runner.schedule.forward(lb, an, t))
 
         conditions = [
-            runner.get_condition(
-                noise,
-                task="sr",
-                latent_blur=_add_noise(latent_blur, aug_noise),
-            )
-            for noise, aug_noise, latent_blur in zip(noises, aug_noises, cond_latents)
+            runner.get_condition(noise, task="sr", latent_blur=lb)
+            for noise, lb in zip(noises, latent_blurs)
         ]
 
-        # Ensure embeds are on device
-        for i, emb in enumerate(text_embeds_dict["texts_pos"]):
-            text_embeds_dict["texts_pos"][i] = emb.to(get_device())
-        for i, emb in enumerate(text_embeds_dict["texts_neg"]):
-            text_embeds_dict["texts_neg"][i] = emb.to(get_device())
+        # Ensure embeds are on device (non_blocking)
+        text_embeds_dict = {
+            "texts_pos": [e.to(dev, non_blocking=True) for e in text_embeds_dict["texts_pos"]],
+            "texts_neg": [e.to(dev, non_blocking=True) for e in text_embeds_dict["texts_neg"]],
+        }
 
-        with torch.no_grad(), torch.autocast(self._device, torch.bfloat16, enabled=True):
+        with torch.no_grad(), torch.autocast(dev.type, torch.bfloat16, enabled=True):
             video_tensors = runner.inference(
                 noises=noises,
                 conditions=conditions,
@@ -547,17 +653,13 @@ class SeedVR2ImageUpscaler:
             )
 
         samples = [
-            (
-                rearrange(video[:, None], "c t h w -> t c h w")
-                if video.ndim == 3
-                else rearrange(video, "c t h w -> t c h w")
-            )
-            for video in video_tensors
+            (rearrange(v[:, None], "c t h w -> t c h w") if v.ndim == 3 else rearrange(v, "c t h w -> t c h w"))
+            for v in video_tensors
         ]
+
         del video_tensors
-        gc.collect()
-        torch.cuda.empty_cache()
         return samples
+
 
     # --------- I/O convenience ---------
 

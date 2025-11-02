@@ -29,6 +29,7 @@ def process_and_upload_image(image, content_type, id, i_image):
         filename = f"{id}-{i_image}." + ("png" if content_type == "image/png" else "jpg")
 
     json_data = {"blob": {"filename": filename, "byte_size": byte_size,
+                          "metadata": {"width": image.width, "height": image.height} if isinstance(image, Image.Image) else {},
                           "content_type": content_type, "checksum": md5}}
 
     # Send request to get the upload URL

@@ -95,6 +95,8 @@ def generation_step(runner, text_embeds_dict, cond_latents):
     cond_noise_scale = 0.0
 
     def _add_noise(x, aug_noise):
+        if cond_noise_scale == 0.:
+            return x
         t = (
             torch.tensor([1000.0], device=get_device())
             * cond_noise_scale

@@ -36,6 +36,8 @@ from ragdiffusion import (
     openai_gpt4o_get_regions,
 )
 
+from tensorize import load_or_tensorize_bundle
+
 from add_clut import add_clut
 from add_grain import add_grain
 from transfer_minio import download_minio
@@ -475,11 +477,16 @@ class InferPipeline(InpaintFaceMixin, VtonMixin, SamMixin):
             self.reset(gc_collect=True)
             try:
                 start_time = time.time()
-                self.pipe = DiffusionPipeline.from_pretrained(
+                # self.pipe = DiffusionPipeline.from_pretrained(
+                #     model_path,
+                #     torch_dtype=torch.bfloat16,
+                #     local_files_only=True,
+                # ).to(device)
+                self.pipe = load_or_tensorize_bundle(
                     model_path,
-                    torch_dtype=torch.bfloat16,
-                    local_files_only=True,
-                ).to(device)
+                    device,
+                    default_dtype=torch.bfloat16,
+                )
                 if hasattr(self.pipe, 'transformer') and isinstance(
                     self.pipe.transformer,
                     FluxTransformer2DModel,
@@ -1092,14 +1099,15 @@ class InferPipeline(InpaintFaceMixin, VtonMixin, SamMixin):
         image = images[0]
         upscale_factor = prompt.upscale_factor or 4
         w, h = image.width*upscale_factor, image.height*upscale_factor
-        max_size = 20e6
+        max_size = 12e6
         if w*h> max_size:
             k = (max_size / (w * h)) ** 0.5
             new_h = int(np.round(h * k))
             new_w = int(np.round(w * k))
             print(f"T#{prompt.tune_id} P#{prompt.id} upscale {w}x{h} is too large, resizing to {new_w}x{new_h}")
             w, h = new_w, new_h
-        offload = w*h > 12e6
+        # TODO: This doesn't seem to help doing higher than 15MP
+        offload = w*h > 15e6
         print(f"T#{prompt.tune_id} P#{prompt.id} upscale seedvr2 {w}x{h} offload={offload} {image.size} => {w}x{h}")
 
         upscaler_svr2 = SeedVR2ImageUpscaler(res_h=h, res_w=w)
@@ -1120,246 +1128,251 @@ class InferPipeline(InpaintFaceMixin, VtonMixin, SamMixin):
         return images_out
 
     def infer_prompt(self, prompt, tune: JsonObj, should_send_to_server=True):
-        if prompt.w and prompt.h:
-            prompt.w, prompt.h = int(np.round(prompt.w / 32.0) * 32), int(np.round(prompt.h / 32.0) * 32)
+        if prompt.stage == 1 and prompt.images:
+            print(f"T#{prompt.tune_id} P#{prompt.id} Stage 1 - loading provided images")
+            use_regional = False
+            images = load_images(prompt.images, None)
+        else:
+            if prompt.w and prompt.h:
+                prompt.w, prompt.h = int(np.round(prompt.w / 32.0) * 32), int(np.round(prompt.h / 32.0) * 32)
 
-        kwargs = {}
-        images = []
+            kwargs = {}
+            images = []
 
-        if prompt.mask_prompt and prompt.input_image and not prompt.mask_image:
-            prompt.mask_image = self.infer_mask(prompt)
+            if prompt.mask_prompt and prompt.input_image and not prompt.mask_image:
+                prompt.mask_image = self.infer_mask(prompt)
 
-        input_image_tensor, controlnet_hint, w, h, orig_input_image, input_image, mask_image = None, None, None, None, None, None, None
+            input_image_tensor, controlnet_hint, w, h, orig_input_image, input_image, mask_image = None, None, None, None, None, None, None
 
-        # Initialize Gemini pipeline if needed
-        # if self.branch == GEMINI_2_BRANCH:
-        #     self.pipe = GeminiPipeline()
-        #     if prompt.inpaint_faces:
-        #         print("GEMINI INPAINT")
-        #         self.warmup()
-        #         kwargs['strength'] = 0
-        #         prompt.cfg_scale = 2.5
+            # Initialize Gemini pipeline if needed
+            # if self.branch == GEMINI_2_BRANCH:
+            #     self.pipe = GeminiPipeline()
+            #     if prompt.inpaint_faces:
+            #         print("GEMINI INPAINT")
+            #         self.warmup()
+            #         kwargs['strength'] = 0
+            #         prompt.cfg_scale = 2.5
 
-        all_tunes_are_human_and_more_than_one = (
-                all(tune.name in HUMAN_CLASS_NAMES for tune in prompt.tunes)
-                and len(prompt.tunes) > 1
-        )
-        use_regional =  prompt.use_regional or all_tunes_are_human_and_more_than_one
+            all_tunes_are_human_and_more_than_one = (
+                    all(tune.name in HUMAN_CLASS_NAMES for tune in prompt.tunes)
+                    and len(prompt.tunes) > 1
+            )
+            use_regional =  prompt.use_regional or all_tunes_are_human_and_more_than_one
 
-        if self.branch in [GEMINI_2_BRANCH, PARTNER_BRANCH]:
-            pipe = self.init_pipe(self.branch)
-            # Load Flux for face inpainting
-            if prompt.inpaint_faces:
-                self.warmup()
-        elif use_regional:
-            self.init_rag_diffusion()
-            pipe = self.rag_diffusion_pipe
-            # kwargs are processed later
+            if self.branch in [GEMINI_2_BRANCH, PARTNER_BRANCH]:
+                pipe = self.init_pipe(self.branch)
+                # Load Flux for face inpainting
+                if prompt.inpaint_faces:
+                    self.warmup()
+            elif use_regional:
+                self.init_rag_diffusion()
+                pipe = self.rag_diffusion_pipe
+                # kwargs are processed later
 
-        # Note that the below condition is IMPORTANT and need to be modified cautiously
-        # See test_vton_img2img_strength0
-        elif any([_tune.model_type == 'faceid' and _tune.name in HUMAN_CLASS_NAMES for _tune in prompt.tunes]):
-            if input_image:
-                raise Exception("Cannot have both faceid and input_image")
-            if use_regional:
-                raise Exception("Can not use face ID with --use_regional")
-            for match_groups in re.findall(self.reference_pattern_re, prompt.text):
-                type, token, scale = match_groups
-                if type == "faceid":
-                    _tune = next(iter([t for t in prompt.tunes if t.token == token or str(t.id) == token]), None)
-                    if not _tune:
-                        raise Exception(f"Token {token} not found in prompt {prompt.id} tokens={prompt.tunes}")
-                    if not _tune.face_swap_images:
-                        raise Exception(f"Token {token} has no face_swap_images")
+            # Note that the below condition is IMPORTANT and need to be modified cautiously
+            # See test_vton_img2img_strength0
+            elif any([_tune.model_type == 'faceid' and _tune.name in HUMAN_CLASS_NAMES for _tune in prompt.tunes]):
+                if input_image:
+                    raise Exception("Cannot have both faceid and input_image")
+                if use_regional:
+                    raise Exception("Can not use face ID with --use_regional")
+                for match_groups in re.findall(self.reference_pattern_re, prompt.text):
+                    type, token, scale = match_groups
+                    if type == "faceid":
+                        _tune = next(iter([t for t in prompt.tunes if t.token == token or str(t.id) == token]), None)
+                        if not _tune:
+                            raise Exception(f"Token {token} not found in prompt {prompt.id} tokens={prompt.tunes}")
+                        if not _tune.face_swap_images:
+                            raise Exception(f"Token {token} has no face_swap_images")
 
-                    # Clean the match from the prompt
-                    # also needs to be cleaned for VTON
-                    prompt.text = prompt.text.replace(f"<{type}:{token}:{scale}>", "")
+                        # Clean the match from the prompt
+                        # also needs to be cleaned for VTON
+                        prompt.text = prompt.text.replace(f"<{type}:{token}:{scale}>", "")
 
-                    if _tune.name in VTON_CATEGORIES:
-                        pipe = self.pipe
-                        continue
-                    if _tune.name not in HUMAN_CLASS_NAMES:
-                        raise Exception(f"Token {token} is not a human")
-                    self.init_pulid()
-                    try:
-                        kwargs['id_image_embeddings'] = self.get_pulid_embedding(_tune)
-                        kwargs['id_image_scale'] = float(scale)
-                        pipe = self.pulid_pipe
-                    except RuntimeError:
-                        print(f"T#{prompt.tune_id} P#{prompt.id} Face not detected - skipping")
-                        pipe = self.pipe
-                        continue
-                    print(f"T#{prompt.tune_id} P#{prompt.id} faceid={token} scale={scale}")
-                    break
-        elif prompt.input_image:
-            if prompt.mask_image:
-                orig_mask_image = load_image(prompt.mask_image, "L")
-            else:
-                orig_mask_image = None
-            input_image_tensor, controlnet_hint, w, h, orig_input_image, input_image, mask_image = self.get_controlnet_hint(prompt, orig_mask_image)
-
-            # Do not set w,h for QWEN_EDIT since diffusers has some unique way of setting w,h to align with VAE
-            # https://github.com/huggingface/diffusers/issues/12216#issuecomment-3218294613
-            if self.branch != BRANCH_QWEN_EDIT:
-                prompt.w = prompt.w or w
-                prompt.h = prompt.h or h
-
-            if prompt.controlnet:
-                kwargs['control_image'] = controlnet_hint
-                if prompt.controlnet in RECOMMENDED_CONTROLNET_CONSTANTS:
-                    for key, value in RECOMMENDED_CONTROLNET_CONSTANTS[prompt.controlnet].items():
-                        if getattr(prompt, key) is None:
-                            print(f"T#{prompt.tune_id} P#{prompt.id} controlnet setting {key}={value}")
-                            setattr(prompt, key, value)
-                kwargs['controlnet_conditioning_scale'] = float(prompt.controlnet_conditioning_scale if prompt.controlnet_conditioning_scale != None else 0.8)
-
-                if prompt.control_guidance_start:
-                    kwargs['control_guidance_start'] = prompt.control_guidance_start
-                if prompt.control_guidance_end:
-                    kwargs['control_guidance_end'] = prompt.control_guidance_end
-
-                if mask_image:
-                    mask_image = ImageOps.invert(mask_image)
-                    self.init_controlnet_inpaint_txt2img(tune, prompt.controlnet)
-                    pipe = self.controlnet_inpaint_txt2img
-                    kwargs['mask_image'] = mask_image
-                    kwargs['image'] = input_image
-                    kwargs['strength'] = float(prompt.denoising_strength or 0.8)
+                        if _tune.name in VTON_CATEGORIES:
+                            pipe = self.pipe
+                            continue
+                        if _tune.name not in HUMAN_CLASS_NAMES:
+                            raise Exception(f"Token {token} is not a human")
+                        self.init_pulid()
+                        try:
+                            kwargs['id_image_embeddings'] = self.get_pulid_embedding(_tune)
+                            kwargs['id_image_scale'] = float(scale)
+                            pipe = self.pulid_pipe
+                        except RuntimeError:
+                            print(f"T#{prompt.tune_id} P#{prompt.id} Face not detected - skipping")
+                            pipe = self.pipe
+                            continue
+                        print(f"T#{prompt.tune_id} P#{prompt.id} faceid={token} scale={scale}")
+                        break
+            elif prompt.input_image:
+                if prompt.mask_image:
+                    orig_mask_image = load_image(prompt.mask_image, "L")
                 else:
-                    if prompt.controlnet_txt2img:
-                        self.init_controlnet_txt2img(tune, prompt.controlnet)
-                        pipe = self.controlnet_txt2img
-                    else:
-                        self.init_controlnet_img2img(tune, prompt.controlnet)
-                        pipe = self.controlnet_img2img
-                        kwargs['strength'] = float(prompt.denoising_strength or 0.8)
-                        kwargs['image'] = input_image
-            else:
-                kwargs['image'] = input_image
-                if mask_image:
-                    pipe = self.init_inpaint(prompt)
-                if mask_image:
-                    # Enable Fill automatically if no LoRAs
-                    if len(prompt.tunes) == 0:
-                        print(f"T#{prompt.tune_id} P#{prompt.id} No LoRAs, enabling fill")
-                        prompt.fill = True
-                    pipe = self.init_inpaint(prompt)
-                    if isinstance(pipe, FluxDifferentialImg2ImgPipeline):
-                        print("Inverting mask for differential diffusion")
+                    orig_mask_image = None
+                input_image_tensor, controlnet_hint, w, h, orig_input_image, input_image, mask_image = self.get_controlnet_hint(prompt, orig_mask_image)
+
+                # Do not set w,h for QWEN_EDIT since diffusers has some unique way of setting w,h to align with VAE
+                # https://github.com/huggingface/diffusers/issues/12216#issuecomment-3218294613
+                if self.branch != BRANCH_QWEN_EDIT:
+                    prompt.w = prompt.w or w
+                    prompt.h = prompt.h or h
+
+                if prompt.controlnet:
+                    kwargs['control_image'] = controlnet_hint
+                    if prompt.controlnet in RECOMMENDED_CONTROLNET_CONSTANTS:
+                        for key, value in RECOMMENDED_CONTROLNET_CONSTANTS[prompt.controlnet].items():
+                            if getattr(prompt, key) is None:
+                                print(f"T#{prompt.tune_id} P#{prompt.id} controlnet setting {key}={value}")
+                                setattr(prompt, key, value)
+                    kwargs['controlnet_conditioning_scale'] = float(prompt.controlnet_conditioning_scale if prompt.controlnet_conditioning_scale != None else 0.8)
+
+                    if prompt.control_guidance_start:
+                        kwargs['control_guidance_start'] = prompt.control_guidance_start
+                    if prompt.control_guidance_end:
+                        kwargs['control_guidance_end'] = prompt.control_guidance_end
+
+                    if mask_image:
                         mask_image = ImageOps.invert(mask_image)
-                    kwargs['mask_image'] = mask_image
+                        self.init_controlnet_inpaint_txt2img(tune, prompt.controlnet)
+                        pipe = self.controlnet_inpaint_txt2img
+                        kwargs['mask_image'] = mask_image
+                        kwargs['image'] = input_image
+                        kwargs['strength'] = float(prompt.denoising_strength or 0.8)
+                    else:
+                        if prompt.controlnet_txt2img:
+                            self.init_controlnet_txt2img(tune, prompt.controlnet)
+                            pipe = self.controlnet_txt2img
+                        else:
+                            self.init_controlnet_img2img(tune, prompt.controlnet)
+                            pipe = self.controlnet_img2img
+                            kwargs['strength'] = float(prompt.denoising_strength or 0.8)
+                            kwargs['image'] = input_image
                 else:
-                    pipe = self.init_img2img()
-                if isinstance(pipe, FluxFillPipeline):
-                    if not prompt.cfg_scale or float(prompt.cfg_scale) < 7:
-                        prompt.cfg_scale = 30
-                else:
-                    kwargs['strength'] = float(prompt.denoising_strength if prompt.denoising_strength != None else 0.8)
-        else:
-            pipe = self.pipe
+                    kwargs['image'] = input_image
+                    if mask_image:
+                        pipe = self.init_inpaint(prompt)
+                    if mask_image:
+                        # Enable Fill automatically if no LoRAs
+                        if len(prompt.tunes) == 0:
+                            print(f"T#{prompt.tune_id} P#{prompt.id} No LoRAs, enabling fill")
+                            prompt.fill = True
+                        pipe = self.init_inpaint(prompt)
+                        if isinstance(pipe, FluxDifferentialImg2ImgPipeline):
+                            print("Inverting mask for differential diffusion")
+                            mask_image = ImageOps.invert(mask_image)
+                        kwargs['mask_image'] = mask_image
+                    else:
+                        pipe = self.init_img2img()
+                    if isinstance(pipe, FluxFillPipeline):
+                        if not prompt.cfg_scale or float(prompt.cfg_scale) < 7:
+                            prompt.cfg_scale = 30
+                    else:
+                        kwargs['strength'] = float(prompt.denoising_strength if prompt.denoising_strength != None else 0.8)
+            else:
+                pipe = self.pipe
 
-        # For tests
-        self.last_pipe = pipe
-        num_images = int(os.environ.get('NUM_IMAGES', prompt.num_images) or 1)
+            # For tests
+            self.last_pipe = pipe
+            num_images = int(os.environ.get('NUM_IMAGES', prompt.num_images) or 1)
 
-        if use_regional:
-            self.sort_tunes_according_to_prompt(prompt)
-        if self.branch in [GEMINI_2_BRANCH, PARTNER_BRANCH]:
-            pass
-        else:
-            joint_attention_kwargs = self.load_references(prompt, pipe)
-        prompt.text = prompt.text.strip(" ,").strip(" ").strip('"')
+            if use_regional:
+                self.sort_tunes_according_to_prompt(prompt)
+            if self.branch in [GEMINI_2_BRANCH, PARTNER_BRANCH]:
+                pass
+            else:
+                joint_attention_kwargs = self.load_references(prompt, pipe)
+            prompt.text = prompt.text.strip(" ,").strip(" ").strip('"')
 
-        # load_references mutates prompt.text, so this needs to be down here.
-        if use_regional:
-            kwargs = {**kwargs, **self.get_rag_kwargs(prompt)}
-            prompt.inpaint_faces = False
-            prompt.text = kwargs['prompt_main']
-            del kwargs['prompt_main']
+            # load_references mutates prompt.text, so this needs to be down here.
+            if use_regional:
+                kwargs = {**kwargs, **self.get_rag_kwargs(prompt)}
+                prompt.inpaint_faces = False
+                prompt.text = kwargs['prompt_main']
+                del kwargs['prompt_main']
 
-        # Encode text embeds
-        if tune.branch == BRANCH_QWEN_EDIT:
-            kwargs['prompt'] = prompt.text
-            del kwargs['strength']
-        elif tune.branch == BRANCH_QWEN:
-            (
-                prompt_embeds,
-                prompt_embeds_mask,
-            ) = pipe.encode_prompt(
-                prompt=prompt.text,
-                max_sequence_length=prompt.max_sequence_length or 512,
-                device=device,
-            )
-            kwargs['prompt_embeds'] = prompt_embeds
-            kwargs['prompt_embeds_mask'] = prompt_embeds_mask
-
-            (
-                neg_prompt_embeds,
-                neg_prompt_embeds_mask,
-            ) = pipe.encode_prompt(
-                prompt=prompt.negative_prompt or QWEN_NEGATIVE_PROMPT,
-                max_sequence_length=prompt.max_sequence_length or 512,
-                device=device,
-            )
-            kwargs['negative_prompt_embeds'] = neg_prompt_embeds
-            kwargs['negative_prompt_embeds_mask'] = neg_prompt_embeds_mask
-        elif tune.branch in [FLUX1_BRANCH, GEMINI_2_BRANCH, PARTNER_BRANCH]:
-            if tune.branch in [GEMINI_2_BRANCH, PARTNER_BRANCH]:
-                kwargs['prompt'] = prompt
-            if tune.branch == FLUX1_BRANCH or prompt.inpaint_faces:
+            # Encode text embeds
+            if tune.branch == BRANCH_QWEN_EDIT:
+                kwargs['prompt'] = prompt.text
+                del kwargs['strength']
+            elif tune.branch == BRANCH_QWEN:
                 (
                     prompt_embeds,
-                    pooled_prompt_embeds,
-                    _, # text_ids
-                ) = self.pipe.encode_prompt(
+                    prompt_embeds_mask,
+                ) = pipe.encode_prompt(
                     prompt=prompt.text,
-                    prompt_2=prompt.text,
                     max_sequence_length=prompt.max_sequence_length or 512,
                     device=device,
                 )
                 kwargs['prompt_embeds'] = prompt_embeds
-                kwargs['pooled_prompt_embeds'] = pooled_prompt_embeds
+                kwargs['prompt_embeds_mask'] = prompt_embeds_mask
 
-        # print(f"T#{prompt.tune_id} P#{prompt.id} pipe={pipe.__class__.__name__} {prompt.text=} loras={self.current_lora_weights_map[get_pipe_key_for_lora(pipe)]}")
-        num_images_steps = num_images if tune.branch in [GEMINI_2_BRANCH, PARTNER_BRANCH] else 1
-        for i_image in range(0, num_images, num_images_steps):
-            if 'strength' in kwargs and kwargs['strength'] == 0:
-                print(f"T#{prompt.tune_id} P#{prompt.id} Skipping image {i_image} because strength=0. Probably just VTON or outpaint only?")
-                if 'image' in kwargs is not None:
-                    images.append(kwargs['image'])
-                continue
+                (
+                    neg_prompt_embeds,
+                    neg_prompt_embeds_mask,
+                ) = pipe.encode_prompt(
+                    prompt=prompt.negative_prompt or QWEN_NEGATIVE_PROMPT,
+                    max_sequence_length=prompt.max_sequence_length or 512,
+                    device=device,
+                )
+                kwargs['negative_prompt_embeds'] = neg_prompt_embeds
+                kwargs['negative_prompt_embeds_mask'] = neg_prompt_embeds_mask
+            elif tune.branch in [FLUX1_BRANCH, GEMINI_2_BRANCH, PARTNER_BRANCH]:
+                if tune.branch in [GEMINI_2_BRANCH, PARTNER_BRANCH]:
+                    kwargs['prompt'] = prompt
+                if tune.branch == FLUX1_BRANCH or prompt.inpaint_faces:
+                    (
+                        prompt_embeds,
+                        pooled_prompt_embeds,
+                        _, # text_ids
+                    ) = self.pipe.encode_prompt(
+                        prompt=prompt.text,
+                        prompt_2=prompt.text,
+                        max_sequence_length=prompt.max_sequence_length or 512,
+                        device=device,
+                    )
+                    kwargs['prompt_embeds'] = prompt_embeds
+                    kwargs['pooled_prompt_embeds'] = pooled_prompt_embeds
 
-            if tune.branch in [GEMINI_2_BRANCH, PARTNER_BRANCH]:
-                pass
-            elif tune.branch == FLUX1_BRANCH:
-                kwargs['guidance_scale'] = float(prompt.cfg_scale if prompt.cfg_scale is not None else 3.5)
-                kwargs['joint_attention_kwargs'] = joint_attention_kwargs
-                if hasattr(pipe.transformer, 'set_number_of_steps'):
-                    pipe.transformer.set_number_of_steps(prompt.steps)
-                if hasattr(pipe.transformer, 'clear_cache'):
-                    pipe.transformer.clear_cache()
-            else:
-                kwargs['true_cfg_scale'] = float(prompt.cfg_scale or 4.0)
-                # https://huggingface.co/spaces/Qwen/Qwen-Image/blob/main/app.py#L215
-                # guidance_scale = 1.0 # distilled
-            out_images = pipe(
-                height=prompt.h,
-                width=prompt.w,
-                num_inference_steps=prompt.steps,
-                generator=torch.Generator(device="cuda").manual_seed((prompt.seed or 42) + i_image),
-                **kwargs,
-            ).images
-            if use_regional:
-                pipe.reset()
-            if is_terminated():
-                raise TerminateException("terminated")
-            images = images + out_images
+            # print(f"T#{prompt.tune_id} P#{prompt.id} pipe={pipe.__class__.__name__} {prompt.text=} loras={self.current_lora_weights_map[get_pipe_key_for_lora(pipe)]}")
+            num_images_steps = num_images if tune.branch in [GEMINI_2_BRANCH, PARTNER_BRANCH] else 1
+            for i_image in range(0, num_images, num_images_steps):
+                if 'strength' in kwargs and kwargs['strength'] == 0:
+                    print(f"T#{prompt.tune_id} P#{prompt.id} Skipping image {i_image} because strength=0. Probably just VTON or outpaint only?")
+                    if 'image' in kwargs is not None:
+                        images.append(kwargs['image'])
+                    continue
 
-        # Sanity check - if images are black - raise exception
-        for i_image, image in enumerate(images):
-            if np.mean(np.array(image)) < 2:
-                raise Exception(f"T#{prompt.tune_id} P#{prompt.id} Image {i_image} is black")
+                if tune.branch in [GEMINI_2_BRANCH, PARTNER_BRANCH]:
+                    pass
+                elif tune.branch == FLUX1_BRANCH:
+                    kwargs['guidance_scale'] = float(prompt.cfg_scale if prompt.cfg_scale is not None else 3.5)
+                    kwargs['joint_attention_kwargs'] = joint_attention_kwargs
+                    if hasattr(pipe.transformer, 'set_number_of_steps'):
+                        pipe.transformer.set_number_of_steps(prompt.steps)
+                    if hasattr(pipe.transformer, 'clear_cache'):
+                        pipe.transformer.clear_cache()
+                else:
+                    kwargs['true_cfg_scale'] = float(prompt.cfg_scale or 4.0)
+                    # https://huggingface.co/spaces/Qwen/Qwen-Image/blob/main/app.py#L215
+                    # guidance_scale = 1.0 # distilled
+                out_images = pipe(
+                    height=prompt.h,
+                    width=prompt.w,
+                    num_inference_steps=prompt.steps,
+                    generator=torch.Generator(device="cuda").manual_seed((prompt.seed or 42) + i_image),
+                    **kwargs,
+                ).images
+                if use_regional:
+                    pipe.reset()
+                if is_terminated():
+                    raise TerminateException("terminated")
+                images = images + out_images
+
+            # Sanity check - if images are black - raise exception
+            for i_image, image in enumerate(images):
+                if np.mean(np.array(image)) < 2:
+                    raise Exception(f"T#{prompt.tune_id} P#{prompt.id} Image {i_image} is black")
 
         if prompt.outpaint:
             images = self.outpaint(images, prompt, kwargs)
@@ -1369,26 +1382,8 @@ class InferPipeline(InpaintFaceMixin, VtonMixin, SamMixin):
             images = self.vton(images, prompt)
 
         if prompt.super_resolution and prompt.upscale_v4:
-            self.reset_controlnet()
-            self.reset_sam()
-            self.reset_inpaint_faces()
-            ctx = _stash_ctx_to_cpu(kwargs)
-            with offload_to_cpu(
-                self.last_pipe, self.pipe, self.img2img, self.inpaint,
-                self.controlnet_txt2img, self.controlnet_img2img,
-                self.controlnet_inpaint_txt2img,
-                self.rag_diffusion_pipe, self.pulid_pipe,
-            ):
-                # try:
-                #     self.pipe.to("cpu")
-                # except Exception:
-                #     pass
-                gc.collect()
-                torch.cuda.empty_cache()
-                if (prompt.super_resolution or os.environ.get('SUPER_RESOLUTION')):
-                    images = self.upscale_seedvr2(images, prompt)
-                # self.pipe.to("cuda")
-                _restore_ctx_to_cuda(kwargs, ctx)
+            self.reset()
+            images = self.upscale_seedvr2(images, prompt)
         elif prompt.super_resolution:
             images = self.upscale(images, prompt)
 
@@ -1399,7 +1394,7 @@ class InferPipeline(InpaintFaceMixin, VtonMixin, SamMixin):
                     image.save(f"{MODELS_DIR}/{prompt.id}-{i_image}-before-hires.jpg")
             images = self.apply_hires_fix(images, prompt, kwargs)
 
-        if (prompt.inpaint_faces or os.environ.get('INPAINT_FACES')) and not os.environ.get('DISABLE_INPAINT_FACES'):
+        if (prompt.inpaint_faces or os.environ.get('INPAINT_FACES')) and not os.environ.get('DISABLE_INPAINT_FACES') and (prompt.stage!=1):
             images = self.inpaint_faces(images, prompt, kwargs)
 
         if prompt.color_grading and prompt.color_grading != 'null' and not os.environ.get('DISABLE_COLOR_GRADING'):
