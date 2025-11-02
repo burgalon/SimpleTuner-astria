@@ -98,48 +98,6 @@ FLUX1_BRANCH = 'flux1'
 PARTNER_BRANCH = 'partner-1'
 
 
-def _module_has_cuda_params(m):
-    try:
-        return any(p.is_cuda for p in m.parameters())
-    except Exception:
-        return False
-
-
-@contextmanager
-def offload_to_cpu(*mods):
-    """
-    Move each module/pipeline to CPU, then restore afterwards.
-    We don't try to detect CUDA params — diffusers pipelines implement .to() even if they aren't nn.Module.
-    """
-    moved = []
-    for m in mods:
-        if m is None:
-            continue
-        try:
-            m.to("cpu")   # always attempt
-            moved.append(m)
-        except Exception:
-            # Best-effort: try common nested attributes when .to() isn't on the object itself
-            for attr in ("model", "clip_vision_model"):
-                try:
-                    sub = getattr(m, attr, None)
-                    if sub is not None:
-                        sub.to("cpu")
-                        moved.append(sub)
-                except Exception:
-                    pass
-    torch.cuda.synchronize()
-    torch.cuda.empty_cache()
-    try:
-        yield
-    finally:
-        for m in moved:
-            try:
-                m.to("cuda")
-            except Exception:
-                pass
-
-
 def _stash_ctx_to_cpu(kwargs):
     ctx = {}
     for k in [
@@ -1106,12 +1064,19 @@ class InferPipeline(InpaintFaceMixin, VtonMixin, SamMixin):
             new_w = int(np.round(w * k))
             print(f"T#{prompt.tune_id} P#{prompt.id} upscale {w}x{h} is too large, resizing to {new_w}x{new_h}")
             w, h = new_w, new_h
+
         # TODO: This doesn't seem to help doing higher than 15MP
         offload = w*h > 15e6
         print(f"T#{prompt.tune_id} P#{prompt.id} upscale seedvr2 {w}x{h} offload={offload} {image.size} => {w}x{h}")
 
         upscaler_svr2 = SeedVR2ImageUpscaler(res_h=h, res_w=w)
-        upscaler_svr2.load()
+        upscaler_svr2.load(
+            vae_decode_conv_max_mem=1,
+            vae_decode_norm_max_mem=1,
+            causal_slicing=True,
+            causal_slicing_memory_device='cpu',
+            causal_slicing_split_size=8,
+        )
 
         images_out = []
         start_time = time.time()
@@ -1131,6 +1096,7 @@ class InferPipeline(InpaintFaceMixin, VtonMixin, SamMixin):
         if prompt.stage == 1 and prompt.images:
             print(f"T#{prompt.tune_id} P#{prompt.id} Stage 1 - loading provided images")
             use_regional = False
+            pipe = None
             images = load_images(prompt.images, None)
         else:
             if prompt.w and prompt.h:
@@ -1382,8 +1348,16 @@ class InferPipeline(InpaintFaceMixin, VtonMixin, SamMixin):
             images = self.vton(images, prompt)
 
         if prompt.super_resolution and prompt.upscale_v4:
+            former_model_path = self.model_path
             self.reset()
+            del pipe
+            del self.last_pipe
             images = self.upscale_seedvr2(images, prompt)
+            if prompt.inpaint_faces and (prompt.stage!=1 or not prompt.images):
+                self.init_pipe(former_model_path)
+                prompt.text = prompt._prompt_raw
+                self.load_references(prompt, self.pipe)
+
         elif prompt.super_resolution:
             images = self.upscale(images, prompt)
 
