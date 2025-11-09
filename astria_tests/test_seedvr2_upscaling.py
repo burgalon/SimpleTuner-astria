@@ -80,36 +80,39 @@ def test_txt2img_lora_upscale_seedvr2():
         **copy.copy(BASE_PROMPT.__dict__),
         super_resolution=True,
         inpaint_faces=True,
+        upscale_v4=True,
+        w=1072,
+        h=1344,
     )
 
-    prompt.text=f"<lora:{FLUX_LORA.id}:1> {FLUX_LORA.train_token} woman holding flowers"
+    prompt.text=f"<lora:{FLUX_LORA.id}:1> {FLUX_LORA.train_token} woman holding flowers --upscale_v4"
     prompt.tunes=[FLUX_LORA]
     run_images(prompt, 'test_txt2img_lora_upscale_seedvr2-before-upscale')
 
-    prompt = JsonObj(
-        **copy.copy(BASE_PROMPT.__dict__),
-        w=896,
-        h=1152,
-        super_resolution=True,
-    )
-    prompt.text=f"<lora:{FLUX_LORA.id}:1> {FLUX_LORA.train_token} woman holding flowers --upscale_v4"
-    prompt.tunes=[FLUX_LORA]
-    # import debugpy
-    # debugpy.listen(('0.0.0.0', 11566))
-    # debugpy.wait_for_client()
-    run_images(prompt, 'test_txt2img_lora_upscale_seedvr2-upscaled')
-
-
-    # Check post super-resolution everything is okay
-    prompt = JsonObj(
-        **copy.copy(BASE_PROMPT.__dict__),
-        super_resolution=True,
-        inpaint_faces=True,
-    )
-
-    prompt.text=f"<lora:{FLUX_LORA.id}:1> {FLUX_LORA.train_token} woman holding flowers"
-    prompt.tunes=[FLUX_LORA]
-    run_images(prompt, 'test_txt2img_lora_upscale_seedvr2-after-upscale')
+    # prompt = JsonObj(
+    #     **copy.copy(BASE_PROMPT.__dict__),
+    #     w=896,
+    #     h=1152,
+    #     super_resolution=True,
+    # )
+    # prompt.text=f"<lora:{FLUX_LORA.id}:1> {FLUX_LORA.train_token} woman holding flowers --upscale_v4"
+    # prompt.tunes=[FLUX_LORA]
+    # # import debugpy
+    # # debugpy.listen(('0.0.0.0', 11566))
+    # # debugpy.wait_for_client()
+    # run_images(prompt, 'test_txt2img_lora_upscale_seedvr2-upscaled')
+    #
+    #
+    # # Check post super-resolution everything is okay
+    # prompt = JsonObj(
+    #     **copy.copy(BASE_PROMPT.__dict__),
+    #     super_resolution=True,
+    #     inpaint_faces=True,
+    # )
+    #
+    # prompt.text=f"<lora:{FLUX_LORA.id}:1> {FLUX_LORA.train_token} woman holding flowers"
+    # prompt.tunes=[FLUX_LORA]
+    # run_images(prompt, 'test_txt2img_lora_upscale_seedvr2-after-upscale')
 
 
 def test_upscale_stage_1():
@@ -123,37 +126,37 @@ def test_upscale_stage_1():
     )
     run_images(prompt)
 
-def test_txt2img_lora_upscale_seedvr2():
-    prompt = JsonObj(
-        **copy.copy(BASE_PROMPT.__dict__),
-        super_resolution=True,
-        inpaint_faces=True,
-    )
-
-    prompt.text=f"<lora:{FLUX_LORA.id}:1> {FLUX_LORA.train_token} woman holding flowers"
-    prompt.tunes=[FLUX_LORA]
-    run_images(prompt, 'test_txt2img_lora_upscale_seedvr2-before-upscale')
-
-    prompt = JsonObj(
-        **copy.copy(BASE_PROMPT.__dict__),
-        w=896,
-        h=1152,
-        super_resolution=True,
-        upscale_v4=True,
-    )
-    prompt.text=f"<lora:{FLUX_LORA.id}:1> {FLUX_LORA.train_token} woman holding flowers --upscale_v4"
-    prompt.tunes=[FLUX_LORA]
-    run_images(prompt, 'test_txt2img_lora_upscale_seedvr2-upscaled')
-
-
-    # Check post super-resolution everything is okay
-    prompt = JsonObj(
-        **copy.copy(BASE_PROMPT.__dict__),
-        super_resolution=True,
-        inpaint_faces=True,
-        upscale_v4=True,
-    )
-
-    prompt.text=f"<lora:{FLUX_LORA.id}:1> {FLUX_LORA.train_token} woman holding flowers --upscale_v4"
-    prompt.tunes=[FLUX_LORA]
-    run_images(prompt, 'test_txt2img_lora_upscale_seedvr2-after-upscale')
+# def test_txt2img_lora_upscale_seedvr2():
+#     prompt = JsonObj(
+#         **copy.copy(BASE_PROMPT.__dict__),
+#         super_resolution=True,
+#         inpaint_faces=True,
+#     )
+#
+#     prompt.text=f"<lora:{FLUX_LORA.id}:1> {FLUX_LORA.train_token} woman holding flowers"
+#     prompt.tunes=[FLUX_LORA]
+#     run_images(prompt, 'test_txt2img_lora_upscale_seedvr2-before-upscale')
+#
+#     prompt = JsonObj(
+#         **copy.copy(BASE_PROMPT.__dict__),
+#         w=896,
+#         h=1152,
+#         super_resolution=True,
+#         upscale_v4=True,
+#     )
+#     prompt.text=f"<lora:{FLUX_LORA.id}:1> {FLUX_LORA.train_token} woman holding flowers --upscale_v4"
+#     prompt.tunes=[FLUX_LORA]
+#     run_images(prompt, 'test_txt2img_lora_upscale_seedvr2-upscaled')
+#
+#
+#     # Check post super-resolution everything is okay
+#     prompt = JsonObj(
+#         **copy.copy(BASE_PROMPT.__dict__),
+#         super_resolution=True,
+#         inpaint_faces=True,
+#         upscale_v4=True,
+#     )
+#
+#     prompt.text=f"<lora:{FLUX_LORA.id}:1> {FLUX_LORA.train_token} woman holding flowers --upscale_v4"
+#     prompt.tunes=[FLUX_LORA]
+#     run_images(prompt, 'test_txt2img_lora_upscale_seedvr2-after-upscale')

@@ -155,7 +155,7 @@ def parse_args(prompt: JsonObj):
     parser.add_argument("--loras", type=int, nargs="+", help="LoRa model id from Civit")
     parser.add_argument("--lora_weights", type=float, nargs="+")
     parser.add_argument("--resolution_factor", type=float, default=1, help="Resolution factor to use for generate")
-    parser.add_argument("--upscale_v4", action='store_true', default=False, help="Use seedvr2 to upscale")
+    parser.add_argument("--upscale_v4", action='store_true', default=prompt.upscale_v4, help="Use seedvr2 to upscale")
     parser.add_argument("--upscale_factor", type=int, default=None, help="Upscale factor to use for generate")
     parser.add_argument("--tiled_upscale", action='store_true', help="Tiled upscaling", default=prompt.tiled_upscale or os.environ.get('TILED_UPSCALE'))
     parser.add_argument("--only_upscale", action='store_true', help="Only upscale without txt2img or img2img", default=prompt.only_upscale or os.environ.get('ONLY_UPSCALE'))
@@ -1057,17 +1057,16 @@ class InferPipeline(InpaintFaceMixin, VtonMixin, SamMixin):
         image = images[0]
         upscale_factor = prompt.upscale_factor or 4
         w, h = image.width*upscale_factor, image.height*upscale_factor
-        max_size = 12e6
+        max_size = 16e6
         if w*h> max_size:
             k = (max_size / (w * h)) ** 0.5
             new_h = int(np.round(h * k))
             new_w = int(np.round(w * k))
-            print(f"T#{prompt.tune_id} P#{prompt.id} upscale {w}x{h} is too large, resizing to {new_w}x{new_h}")
             w, h = new_w, new_h
 
         # TODO: This doesn't seem to help doing higher than 15MP
         offload = w*h > 15e6
-        print(f"T#{prompt.tune_id} P#{prompt.id} upscale seedvr2 {w}x{h} offload={offload} {image.size} => {w}x{h}")
+        print(f"T#{prompt.tune_id} P#{prompt.id} upscale seedvr2 {w}x{h} offload={offload} {image.size} => {w}x{h} - size {w*h/1000/1000:.0f}MP")
 
         upscaler_svr2 = SeedVR2ImageUpscaler(res_h=h, res_w=w)
         upscaler_svr2.load(
@@ -1098,6 +1097,23 @@ class InferPipeline(InpaintFaceMixin, VtonMixin, SamMixin):
             use_regional = False
             pipe = None
             images = load_images(prompt.images, None)
+            if prompt.inpaint_faces:
+                self.warmup()
+                self.load_references(prompt, self.pipe)
+                (
+                    prompt_embeds,
+                    pooled_prompt_embeds,
+                    _, # text_ids
+                ) = self.pipe.encode_prompt(
+                    prompt=prompt.text,
+                    prompt_2=prompt.text,
+                    max_sequence_length=prompt.max_sequence_length or 512,
+                    device=device,
+                )
+                kwargs = {}
+                kwargs['prompt_embeds'] = prompt_embeds
+                kwargs['pooled_prompt_embeds'] = pooled_prompt_embeds
+
         else:
             if prompt.w and prompt.h:
                 prompt.w, prompt.h = int(np.round(prompt.w / 32.0) * 32), int(np.round(prompt.h / 32.0) * 32)
@@ -1349,9 +1365,18 @@ class InferPipeline(InpaintFaceMixin, VtonMixin, SamMixin):
 
         if prompt.super_resolution and prompt.upscale_v4:
             former_model_path = self.model_path
-            self.reset()
             del pipe
             del self.last_pipe
+            self.reset()
+
+            # gc.collect()
+            # torch.cuda.empty_cache()
+            # from pprint import pprint
+            # # print available GPU RAM in GB
+            # print(f"T#{prompt.tune_id} P#{prompt.id} Available GPU RAM: {torch.cuda.mem_get_info(torch.cuda.current_device())[0] / 1024 / 1024 / 1024:.2f} GB")
+            # pprint(vars(self))
+            # raise ValueError('test')
+
             images = self.upscale_seedvr2(images, prompt)
             if prompt.inpaint_faces and (prompt.stage!=1 or not prompt.images):
                 self.init_pipe(former_model_path)
@@ -1368,7 +1393,7 @@ class InferPipeline(InpaintFaceMixin, VtonMixin, SamMixin):
                     image.save(f"{MODELS_DIR}/{prompt.id}-{i_image}-before-hires.jpg")
             images = self.apply_hires_fix(images, prompt, kwargs)
 
-        if (prompt.inpaint_faces or os.environ.get('INPAINT_FACES')) and not os.environ.get('DISABLE_INPAINT_FACES') and (prompt.stage!=1):
+        if (prompt.inpaint_faces or os.environ.get('INPAINT_FACES')) and not os.environ.get('DISABLE_INPAINT_FACES'):
             images = self.inpaint_faces(images, prompt, kwargs)
 
         if prompt.color_grading and prompt.color_grading != 'null' and not os.environ.get('DISABLE_COLOR_GRADING'):

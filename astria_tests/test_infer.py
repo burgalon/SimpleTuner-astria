@@ -395,7 +395,7 @@ def test_leak_load_references():
     prompt.tunes=[FLUX_LORA]
     run_images(prompt, name() + '-1-lora')
     assert isinstance(pipe.last_pipe, FluxFillPipeline)
-    assert len(pipe.current_lora_weights_map['pipe']['names']) == 0
+    assert len(pipe.current_lora_weights_map['fill']['names']) == 1
     assert pipe.current_lora_weights_map['fill']['names'] ==  [FLUX_LORA.token]
 
 

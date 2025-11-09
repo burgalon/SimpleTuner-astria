@@ -48,9 +48,10 @@ def test_inpaint_faces_gemini():
     # prompt.text=f"beautiful realistic woman face <lora:{FLUX_LORA_SAMSUNG.id}:1> {FLUX_LORA_SAMSUNG.train_token}"
     prompt.tunes=[FLUX_LORA] # , FLUX_LORA_SAMSUNG]
     images = [
-        load_image('astria_tests/fixtures/gemini-upscaled.jpeg'),
+        load_image('https://mp.astria.ai/jto94lmqaf3963958a09h99hwg5v'),
     ]
     pipe.init_pipe(MODELS_DIR + f"/{TUNE_FLUX.id}-{TUNE_FLUX.branch}")
+    pipe.load_references(prompt, pipe.pipe)
     # pipe.load_references(prompt, pipe.pipe)
     images = pipe.inpaint_faces(images, prompt, get_kwargs(prompt.text))
     # run_images(prompt)

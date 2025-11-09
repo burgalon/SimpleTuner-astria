@@ -443,7 +443,7 @@ class InpaintFaceMixin:
 
         # if we need to resize more than X2 - which is the ESRGAN outscale factor, then face are too big
         # we should skip inpainting because it will be too blurry
-        if k<0.5:
+        if k<0.2:
             print(f"T#{prompt.tune_id} P#{prompt.id} skipping inpainting, face too big k={k:.2f}")
             return image
 
