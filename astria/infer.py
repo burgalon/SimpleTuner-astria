@@ -1050,45 +1050,99 @@ class InferPipeline(InpaintFaceMixin, VtonMixin, SamMixin):
         return images
 
     def upscale_seedvr2(self, images: list[Image.Image], prompt) -> list[Image.Image]:
+        """
+        Staged SeedVR2 upscaling (low peak memory):
+        1) VAE encode originals -> conditioning latents    (load VAE, then unload)
+        2) DiT SR -> VAE *latents* (no decode)             (load DiT, then unload)
+        3) VAE decode latents -> PIL w/ color match        (load VAE, then unload)
+        """
         gc.collect()
         torch.cuda.empty_cache()
 
-        # 2160*3840=8MP
-        image = images[0]
+        image0 = images[0]
         upscale_factor = prompt.upscale_factor or 4
-        w, h = image.width*upscale_factor, image.height*upscale_factor
-        max_size = 16e6
-        if w*h> max_size:
+        w, h = image0.width * upscale_factor, image0.height * upscale_factor
+
+        # Cap total pixels to keep memory sane
+        max_size = 25e6
+        if w * h > max_size:
             k = (max_size / (w * h)) ** 0.5
-            new_h = int(np.round(h * k))
-            new_w = int(np.round(w * k))
-            w, h = new_w, new_h
+            h = int(np.round(h * k))
+            w = int(np.round(w * k))
 
-        # TODO: This doesn't seem to help doing higher than 15MP
-        offload = w*h > 15e6
-        print(f"T#{prompt.tune_id} P#{prompt.id} upscale seedvr2 {w}x{h} offload={offload} {image.size} => {w}x{h} - size {w*h/1000/1000:.0f}MP")
+        vae_decode_conv_max_mem = 4
+        vae_decode_norm_max_mem = 2
 
-        upscaler_svr2 = SeedVR2ImageUpscaler(res_h=h, res_w=w)
-        upscaler_svr2.load(
-            vae_decode_conv_max_mem=1,
-            vae_decode_norm_max_mem=1,
-            causal_slicing=True,
-            causal_slicing_memory_device='cpu',
-            causal_slicing_split_size=8,
-        )
+        # Not sure if slicing is needed anymore.
+        slicing = False
+        # slicing = w * h > 15e6
+        # if slicing:
+        #     vae_decode_conv_max_mem = 1
+        #     vae_decode_norm_max_mem = 1
+        tiling = w * h > 15e6
+        print(f"T#{prompt.tune_id} P#{prompt.id} upscale seedvr2 {w}x{h} slicing={slicing} tiling={tiling} "
+            f"{image0.size} => {w}x{h} - size {w*h/1_000_000:.0f}MP")
 
-        images_out = []
         start_time = time.time()
-        for i_image, image in enumerate(images):
+        up = SeedVR2ImageUpscaler(res_h=h, res_w=w)
+
+        # -------- VAE encode (conditioning latents) --------
+        cond_latents: list[torch.Tensor] = []
+        up.load_vae(
+            vae_decode_conv_max_mem=vae_decode_conv_max_mem,
+            vae_decode_norm_max_mem=vae_decode_norm_max_mem,
+            causal_slicing=slicing,
+            causal_slicing_memory_device='cpu',
+            causal_slicing_split_size=4,
+            tiling=tiling,
+        )
+        for i_image, img in enumerate(images):
             if os.environ.get('DEBUG'):
-                image.save(f"{MODELS_DIR}/{prompt.id}-{i_image}-before-upscale.jpg")
-            images_out.append(
-                upscaler_svr2.upscale(image, seed=0, sample_steps=1, cfg_scale=1.0, model_offloading=offload, dit_offload=offload)
+                img.save(f"{MODELS_DIR}/{prompt.id}-{i_image}-before-upscale.jpg")
+            cond = up.encode_image_to_cond_latent(img, model_offloading=False)
+            cond_latents.append(cond)
+        up.unload_vae()
+        gc.collect(); torch.cuda.empty_cache()
+
+        # -------- DiT SR -> VAE latents (no decode) --------
+        sr_latents: list[torch.Tensor] = []
+        up.load_transformer()
+        for cond in cond_latents:
+            z = up.upscale_to_vae_latent(
+                cond,
+                seed=0,
+                sample_steps=1,
+                cfg_scale=1.0,
+                cfg_rescale=0.0,
+                dit_offload=False,
             )
-        print(f"T#{prompt.tune_id} P#{prompt.id} upscale seedvr2 {len(images)} {time.time() - start_time:.2f} seconds")
-        del upscaler_svr2
+            sr_latents.append(z)
+        up.unload_transformer()
+        del cond_latents
+        gc.collect(); torch.cuda.empty_cache()
+
+        # -------- VAE decode -> PIL (with quick color match) --------
+        images_out: list[Image.Image] = []
+        up.load_vae(
+            vae_decode_conv_max_mem=vae_decode_conv_max_mem,
+            vae_decode_norm_max_mem=vae_decode_norm_max_mem,
+            causal_slicing=slicing,
+            causal_slicing_memory_device='cpu',
+            causal_slicing_split_size=4,
+            tiling=tiling,
+        )
+        for z, ref in zip(sr_latents, images):
+            img_pil = up.vae_decode_to_pil(z, ref_image=ref, slow_color_fix=False)
+            images_out.append(img_pil)
+        up.unload_vae()
+
+        # Cleanup
+        del sr_latents
+        del up
         gc.collect()
         torch.cuda.empty_cache()
+
+        print(f"T#{prompt.tune_id} P#{prompt.id} upscale seedvr2 {len(images_out)} {time.time() - start_time:.2f} seconds")
         return images_out
 
     def infer_prompt(self, prompt, tune: JsonObj, should_send_to_server=True):

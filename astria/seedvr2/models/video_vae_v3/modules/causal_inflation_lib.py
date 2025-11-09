@@ -53,6 +53,24 @@ def ignore_padding(model):
         model.padding = orig_padding
 
 
+def _out_len_1d(in_len: int, k: int, s: int, d: int, p: int) -> int:
+    # PyTorch conv formula
+    return (in_len + 2 * p - d * (k - 1) - 1) // s + 1
+
+def _conv3d_out_shape(sz_bcthw, module: nn.Conv3d) -> tuple:
+    # sz_bcthw = (B, C_in, T, H, W) AFTER padding+concat (what you already compute)
+    b, _, t, h, w = sz_bcthw
+    kt, kh, kw   = module.kernel_size
+    st, sh, sw   = module.stride
+    dt, dh, dw   = module.dilation
+    # module.padding is *spatial* here; temporal pad is handled causally
+    pt, ph, pw   = module.padding  # note: for this class, padding[0] has been zeroed in __init__
+    t_out = _out_len_1d(t, kt, st, dt, pt)
+    h_out = _out_len_1d(h, kh, sh, dh, ph)
+    w_out = _out_len_1d(w, kw, sw, dw, pw)
+    return (b, module.out_channels, t_out, h_out, w_out)
+
+
 class InflatedCausalConv3d(Conv3d):
     def __init__(
         self,
@@ -102,7 +120,12 @@ class InflatedCausalConv3d(Conv3d):
         numel = 1
         for d in sz:
             numel *= int(d)
-        memory_occupy = (numel * x.element_size()) / (1024.0 ** 3)  # GiB
+        # memory_occupy = (numel * x.element_size()) / (1024.0 ** 3)  # GiB
+        out_bcthw = _conv3d_out_shape(sz, self)
+        out_numel = 1
+        for d in out_bcthw:
+            out_numel *= int(d)
+        memory_occupy = (out_numel * self.weight.element_size()) / (1024.0 ** 3)  # GiB
 
         logger.debug(
             f"x:({tuple(sz)}, {x.dtype}) {memory_occupy:.3f}GiB "

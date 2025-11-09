@@ -168,7 +168,7 @@ class VideoDiffusionInfer():
     @log_runtime
     def configure_vae_model(self):
         # Create vae model.
-        dtype = getattr(torch, self.config.vae.dtype)
+        dtype = torch.bfloat16 # getattr(torch, self.config.vae.dtype)
         self.vae = create_object(self.config.vae.model)
         self.vae.requires_grad_(False).eval()
         self.vae.to(device=get_device(), dtype=dtype)

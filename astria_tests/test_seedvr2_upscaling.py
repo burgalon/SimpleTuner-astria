@@ -4,6 +4,7 @@ sys.path.append("astria")
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 import copy
+from pathlib import Path
 from astria_tests.test_infer import IMG_POSE, BASE_PROMPT, FLUX_LORA, run_images, FLUX_FACEID, pipe
 
 # The upscaler class you placed here:
@@ -126,37 +127,57 @@ def test_upscale_stage_1():
     )
     run_images(prompt)
 
-# def test_txt2img_lora_upscale_seedvr2():
-#     prompt = JsonObj(
-#         **copy.copy(BASE_PROMPT.__dict__),
-#         super_resolution=True,
-#         inpaint_faces=True,
-#     )
-#
-#     prompt.text=f"<lora:{FLUX_LORA.id}:1> {FLUX_LORA.train_token} woman holding flowers"
-#     prompt.tunes=[FLUX_LORA]
-#     run_images(prompt, 'test_txt2img_lora_upscale_seedvr2-before-upscale')
-#
-#     prompt = JsonObj(
-#         **copy.copy(BASE_PROMPT.__dict__),
-#         w=896,
-#         h=1152,
-#         super_resolution=True,
-#         upscale_v4=True,
-#     )
-#     prompt.text=f"<lora:{FLUX_LORA.id}:1> {FLUX_LORA.train_token} woman holding flowers --upscale_v4"
-#     prompt.tunes=[FLUX_LORA]
-#     run_images(prompt, 'test_txt2img_lora_upscale_seedvr2-upscaled')
-#
-#
-#     # Check post super-resolution everything is okay
-#     prompt = JsonObj(
-#         **copy.copy(BASE_PROMPT.__dict__),
-#         super_resolution=True,
-#         inpaint_faces=True,
-#         upscale_v4=True,
-#     )
-#
-#     prompt.text=f"<lora:{FLUX_LORA.id}:1> {FLUX_LORA.train_token} woman holding flowers --upscale_v4"
-#     prompt.tunes=[FLUX_LORA]
-#     run_images(prompt, 'test_txt2img_lora_upscale_seedvr2-after-upscale')
+def test_txt2img_lora_upscale_seedvr2():
+    prompt = JsonObj(
+        **copy.copy(BASE_PROMPT.__dict__),
+        super_resolution=True,
+        inpaint_faces=True,
+    )
+
+    prompt.text=f"<lora:{FLUX_LORA.id}:1> {FLUX_LORA.train_token} woman holding flowers"
+    prompt.tunes=[FLUX_LORA]
+    run_images(prompt, 'test_txt2img_lora_upscale_seedvr2-before-upscale')
+
+    prompt = JsonObj(
+        **copy.copy(BASE_PROMPT.__dict__),
+        w=896,
+        h=1152,
+        super_resolution=True,
+        upscale_v4=True,
+    )
+    prompt.text=f"<lora:{FLUX_LORA.id}:1> {FLUX_LORA.train_token} woman holding flowers --upscale_v4"
+    prompt.tunes=[FLUX_LORA]
+    run_images(prompt, 'test_txt2img_lora_upscale_seedvr2-upscaled')
+
+
+    # Check post super-resolution everything is okay
+    prompt = JsonObj(
+        **copy.copy(BASE_PROMPT.__dict__),
+        super_resolution=True,
+        inpaint_faces=True,
+        upscale_v4=True,
+    )
+
+    prompt.text=f"<lora:{FLUX_LORA.id}:1> {FLUX_LORA.train_token} woman holding flowers --upscale_v4"
+    prompt.tunes=[FLUX_LORA]
+    run_images(prompt, 'test_txt2img_lora_upscale_seedvr2-after-upscale')
+
+def test_seedvr2_batch_inpaint_upscale_v4():
+    # 4 images, face inpaint + seedvr4 upscale
+    prompt = JsonObj(
+        id="test-prompt-id",
+        tune_id=1504944,
+        tunes=[],
+        num_images=4,
+        super_resolution=True,
+        inpaint_faces=True,
+        upscale_v4=True,
+        w=1152,
+        h=1536,
+    )
+    prompt.text = f"<lora:{FLUX_LORA.id}:1> {FLUX_LORA.train_token} portrait photo, looking at camera"
+    prompt.tunes = [FLUX_LORA]
+
+    # Run the usual pipeline helper (this also saves to MODELS_DIR),
+    # but we also save explicit JPEGs into the test folder as requested.
+    images = run_images(prompt, "seedvr2_batch_inpaint_upscale_v4")

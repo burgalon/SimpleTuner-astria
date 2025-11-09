@@ -55,6 +55,12 @@ from astria.seedvr2.models.video_vae_v3.modules.types import (
 logger = get_logger(__name__)  # pylint: disable=invalid-name
 
 
+import math
+from typing import Optional, Tuple
+import torch
+import torch.nn.functional as F
+
+
 class Upsample3D(Upsample2D):
     """A 3D upsampling layer with an optional convolution."""
 
@@ -86,6 +92,11 @@ class Upsample3D(Upsample2D):
         self.temporal_ratio = 2 if temporal_up else 1
         self.spatial_ratio = 2 if spatial_up else 1
         self.slicing = slicing
+
+        self._tiling_enabled: bool = False
+        self._tile_latent: int = 0            # tile size in *latent* units (H/W of z)
+        self._tile_overlap: int = 0           # overlap in latent units
+        self._tile_window: str = "hann"       # "hann" | "linear" | "ones"
 
         assert not self.interpolate
         # [Override] MAGViT v2 implementation
@@ -1245,10 +1256,174 @@ class VideoAutoencoderKL(diffusers.AutoencoderKL):
             return self._decode(z)
 
     def tiled_encode(self, x: torch.Tensor, **kwargs) -> torch.Tensor:
+        # Use enable_tiling
         raise NotImplementedError
 
     def tiled_decode(self, z: torch.Tensor, **kwargs) -> torch.Tensor:
+        # Use enable_tiling
         raise NotImplementedError
+
+    def _encoder_spatial_factor(self) -> int:
+        """Return total spatial downsample factor of the encoder."""
+        factor = 1
+        for m in self.encoder.modules():
+            # Our Downsample3D sets spatial_down=True and stride=2 on H/W
+            if isinstance(m, Downsample3D) and getattr(m, "spatial_down", False):
+                # Be robust if someone tweaks stride; count only when it is 2
+                s = getattr(m, "conv", None)
+                if hasattr(s, "stride"):
+                    st = s.stride
+                    if isinstance(st, tuple) and (st[-1] == 2 or st[-2] == 2):
+                        factor *= 2
+                    elif st == 2:
+                        factor *= 2
+                else:
+                    # Fallback: assume x2 if we can’t inspect
+                    factor *= 2
+        return factor if factor > 0 else 1
+
+    def enable_tiling(self, *, tile_latent: int = 192, tile_overlap: int = 64, window: str = "hann", margin_l=32, **kwargs):
+        """
+        Enable spatial tiling for decode. Sizes are in latent grid units.
+        Example: if downsample factor is 8, tile_latent=192 -> ~1536 px tiles.
+
+        tile_latent: bigger = faster, higher OOM likelihood
+        tile_overlap: smaller = faster, less memory but worse quality
+        margin_l: decode context margin. Smaller margin = faster+less mem with worse quality
+        """
+        assert tile_latent > 0
+        assert 0 <= tile_overlap < tile_latent
+        assert window in ("hann", "linear", "ones")
+        self._tiling_enabled = True
+        self._tile_latent = int(tile_latent)
+        self._tile_overlap = int(tile_overlap)
+        self._tile_window = window
+        self._tile_decode_margin_l = margin_l
+
+    def disable_tiling(self):
+        self._tiling_enabled = False
+
+    @torch.no_grad()
+    def _tiled_decode(self, z5: torch.Tensor) -> torch.Tensor:
+        assert z5.ndim == 5, f"expected [B,C,T,Hl,Wl], got {tuple(z5.shape)}"
+        B, C, T, Hl, Wl = z5.shape
+        device = z5.device
+        model_dtype = z5.dtype
+
+        tile_l = int(self._tile_latent)
+        ov_l   = int(self._tile_overlap)
+        step_l = max(1, tile_l - ov_l)
+
+        # If seams persist, try increasing to 96 or 128 (slower but safer).
+        margin_l = self._tile_decode_margin_l
+
+        scale_h = scale_w = None
+        Ho = Wo = None
+        acc, wsum = None, None
+
+        # Use a tiny epsilon to avoid actual div-by-zero, 
+        # but keep it small enough that 0-weight regions don't bleed through.
+        eps = 1e-7
+
+        def _make_edge_ramp(L: int, reverse: bool) -> torch.Tensor:
+            # Standard Hann window (sine-squared) for smooth blending
+            if L <= 0: return None
+            t = torch.linspace(0, math.pi / 2.0, L, device=device, dtype=torch.float32)
+            r = torch.sin(t) ** 2  # Ramps from 0 to 1 smoothly
+            if reverse:
+                r = torch.flip(r, dims=(0,))
+            # Ensure we never hit true 0.0 to avoid NaNs in wsum, 
+            # but it should be effectively 0 for blending.
+            return r.clamp(min=eps)
+
+        for h0 in range(0, Hl, step_l):
+            for w0 in range(0, Wl, step_l):
+                h1 = min(Hl, h0 + tile_l)
+                w1 = min(Wl, w0 + tile_l)
+
+                h_load_start = max(0, h0 - margin_l)
+                w_load_start = max(0, w0 - margin_l)
+                h_load_end = min(Hl, h1 + margin_l)
+                w_load_end = min(Wl, w1 + margin_l)
+
+                z_tile_con = z5[:, :, :, h_load_start:h_load_end, w_load_start:w_load_end]
+                # Important: MemoryState.DISABLED ensures this tile is normalized independently,
+                # but because it's larger than needed, the center (valid) part is stable.
+                x_tile_con = self._decode(z_tile_con, memory_state=MemoryState.DISABLED)
+
+                if scale_h is None:
+                    ho_con, wo_con = x_tile_con.shape[-2:]
+                    # Use round() to avoid potential float precision errors in weird VAEs
+                    scale_h = int(round(ho_con / (h_load_end - h_load_start)))
+                    scale_w = int(round(wo_con / (w_load_end - w_load_start)))
+                    Ho, Wo = Hl * scale_h, Wl * scale_w
+                    acc  = torch.zeros((B, x_tile_con.shape[1], T, Ho, Wo), device=device, dtype=torch.float32)
+                    wsum = torch.zeros((1, 1, 1, Ho, Wo), device=device, dtype=torch.float32)
+
+                h_rel_start = (h0 - h_load_start) * scale_h
+                w_rel_start = (w0 - w_load_start) * scale_w
+                h_rel_end = h_rel_start + (h1 - h0) * scale_h
+                w_rel_end = w_rel_start + (w1 - w0) * scale_w
+
+                x_tile = x_tile_con[..., h_rel_start:h_rel_end, w_rel_start:w_rel_end]
+
+                oh0, ow0 = h0 * scale_h, w0 * scale_w
+                oh1, ow1 = oh0 + x_tile.shape[-2], ow0 + x_tile.shape[-1]
+
+                ov_px_h = int(ov_l * scale_h)
+                ov_px_w = int(ov_l * scale_w)
+
+                # has_prev_h = h0 > 0
+                # has_next_h = h1 < Hl
+                # has_prev_w = w0 > 0
+                # has_next_w = w1 < Wl
+
+                # Which neighbors exist in the latent grid?
+                has_prev_h = h0 > 0
+                has_next_h = h1 < Hl
+                has_prev_w = w0 > 0
+                has_next_w = w1 < Wl
+
+                # One-sided halo: only add context where we haven't decoded yet.
+                m_top    = 0
+                m_left   = 0
+                m_bottom = self._tile_decode_margin_l if has_next_h else 0
+                m_right  = self._tile_decode_margin_l if has_next_w else 0
+
+                h_load_start = max(0, h0 - m_top)
+                w_load_start = max(0, w0 - m_left)
+                h_load_end   = min(Hl, h1 + m_bottom)
+                w_load_end   = min(Wl, w1 + m_right)
+
+                wh = torch.ones(x_tile.shape[-2], device=device, dtype=torch.float32)
+                if has_prev_h and ov_px_h > 0:
+                    # Ramp UP from 0 on the top edge
+                    L = min(ov_px_h, wh.numel())
+                    wh[:L] *= _make_edge_ramp(L, reverse=False)
+                if has_next_h and ov_px_h > 0:
+                    # Ramp DOWN to 0 on the bottom edge
+                    L = min(ov_px_h, wh.numel())
+                    wh[-L:] *= _make_edge_ramp(L, reverse=True)
+
+                ww = torch.ones(x_tile.shape[-1], device=device, dtype=torch.float32)
+                if has_prev_w and ov_px_w > 0:
+                    # Ramp UP from 0 on the left edge
+                    L = min(ov_px_w, ww.numel())
+                    ww[:L] *= _make_edge_ramp(L, reverse=False)
+                if has_next_w and ov_px_w > 0:
+                    # Ramp DOWN to 0 on the right edge
+                    L = min(ov_px_w, ww.numel())
+                    ww[-L:] *= _make_edge_ramp(L, reverse=True)
+
+                w2d = wh.view(1,1,1,-1,1) * ww.view(1,1,1,1,-1)
+                acc[:, :, :, oh0:oh1, ow0:ow1] += (x_tile.to(torch.float32) * w2d)
+                wsum[:, :, :, oh0:oh1, ow0:ow1] += w2d
+
+                del z_tile_con, x_tile_con, x_tile, wh, ww, w2d
+
+        # Safe normalize
+        out = acc / wsum.clamp(min=eps)
+        return out.to(model_dtype)
 
     def forward(
         self, x: torch.FloatTensor, mode: Literal["encode", "decode", "all"] = "all", **kwargs
@@ -1292,24 +1467,185 @@ class VideoAutoencoderKLWrapper(VideoAutoencoderKL):
         self.freeze_encoder = freeze_encoder
         super().__init__(*args, **kwargs)
 
+    # def forward(self, x: torch.FloatTensor) -> CausalAutoencoderOutput:
+    #     with torch.no_grad() if self.freeze_encoder else nullcontext():
+    #         z, p = self.encode(x)
+    #     x = self.decode(z).sample
+    #     return CausalAutoencoderOutput(x, z, p)
+
     def forward(self, x: torch.FloatTensor) -> CausalAutoencoderOutput:
+        # Keep the legacy return type & attributes expected downstream.
         with torch.no_grad() if self.freeze_encoder else nullcontext():
-            z, p = self.encode(x)
-        x = self.decode(z).sample
-        return CausalAutoencoderOutput(x, z, p)
+            enc = self.encode(x)  # CausalEncoderOutput
+        x_rec = self.decode(enc.latent).sample
+        return CausalAutoencoderOutput(x_rec, enc.latent, enc.posterior)
 
-    def encode(self, x: torch.FloatTensor) -> CausalEncoderOutput:
-        if x.ndim == 4:
-            x = x.unsqueeze(2)
-        p = super().encode(x).latent_dist
-        z = p.sample().squeeze(2)
-        return CausalEncoderOutput(z, p)
+    @torch.no_grad()
+    def _tiled_encode(self, x5: torch.Tensor) -> torch.Tensor:
+        assert x5.ndim == 5, f"expected [B,C,T,H,W], got {tuple(x5.shape)}"
+        B, C, T, H, W = x5.shape
+        device = x5.device
 
-    def decode(self, z: torch.FloatTensor) -> CausalDecoderOutput:
+        tile_l = int(self._tile_latent)
+        ov_l   = int(self._tile_overlap)
+        step_l = max(1, tile_l - ov_l)
+
+        f  = self._encoder_spatial_factor()
+        Hl = (H + f - 1) // f
+        Wl = (W + f - 1) // f
+
+        tile_px = tile_l * f
+        step_px = step_l * f
+
+        acc  = None   # fp32
+        wsum = None   # fp32
+        eps  = 1e-3
+
+        def _edge_ramp(L: int, reverse: bool, kind: str) -> torch.Tensor:
+            t = torch.linspace(0, 1, L, device=device, dtype=torch.float32)
+            if kind == "linear":
+                r = t
+            else:  # "hann" -> half-hann, 0..1
+                r = 0.5 - 0.5 * torch.cos(math.pi * t)
+            if reverse:
+                r = torch.flip(r, dims=(0,))
+            return eps + (1.0 - eps) * r  # never 0
+
+        for h0_l in range(0, Hl, step_l):
+            for w0_l in range(0, Wl, step_l):
+                # slice input in pixels and right/bottom-pad
+                h0_px, w0_px = h0_l * f, w0_l * f
+                h1_px, w1_px = min(H, h0_px + tile_px), min(W, w0_px + tile_px)
+                pad_b, pad_r = tile_px - (h1_px - h0_px), tile_px - (w1_px - w0_px)
+
+                x_tile = x5[:, :, :, h0_px:h1_px, w0_px:w1_px]
+                if (pad_b | pad_r) != 0:
+                    x_tile = F.pad(x_tile, (0, pad_r, 0, pad_b), mode="constant", value=0.0)
+
+                # encode this tile (per your existing logic)
+                h_tile = self._encode(x_tile, memory_state=MemoryState.DISABLED)  # [B,Cout,T, hl_tile, wl_tile]
+
+                if acc is None:
+                    _, Cout, Tt, hl_tile, wl_tile = h_tile.shape
+                    assert Tt == T
+                    acc  = torch.zeros((B, Cout, T, Hl, Wl), device=device, dtype=torch.float32)
+                    wsum = torch.zeros((1,   1,    1, Hl, Wl), device=device, dtype=torch.float32)
+
+                # valid region in latent (crop off padded area)
+                valid_hl = min(tile_l, Hl - h0_l)
+                valid_wl = min(tile_l, Wl - w0_l)
+                h_valid  = h_tile[:, :, :, :valid_hl, :valid_wl]
+
+                # neighbor awareness in latent space
+                has_prev_h = h0_l > 0
+                has_next_h = (h0_l + valid_hl) < Hl
+                has_prev_w = w0_l > 0
+                has_next_w = (w0_l + valid_wl) < Wl
+
+                # 1D edge-only ramps (no attenuation on outer image borders)
+                wh = torch.ones(valid_hl, device=device, dtype=torch.float32)
+                if ov_l > 0 and has_prev_h:
+                    L = min(ov_l, valid_hl)
+                    wh[:L] *= _edge_ramp(L, reverse=False, kind=self._tile_window)
+                if ov_l > 0 and has_next_h:
+                    L = min(ov_l, valid_hl)
+                    wh[-L:] *= _edge_ramp(L, reverse=True,  kind=self._tile_window)
+
+                ww = torch.ones(valid_wl, device=device, dtype=torch.float32)
+                if ov_l > 0 and has_prev_w:
+                    L = min(ov_l, valid_wl)
+                    ww[:L] *= _edge_ramp(L, reverse=False, kind=self._tile_window)
+                if ov_l > 0 and has_next_w:
+                    L = min(ov_l, valid_wl)
+                    ww[-L:] *= _edge_ramp(L, reverse=True,  kind=self._tile_window)
+
+                w2d = wh.view(1,1,1,-1,1) * ww.view(1,1,1,1,-1)  # fp32
+
+                acc[:, :, :, h0_l:h0_l+valid_hl, w0_l:w0_l+valid_wl] += h_valid.to(torch.float32) * w2d
+                wsum[:, :, :, h0_l:h0_l+valid_hl, w0_l:w0_l+valid_wl] += w2d
+
+                del x_tile, h_tile, h_valid, wh, ww, w2d
+
+        h = acc / wsum.clamp_min(eps)
+        return h.to(x5.dtype)
+
+    # Old non-tiled encode
+    # def encode(self, x: torch.FloatTensor) -> CausalEncoderOutput:
+    #     if x.ndim == 4:
+    #         x = x.unsqueeze(2)
+    #     p = super().encode(x).latent_dist
+    #     z = p.sample().squeeze(2)
+    #     return CausalEncoderOutput(z, p)
+
+    def _encoder_spatial_factor(self) -> int:
+        """Return total spatial downsample factor of the encoder."""
+        factor = 1
+        for m in self.encoder.modules():
+            # Our Downsample3D sets spatial_down=True and stride=2 on H/W
+            if isinstance(m, Downsample3D) and getattr(m, "spatial_down", False):
+                # Be robust if someone tweaks stride; count only when it is 2
+                s = getattr(m, "conv", None)
+                if hasattr(s, "stride"):
+                    st = s.stride
+                    if isinstance(st, tuple) and (st[-1] == 2 or st[-2] == 2):
+                        factor *= 2
+                    elif st == 2:
+                        factor *= 2
+                else:
+                    # Fallback: assume x2 if we can’t inspect
+                    factor *= 2
+        return factor if factor > 0 else 1
+
+    @apply_forward_hook
+    def encode(self, x: torch.FloatTensor, return_dict: bool = True) -> CausalEncoderOutput:
+        x5 = x.unsqueeze(2) if x.ndim == 4 else x
+
+        use_tiled = getattr(self, "_tiling_enabled", False) and getattr(self, "_tile_latent", 0) > 0
+        if use_tiled:
+            f = self._encoder_spatial_factor()
+            need_tiles = ((x5.shape[-2] + f - 1) // f > self._tile_latent) or \
+                        ((x5.shape[-1] + f - 1) // f > self._tile_latent)
+        else:
+            need_tiles = False
+
+        if use_tiled and need_tiles:
+            h = self._tiled_encode(x5)
+        else:
+            h = self.slicing_encode(x5)
+
+        posterior = DiagonalGaussianDistribution(h)
+        # use mean for fidelity & cross-tile consistency
+        z = posterior.mode().squeeze(2)
+        return CausalEncoderOutput(z, posterior)
+
+
+    # Old non-tiled decode
+    # def decode(self, z: torch.FloatTensor) -> CausalDecoderOutput:
+    #     if z.ndim == 4:
+    #         z = z.unsqueeze(2)
+    #     x = super().decode(z).sample.squeeze(2)
+    #     return CausalDecoderOutput(x)
+
+    @apply_forward_hook
+    def decode(self, z: torch.Tensor, return_dict: bool = True) -> Union[DecoderOutput, torch.Tensor]:
+        # Accept [B,C,H,W] or [B,C,T,H,W]
+        z5 = z.unsqueeze(2) if z.ndim == 4 else z
+        use_tiled = (
+            getattr(self, "_tiling_enabled", False)
+            and (z5.shape[-2] > self._tile_latent or z5.shape[-1] > self._tile_latent)
+        )
+        if use_tiled:
+            decoded = self._tiled_decode(z5)  # returns [B,C,T,H_out,W_out] on z.device
+        else:
+            decoded = self.slicing_decode(z5)
+
         if z.ndim == 4:
-            z = z.unsqueeze(2)
-        x = super().decode(z).sample.squeeze(2)
-        return CausalDecoderOutput(x)
+            decoded = decoded.squeeze(2)
+
+        if not return_dict:
+            return (decoded,)
+        return DecoderOutput(sample=decoded)
+
 
     def preprocess(self, x: torch.Tensor):
         # x should in [B, C, T, H, W], [B, C, H, W]
